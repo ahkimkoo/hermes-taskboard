@@ -41,6 +41,7 @@ type Task struct {
 	TriggerMode        TriggerMode `json:"trigger_mode"`
 	PreferredServer    string      `json:"preferred_server,omitempty"`
 	PreferredModel     string      `json:"preferred_model,omitempty"`
+	Position           int64       `json:"position"` // user-controlled order within a status column
 	CreatedAt          time.Time   `json:"created_at"`
 	UpdatedAt          time.Time   `json:"updated_at"`
 	DescriptionExcerpt string      `json:"description_excerpt,omitempty"`

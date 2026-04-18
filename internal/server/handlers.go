@@ -231,8 +231,10 @@ func (s *Server) hDeleteTask(w http.ResponseWriter, r *http.Request, id string) 
 }
 
 type transitionReq struct {
-	To     string `json:"to"`
-	Reason string `json:"reason,omitempty"`
+	To       string `json:"to"`
+	Reason   string `json:"reason,omitempty"`
+	AfterID  string `json:"after_id,omitempty"`  // drop target: place right after this card
+	BeforeID string `json:"before_id,omitempty"` // drop target: place right before this card
 }
 
 func (s *Server) hTransition(w http.ResponseWriter, r *http.Request, id string) {
@@ -265,6 +267,17 @@ func (s *Server) hTransition(w http.ResponseWriter, r *http.Request, id string) 
 			writeJSON(w, 200, map[string]any{"ok": true})
 			return
 		}
+	}
+	// If caller passed after_id/before_id (drag-within-or-across columns with a
+	// specific drop slot), use MoveTask so ordering is preserved exactly.
+	if req.AfterID != "" || req.BeforeID != "" {
+		if err := s.Store.MoveTask(r.Context(), id, to, req.AfterID, req.BeforeID); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		s.Hub.Publish("board", toEvent("task.moved", map[string]any{"task_id": id, "to": req.To, "kind": "manual"}))
+		writeJSON(w, 200, map[string]any{"ok": true})
+		return
 	}
 	if err := s.Board.Transition(r.Context(), id, to, board.KindManual, req.Reason); err != nil {
 		writeErr(w, 400, err)
@@ -766,10 +779,16 @@ func (s *Server) hDeleteTag(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) hGetSettings(w http.ResponseWriter, r *http.Request) {
 	c := s.Cfg.Snapshot()
+	ossOut := c.OSS
+	ossOut.AccessKeySecret = ""       // never leak
+	ossOut.AccessKeySecretEnc = ""    // never leak
+	hasSecret := c.OSS.AccessKeySecret != "" || c.OSS.AccessKeySecretEnc != ""
 	writeJSON(w, 200, map[string]any{
-		"scheduler": c.Scheduler,
-		"archive":   c.Archive,
-		"server":    c.Server,
+		"scheduler":        c.Scheduler,
+		"archive":          c.Archive,
+		"server":           c.Server,
+		"oss":              ossOut,
+		"oss_has_secret":   hasSecret,
 	})
 }
 
@@ -777,6 +796,7 @@ type settingsReq struct {
 	Scheduler *config.Scheduler `json:"scheduler,omitempty"`
 	Archive   *config.Archive   `json:"archive,omitempty"`
 	Server    *config.Server    `json:"server,omitempty"`
+	OSS       *config.OSS       `json:"oss,omitempty"`
 }
 
 func (s *Server) hUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -794,6 +814,15 @@ func (s *Server) hUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Server != nil {
 			c.Server = *req.Server
+		}
+		if req.OSS != nil {
+			// Preserve existing encrypted secret if caller didn't send a new plaintext.
+			prev := c.OSS
+			c.OSS = *req.OSS
+			if req.OSS.AccessKeySecret == "" {
+				c.OSS.AccessKeySecret = ""
+				c.OSS.AccessKeySecretEnc = prev.AccessKeySecretEnc
+			}
 		}
 		return nil
 	})
@@ -947,6 +976,68 @@ func (s *Server) hAuthChange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// ---------------- uploads ----------------
+
+// hUploadFile accepts a multipart form file named "file" and returns {url}.
+// Size limit: 10 MB. Content types allowed: image/*.
+func (s *Server) hUploadFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	const maxUpload = 10 << 20 // 10 MB
+	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
+	if err := r.ParseMultipartForm(maxUpload); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	file, hdr, err := r.FormFile("file")
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	defer file.Close()
+	ct := hdr.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "image/") {
+		writeErr(w, 400, errors.New("only image/* uploads are accepted"))
+		return
+	}
+	buf := make([]byte, 0, hdr.Size)
+	tmp := make([]byte, 32*1024)
+	for {
+		n, err := file.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if err != nil {
+			break
+		}
+	}
+	svc := s.uploadsService()
+	ctx, cancel := contextWithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	url, err := svc.Put(ctx, buf, ct)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	kind := "local"
+	if svc.OSSEnabled {
+		kind = "oss"
+	}
+	writeJSON(w, 200, map[string]any{"url": url, "size": len(buf), "storage": kind})
+}
+
+// hUploadServe serves files from data/uploads/{name}.
+func (s *Server) hUploadServe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/uploads/")
+	s.uploadsService().ServeLocal(w, r, name)
 }
 
 // ---------------- static ----------------

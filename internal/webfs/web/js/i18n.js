@@ -1,45 +1,45 @@
-// Tiny i18n helper. Flat key → string with {param} interpolation.
-const cache = {};
-let current = localStorage.getItem('lang') || (navigator.language.startsWith('zh') ? 'zh-CN' : 'en');
-const listeners = [];
+// Reactive i18n. Import `currentLang` (a Vue ref) and `t(key, params)` in
+// components; Vue will track `currentLang` as a dependency, so switching
+// language re-renders every template using $t automatically.
+//
+// We load both zh-CN and en on boot. Missing keys fall back to en; missing in
+// en too falls back to the key itself. No silent mixing of languages:
+// every $t call evaluates against exactly one dictionary.
 
-export async function loadLocale(code) {
-  if (cache[code]) return cache[code];
-  try {
-    const res = await fetch('/locales/' + code + '.json');
-    const j = await res.json();
-    cache[code] = j;
-    return j;
-  } catch (e) {
-    return {};
-  }
+const { ref, reactive } = Vue;
+
+const dicts = reactive({ en: {}, 'zh-CN': {} });
+export const currentLang = ref(localStorage.getItem('lang') || (navigator.language.startsWith('zh') ? 'zh-CN' : 'en'));
+
+export function supported() { return ['en', 'zh-CN']; }
+
+export async function initI18n() {
+  const [en, zh] = await Promise.all([
+    fetch('/locales/en.json').then((r) => r.json()).catch(() => ({})),
+    fetch('/locales/zh-CN.json').then((r) => r.json()).catch(() => ({})),
+  ]);
+  dicts.en = en;
+  dicts['zh-CN'] = zh;
 }
 
 export async function setLanguage(code) {
-  current = code;
+  if (!supported().includes(code)) code = 'en';
+  currentLang.value = code;
   localStorage.setItem('lang', code);
-  await loadLocale(code);
-  if (code !== 'en') await loadLocale('en'); // fallback
-  listeners.forEach((fn) => fn(code));
 }
 
-export function currentLanguage() { return current; }
-
-export function onLanguageChange(fn) { listeners.push(fn); }
-
+// Reactive t — reads currentLang.value and dicts[lang] so Vue tracks deps.
 export function t(key, params) {
-  const dict = cache[current] || {};
-  const fallback = cache.en || {};
-  let s = dict[key] || fallback[key] || key;
+  const lang = currentLang.value;
+  const primary = dicts[lang] || {};
+  const fallback = dicts.en || {};
+  let s = primary[key];
+  if (s == null) s = fallback[key];
+  if (s == null) s = key;
   if (params) {
     for (const k of Object.keys(params)) {
       s = s.replaceAll('{' + k + '}', params[k]);
     }
   }
   return s;
-}
-
-export async function initI18n() {
-  await loadLocale(current);
-  if (current !== 'en') await loadLocale('en');
 }

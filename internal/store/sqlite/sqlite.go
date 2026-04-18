@@ -21,10 +21,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   preferred_model     TEXT,
   created_at          INTEGER NOT NULL,
   updated_at          INTEGER NOT NULL,
-  description_excerpt TEXT
+  description_excerpt TEXT,
+  position            INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_tasks_status_priority
-  ON tasks(status, priority, updated_at DESC);
+-- (idx_tasks_status_position created after migrate, see migrate())
 
 CREATE TABLE IF NOT EXISTS task_deps (
   task_id    TEXT NOT NULL,
@@ -77,5 +77,51 @@ func Open(path string) (*sql.DB, error) {
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrate(ctx, db); err != nil {
+		return nil, err
+	}
 	return db, nil
+}
+
+// migrate applies idempotent ALTERs for column additions on pre-existing DBs.
+// SQLite lacks IF NOT EXISTS on ADD COLUMN, so we inspect PRAGMA first.
+func migrate(ctx context.Context, db *sql.DB) error {
+	has, err := columnExists(ctx, db, "tasks", "position")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE tasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add tasks.position: %w", err)
+		}
+		// Seed positions by created_at for existing rows so ordering is stable.
+		if _, err := db.ExecContext(ctx, `UPDATE tasks SET position = (created_at / 1000)`); err != nil {
+			return fmt.Errorf("seed positions: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_tasks_status_position ON tasks(status, position)`); err != nil {
+		return fmt.Errorf("create idx_tasks_status_position: %w", err)
+	}
+	return nil
+}
+
+func columnExists(ctx context.Context, db *sql.DB, table, col string) (bool, error) {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == col {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }

@@ -25,6 +25,34 @@ type Config struct {
 	Scheduler      Scheduler      `yaml:"scheduler"`
 	Archive        Archive        `yaml:"archive"`
 	Preferences    Preferences    `yaml:"preferences"`
+	OSS            OSS            `yaml:"oss"`
+}
+
+// OSS is the optional Aliyun OSS image-hosting config.
+type OSS struct {
+	Enabled            bool   `yaml:"enabled" json:"enabled"`
+	Endpoint           string `yaml:"endpoint" json:"endpoint"`
+	Bucket             string `yaml:"bucket" json:"bucket"`
+	AccessKeyID        string `yaml:"access_key_id" json:"access_key_id"`
+	AccessKeySecret    string `yaml:"access_key_secret,omitempty" json:"access_key_secret,omitempty"`
+	AccessKeySecretEnc string `yaml:"access_key_secret_enc,omitempty" json:"-"`
+	PathPrefix         string `yaml:"path_prefix" json:"path_prefix"`
+	PublicBase         string `yaml:"public_base" json:"public_base"`
+}
+
+// DecryptedAccessKeySecret returns the plaintext secret (empty if none).
+func (o *OSS) DecryptedAccessKeySecret(secret []byte) string {
+	if o.AccessKeySecret != "" {
+		return o.AccessKeySecret
+	}
+	if o.AccessKeySecretEnc == "" {
+		return ""
+	}
+	plain, err := aesGCMDecrypt(secret, o.AccessKeySecretEnc)
+	if err != nil {
+		return ""
+	}
+	return plain
 }
 
 type Auth struct {
@@ -36,8 +64,8 @@ type Auth struct {
 }
 
 type Server struct {
-	Listen      string   `yaml:"listen"`
-	CorsOrigins []string `yaml:"cors_origins"`
+	Listen      string   `yaml:"listen" json:"listen"`
+	CorsOrigins []string `yaml:"cors_origins" json:"cors_origins"`
 }
 
 type HermesServer struct {
@@ -58,29 +86,30 @@ type HermesModel struct {
 }
 
 type Scheduler struct {
-	ScanIntervalSeconds int `yaml:"scan_interval_seconds"`
-	GlobalMaxConcurrent int `yaml:"global_max_concurrent"`
+	ScanIntervalSeconds int `yaml:"scan_interval_seconds" json:"scan_interval_seconds"`
+	GlobalMaxConcurrent int `yaml:"global_max_concurrent" json:"global_max_concurrent"`
 }
 
 type Archive struct {
-	AutoPurgeDays int `yaml:"auto_purge_days"`
+	AutoPurgeDays int `yaml:"auto_purge_days" json:"auto_purge_days"`
 }
 
 type Preferences struct {
-	Language string `yaml:"language"`
-	Sound    Sound  `yaml:"sound"`
+	Language string `yaml:"language" json:"language"`
+	Theme    string `yaml:"theme" json:"theme"` // "dark" | "light" | "" (auto)
+	Sound    Sound  `yaml:"sound" json:"sound"`
 }
 
 type Sound struct {
-	Enabled bool        `yaml:"enabled"`
-	Volume  float64     `yaml:"volume"`
-	Events  SoundEvents `yaml:"events"`
+	Enabled bool        `yaml:"enabled" json:"enabled"`
+	Volume  float64     `yaml:"volume" json:"volume"`
+	Events  SoundEvents `yaml:"events" json:"events"`
 }
 
 type SoundEvents struct {
-	ExecuteStart bool `yaml:"execute_start"`
-	NeedsInput   bool `yaml:"needs_input"`
-	Done         bool `yaml:"done"`
+	ExecuteStart bool `yaml:"execute_start" json:"execute_start"`
+	NeedsInput   bool `yaml:"needs_input" json:"needs_input"`
+	Done         bool `yaml:"done" json:"done"`
 }
 
 // DecryptedAPIKey returns the plaintext key for a server; empty if none.
@@ -212,6 +241,15 @@ func (s *Store) persist(cfg *Config) error {
 			sv.APIKey = ""
 		}
 	}
+	// Encrypt OSS access_key_secret.
+	if cpy.OSS.AccessKeySecret != "" {
+		enc, err := aesGCMEncrypt(s.secret, cpy.OSS.AccessKeySecret)
+		if err != nil {
+			return fmt.Errorf("encrypt oss secret: %w", err)
+		}
+		cpy.OSS.AccessKeySecretEnc = enc
+		cpy.OSS.AccessKeySecret = ""
+	}
 	data, err := yaml.Marshal(cpy)
 	if err != nil {
 		return err
@@ -248,6 +286,10 @@ func (s *Store) persist(cfg *Config) error {
 			sv.APIKeyEnc = cpy.HermesServers[i].APIKeyEnc
 			sv.APIKey = ""
 		}
+	}
+	if cfg.OSS.AccessKeySecret != "" {
+		cfg.OSS.AccessKeySecretEnc = cpy.OSS.AccessKeySecretEnc
+		cfg.OSS.AccessKeySecret = ""
 	}
 	return nil
 }
@@ -332,6 +374,7 @@ func DefaultConfig() *Config {
 		Archive: Archive{AutoPurgeDays: 30},
 		Preferences: Preferences{
 			Language: "",
+			Theme:    "dark",
 			Sound: Sound{
 				Enabled: true,
 				Volume:  0.7,

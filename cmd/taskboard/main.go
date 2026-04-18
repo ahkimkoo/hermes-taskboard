@@ -10,12 +10,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/ahkimkoo/hermes-taskboard/internal/attempt"
 	"github.com/ahkimkoo/hermes-taskboard/internal/auth"
 	"github.com/ahkimkoo/hermes-taskboard/internal/board"
 	"github.com/ahkimkoo/hermes-taskboard/internal/config"
 	"github.com/ahkimkoo/hermes-taskboard/internal/hermes"
+	"github.com/ahkimkoo/hermes-taskboard/internal/reaper"
 	"github.com/ahkimkoo/hermes-taskboard/internal/scheduler"
 	"github.com/ahkimkoo/hermes-taskboard/internal/server"
 	"github.com/ahkimkoo/hermes-taskboard/internal/sse"
@@ -79,12 +81,20 @@ func main() {
 	authSvc := auth.New(cfgStore)
 	sched := scheduler.New(cfgStore, st, runner, logger)
 
-	srv := server.New(cfgStore, st, fs, pool, hub, boardSvc, runner, authSvc, logger, webfs.FS)
+	srv := server.New(cfgStore, st, fs, pool, hub, boardSvc, runner, authSvc, logger, webfs.FS, *dataDir)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go sched.Start(ctx)
+
+	rpr := &reaper.Reaper{
+		DB:         db,
+		AttemptDir: filepath.Join(*dataDir, "attempt"),
+		Retention:  90 * 24 * time.Hour,
+		Logger:     logger.With("component", "reaper"),
+	}
+	go rpr.Loop(ctx)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)

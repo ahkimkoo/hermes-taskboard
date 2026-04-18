@@ -3,7 +3,27 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## 2026-04-18
+## 2026-04-19
+
+### UX overhaul (round 2)
+- **Drag & drop** rewritten on top of pointer events: the source card hides with a dotted placeholder, a styled floating clone follows the cursor, and the drop commits to an exact slot (between neighbours, not just "the column"). Feels more like Trello, far less like a browser HTML5 drag-ghost. (Requirement #1)
+- **Task ordering is now user-controlled**: added a `position` column to the `tasks` table with an automatic migration for existing DBs (positions seeded from `created_at`). New tasks land at the end of the Draft column; drag-to-reorder persists and survives reloads. The list API no longer sorts by priority — it returns rows by `(status, position)` and the client simply iterates. (Requirements #7, #8)
+- **Rich description editor**: title is required, body is optional Markdown with a Write/Preview toggle. Paste, drop, or pick images — they upload via `POST /api/uploads` and a Markdown image reference is spliced at the caret. (Requirement #2)
+- **Image hosting**: new `internal/uploads` package. Local disk by default (`data/uploads/`, served at `/uploads/{name}`), or Aliyun OSS if configured. OSS credentials (`oss.access_key_id` + `access_key_secret`) live in `data/config.yaml`; the secret is AES-GCM-encrypted at rest alongside Hermes API keys. Settings page gains an "Integrations" tab.
+- **Attempt list**: now shows local-formatted start time + short ID per attempt; collapses to a single-pane layout when there's only one (or zero) attempts; the "+ New Attempt" button shrank and now gates behind a confirmation dialog explaining that a new attempt consumes a separate concurrency slot. (Requirement #3)
+- **Event stream is now semantic** — each Hermes event is grouped into a user message, an assistant bubble (with Markdown rendering), or a collapsible tool-call card showing name / args / output. No more raw JSON dumps. (Requirement #4)
+- **Light/dark theme toggle** in the top bar (☾/☀), persisted to `preferences.theme` in `data/config.yaml`. A full light-theme palette is defined in CSS variables. (Requirement #5)
+- **Delete gating**: the *Delete task* button only appears when a card sits in the Archive column; clicking once reveals a second "Confirm delete?" button. (Requirement #6)
+- **Column subtitles**: each of the six columns now has a small gray one-liner explaining its meaning (e.g. Plan → "Queued and ready for execution." / 计划 → "排队准备执行"). (Requirement #10)
+- **Settings page**: now includes an explicit helper paragraph under *Models* explaining that each row corresponds to a Hermes agent profile (same thing the Hermes API calls "model"). (Requirement #11)
+- **Settings modal reopen bug** — fixed. Now always goes through a `showSettings = false → true` transition to avoid a stale-state window where the second click was a no-op. (Requirement #12)
+- **i18n rewritten to be reactive** (Vue ref) — no more language-mixing after toggle. The `$t(key)` lookup consistently resolves against exactly one dictionary. Missing keys fall back to English, never to a leftover Chinese string. (Requirement #9)
+
+### Behind the scenes
+- JSON tags on all `config.Preferences`/`Sound`/`Scheduler`/`Archive`/`Server`/`OSS` struct fields, so the API now returns `{ language, theme, sound: {…} }` rather than Pascal-cased keys. This was a silent API break for the frontend; fixed together here.
+- `POST /api/tasks/{id}/transition` accepts `after_id` / `before_id` to request a specific drop slot; the backend computes a new `position` mid-way between neighbours and renumbers the column if needed to recover from collisions.
+- New module layout on the frontend: `i18n.js`, `markdown.js`, `drag.js`, `description-editor.js`, `event-stream.js` are now their own files imported by `app.js`.
+- New Playwright suite `tests/ui_test.py` with 15 cases — run it any time after a UI change.
 
 ### Docs (later)
 - 在 `README.md` 的 "Set up Hermes for this board / Hermes 侧配置" 两节各加上 Hermes 官方 API Server 文档直链：<https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server>。用户读完本项目的最小化配置说明后，可以直接跳到上游文档查所有可配置字段。

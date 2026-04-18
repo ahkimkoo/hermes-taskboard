@@ -1,29 +1,50 @@
-// Hermes Task Board — Vue 3 app (no build step, uses vue.global.js runtime compiler).
+// Hermes Task Board — Vue 3 app bootstrap.
+//
+// Module graph:
+//   app.js                 (this file — global state, root component, router)
+//   api.js                 HTTP helper
+//   sse.js                 EventSource wrapper
+//   i18n.js                reactive lang + t()
+//   markdown.js            tiny md → html
+//   drag.js                pointer-based card drag
+//   sound.js               Web Audio cues
+//   pwa.js                 service-worker registration
+//   description-editor.js  markdown textarea + image paste/drop
+//   event-stream.js        semantic Hermes output
+//
+// Components defined inline (Options API with template strings, no build step):
+//   Card · Column · Board · TaskModal · NewTaskModal · SettingsModal · Login.
+
 import { api } from './api.js';
 import { subscribe as sseSubscribe } from './sse.js';
-import { initI18n, t, setLanguage, currentLanguage, onLanguageChange } from './i18n.js';
+import { initI18n, t, currentLang, setLanguage } from './i18n.js';
 import { play as playSound, setPrefs as setSoundPrefs } from './sound.js';
 import { registerPWA } from './pwa.js';
+import { createDragController } from './drag.js';
+import { DescriptionEditor } from './description-editor.js';
+import { EventStream } from './event-stream.js';
+import { renderMarkdown as markdown } from './markdown.js';
 
 registerPWA();
 
-const { createApp, reactive, ref, computed, onMounted, onUnmounted, watch, nextTick, h } = Vue;
+const { createApp, reactive, ref, computed, watch } = Vue;
 
 const COLUMNS = ['draft', 'plan', 'execute', 'verify', 'done', 'archive'];
 
-// ---------------- Store (global reactive state) ----------------
+// ---------------- Global store ----------------
 
 const state = reactive({
   tasks: [],
   servers: [],
-  settings: { scheduler: {}, archive: {}, server: {} },
-  preferences: { language: '', sound: { enabled: true, volume: 0.7, events: {} } },
+  settings: { scheduler: {}, archive: {}, server: {}, oss: {}, oss_has_secret: false },
+  preferences: { language: '', theme: 'dark', sound: { enabled: true, volume: 0.7, events: {} } },
   auth: { enabled: false, logged_in: true, username: '' },
   toasts: [],
   openTaskId: null,
   showSettings: false,
-  mobileColumn: 'execute',
-  currentLang: 'en',
+  showNewTask: false,
+  mobileColumn: 'plan',
+  route: location.pathname,
 });
 
 function toast(msg, kind = 'info') {
@@ -35,167 +56,219 @@ function toast(msg, kind = 'info') {
   }, 4000);
 }
 
-async function refreshAll() {
+async function refreshTasks() {
   try {
-    const tres = await api('/api/tasks');
-    state.tasks = tres.tasks || [];
-    const sres = await api('/api/servers');
-    state.servers = sres.servers || [];
-    const settingsRes = await api('/api/settings');
-    state.settings = settingsRes;
-    const prefRes = await api('/api/preferences');
-    if (prefRes && prefRes.preferences) {
-      state.preferences = prefRes.preferences;
-      if (prefRes.preferences.sound) setSoundPrefs(prefRes.preferences.sound);
-    }
+    const { tasks } = await api('/api/tasks');
+    state.tasks = tasks || [];
   } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
 }
 
-async function refreshAuth() {
+async function refreshServers() {
   try {
-    const s = await api('/api/auth/status');
-    state.auth = s;
+    const { servers } = await api('/api/servers');
+    state.servers = servers || [];
   } catch (e) {}
+}
+
+async function refreshSettings() {
+  try { state.settings = await api('/api/settings'); } catch (e) {}
+}
+
+async function refreshPrefs() {
+  try {
+    const { preferences } = await api('/api/preferences');
+    if (preferences) {
+      state.preferences = preferences;
+      if (preferences.sound) setSoundPrefs(preferences.sound);
+      if (preferences.language) setLanguage(preferences.language);
+      applyTheme(preferences.theme || 'dark');
+    }
+  } catch (e) {}
+}
+
+async function refreshAuth() {
+  try { state.auth = await api('/api/auth/status'); } catch (e) {}
+}
+
+async function refreshAll() {
+  await Promise.all([refreshTasks(), refreshServers(), refreshSettings(), refreshPrefs()]);
+}
+
+function applyTheme(theme) {
+  const html = document.documentElement;
+  html.classList.remove('theme-dark', 'theme-light');
+  html.classList.add('theme-' + (theme === 'light' ? 'light' : 'dark'));
+}
+
+async function saveTheme(theme) {
+  state.preferences.theme = theme;
+  applyTheme(theme);
+  try { await api('/api/preferences', { method: 'PUT', body: state.preferences }); }
+  catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
 }
 
 // ---------------- Components ----------------
 
-const TaskCard = {
+const Card = {
   props: ['task'],
-  emits: ['open', 'dragstart'],
+  emits: ['open'],
+  inject: ['drag'],
   template: `
-    <div class="card" :class="cardClasses" draggable="true"
-         @dragstart="onDragStart" @click="$emit('open', task.id)">
+    <div class="card" :data-task-id="task.id"
+         :class="cardClasses"
+         @pointerdown="onPointerDown"
+         @click="onClick">
       <div class="card-title">{{ task.title }}</div>
       <div class="card-meta">
         <span class="priority-badge" :class="'p' + task.priority">P{{ task.priority }}</span>
-        <span v-if="task.active_attempts" class="attempt-badge">▶ {{ task.active_attempts }}</span>
-        <span v-else-if="task.attempt_count" class="attempt-badge" style="background:#555;color:#fff">{{ task.attempt_count }}</span>
+        <span v-if="task.active_attempts" class="attempt-badge running">▶ {{ task.active_attempts }}</span>
+        <span v-else-if="task.attempt_count" class="attempt-badge">{{ task.attempt_count }}</span>
         <span v-for="tag in task.tags" :key="tag" class="tag-chip">{{ tag }}</span>
-        <span v-if="task.dependencies && task.dependencies.length" class="tag-chip" title="dependencies">⛓ {{ task.dependencies.length }}</span>
-        <span v-if="task.preferred_server" class="tag-chip">🧠 {{ task.preferred_server }}</span>
+        <span v-if="task.dependencies && task.dependencies.length" class="tag-chip" :title="$t('card.deps')">⛓ {{ task.dependencies.length }}</span>
       </div>
     </div>
   `,
   computed: {
     cardClasses() {
-      const classes = [];
-      if (this.task.active_attempts > 0) {
-        // Heuristic: if any active, show executing glow.
-        classes.push('executing');
-      }
-      return classes;
+      const c = [];
+      if (this.task.active_attempts > 0) c.push('executing');
+      return c;
     },
   },
   methods: {
-    onDragStart(e) {
-      e.dataTransfer.setData('text/plain', this.task.id);
-      e.dataTransfer.effectAllowed = 'move';
+    onPointerDown(e) {
+      // Delay so simple clicks (no movement) still open the modal.
+      this._downX = e.clientX; this._downY = e.clientY;
+      const startThreshold = 5;
+      const onMove = (ev) => {
+        if (Math.abs(ev.clientX - this._downX) > startThreshold || Math.abs(ev.clientY - this._downY) > startThreshold) {
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          this.drag.start(e, this.task.id, this.$el);
+        }
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    },
+    onClick(e) {
+      // Only open if this wasn't a drag (dragging sets display:none on source).
+      if (this.$el.style.display === 'none') return;
+      if (e.target.closest('button, input, textarea')) return;
+      this.$emit('open', this.task.id);
     },
   },
 };
 
 const Column = {
-  props: ['status', 'tasks'],
-  emits: ['drop-task', 'open-task'],
-  components: { TaskCard },
-  data() { return { dragOver: false }; },
+  components: { Card },
+  props: ['status', 'tasks', 'headerAction'],
+  emits: ['open-task'],
   template: `
     <div class="column" :data-status="status">
       <div class="column-header">
-        <div class="column-title">{{ $t('col.' + status) }}</div>
-        <div class="column-count">{{ tasks.length }}</div>
+        <div class="column-title-row">
+          <div class="column-title">{{ $t('col.' + status) }}</div>
+          <div class="column-count">{{ tasks.length }}</div>
+        </div>
+        <div class="column-subtitle">{{ $t('col.desc.' + status) }}</div>
+        <div v-if="headerAction" class="column-action">
+          <slot name="action"></slot>
+        </div>
       </div>
-      <div class="column-drop-zone" :class="{'drag-over': dragOver}"
-           @dragover.prevent="dragOver = true"
-           @dragleave="dragOver = false"
-           @drop.prevent="onDrop">
-        <task-card v-for="t in sorted" :key="t.id" :task="t"
-                   @open="id => $emit('open-task', id)"/>
-        <div v-if="!tasks.length" class="empty">— {{ $t('empty.no_tasks') }} —</div>
+      <div class="column-drop-zone">
+        <card v-for="task in tasks" :key="task.id" :task="task" @open="id => $emit('open-task', id)"/>
+        <div v-if="!tasks.length" class="empty">{{ $t('empty.no_tasks') }}</div>
       </div>
     </div>
   `,
-  computed: {
-    sorted() {
-      return [...this.tasks].sort((a, b) => (a.priority - b.priority) || (b.updated_at.localeCompare(a.updated_at)));
-    },
-  },
-  methods: {
-    onDrop(e) {
-      this.dragOver = false;
-      const taskId = e.dataTransfer.getData('text/plain');
-      this.$emit('drop-task', { taskId, to: this.status });
-    },
-  },
 };
 
-const EventStream = {
-  props: ['attemptId'],
-  data() { return { events: [], unsub: null }; },
-  watch: {
-    attemptId: { immediate: true, handler: 'reload' },
+const NewTaskModal = {
+  components: { DescriptionEditor },
+  emits: ['close', 'created'],
+  data() {
+    return {
+      form: { title: '', description: '', priority: 3, trigger_mode: 'auto', preferred_server: '', tags: '' },
+    };
   },
+  computed: { canSave() { return this.form.title.trim().length > 0; } },
   template: `
-    <div class="event-stream" ref="scroller">
-      <div v-for="(e, i) in events" :key="e.seq || i" class="event-row" :class="rowClass(e)">
-        {{ formatEvent(e) }}
+    <div class="modal-overlay" @click.self="$emit('close')">
+      <div class="modal" style="max-width:640px">
+        <div class="modal-header">
+          <h2>{{ $t('action.new_task') }}</h2>
+          <button class="ghost" @click="$emit('close')">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <label>{{ $t('field.title') }} <span class="required">*</span></label>
+            <input type="text" v-model="form.title" :placeholder="$t('placeholder.title')" autofocus>
+          </div>
+          <div class="form-row">
+            <label>{{ $t('field.description') }}</label>
+            <description-editor v-model="form.description" :placeholder="$t('placeholder.description')" :rows="8"></description-editor>
+          </div>
+          <div class="form-inline">
+            <div class="form-row" style="flex:1">
+              <label>{{ $t('field.priority') }}</label>
+              <select v-model.number="form.priority">
+                <option v-for="p in [1,2,3,4,5]" :key="p" :value="p">P{{ p }}</option>
+              </select>
+            </div>
+            <div class="form-row" style="flex:1">
+              <label>{{ $t('field.trigger') }}</label>
+              <select v-model="form.trigger_mode">
+                <option value="auto">{{ $t('field.trigger.auto') }}</option>
+                <option value="manual">{{ $t('field.trigger.manual') }}</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>{{ $t('field.server') }}</label>
+            <select v-model="form.preferred_server">
+              <option value="">{{ $t('field.default') }}</option>
+              <option v-for="s in $root.state.servers" :key="s.id" :value="s.id">{{ s.name || s.id }}</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>{{ $t('field.tags') }}</label>
+            <input type="text" v-model="form.tags" :placeholder="$t('placeholder.tags')">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button @click="$emit('close')">{{ $t('action.cancel') }}</button>
+          <button class="primary" :disabled="!canSave" @click="save">{{ $t('action.save') }}</button>
+        </div>
       </div>
-      <div v-if="!events.length" class="empty">—</div>
     </div>
   `,
   methods: {
-    async reload() {
-      if (this.unsub) { this.unsub(); this.unsub = null; }
-      this.events = [];
-      if (!this.attemptId) return;
+    async save() {
+      if (!this.canSave) return;
       try {
-        const { events } = await api('/api/attempts/' + this.attemptId + '/messages?tail=50');
-        this.events = events || [];
-        await this.$nextTick();
-        this.scrollBottom();
-      } catch {}
-      const last = this.events[this.events.length - 1];
-      const since = last && last.seq ? last.seq : 0;
-      this.unsub = sseSubscribe('/api/stream/attempt/' + this.attemptId + '?since_seq=' + since, (evt) => {
-        this.events.push(evt);
-        this.$nextTick(() => this.scrollBottom());
-      });
-    },
-    scrollBottom() {
-      const s = this.$refs.scroller;
-      if (s) s.scrollTop = s.scrollHeight;
-    },
-    rowClass(e) {
-      if (!e) return '';
-      if (e.kind === 'system') {
-        if (e.event === 'user_message') return 'user';
-        if (e.event === 'error') return 'error';
-        return 'system';
-      }
-      const d = e.data || {};
-      if (d.type && String(d.type).includes('tool')) return 'tool';
-      return '';
-    },
-    formatEvent(e) {
-      if (!e) return '';
-      if (e.kind === 'system') {
-        if (e.event === 'user_message') return '▶ ' + (e.input || '');
-        if (e.event === 'run_start') return '— run started ' + (e.run_id || '') + ' —';
-        if (e.event === 'run_end') return '— run ended —';
-        if (e.event === 'error') return '✗ ' + (e.msg || '');
-        return '• ' + e.event;
-      }
-      const d = e.data || {};
-      if (d.type) return '[' + d.type + '] ' + (d.delta || d.content || d.text || JSON.stringify(d).slice(0, 400));
-      return JSON.stringify(d).slice(0, 400);
+        const body = {
+          title: this.form.title.trim(),
+          description: this.form.description,
+          priority: this.form.priority,
+          trigger_mode: this.form.trigger_mode,
+          preferred_server: this.form.preferred_server,
+          status: 'draft', // new tasks land in Draft per #7
+          tags: this.form.tags.split(',').map((s) => s.trim()).filter(Boolean),
+        };
+        await api('/api/tasks', { method: 'POST', body });
+        this.$emit('created');
+        this.$emit('close');
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
   },
-  beforeUnmount() { if (this.unsub) this.unsub(); },
 };
 
 const TaskModal = {
-  components: { EventStream },
+  components: { DescriptionEditor, EventStream },
   props: ['taskId'],
   emits: ['close', 'refresh'],
   data() {
@@ -206,29 +279,50 @@ const TaskModal = {
       attempts: [],
       activeAttemptId: null,
       input: '',
-      showDeleteConfirm: false,
+      listOpen: false,          // attempt list collapse state
+      confirmNewAttempt: false, // confirmation modal guard
+      confirmDelete: false,
     };
   },
   watch: { taskId: { immediate: true, handler: 'load' } },
+  computed: {
+    modelsForSelected() {
+      const id = this.form.preferred_server;
+      const s = this.$root.state.servers.find((x) => x.id === id);
+      return s ? (s.models || []) : [];
+    },
+    isArchive() { return this.task && this.task.status === 'archive'; },
+    canStartFirst() { return this.task && (this.task.status === 'plan' || this.task.status === 'draft'); },
+    currentAttempt() {
+      return this.attempts.find((a) => a.id === this.activeAttemptId) || null;
+    },
+    attemptListVisible() {
+      return this.listOpen || this.attempts.length > 1;
+    },
+    renderedDescription() {
+      return markdown(this.task && this.task.description || '');
+    },
+  },
   template: `
     <div class="modal-overlay" @click.self="$emit('close')">
       <div class="modal">
         <div class="modal-header">
-          <h2>{{ task ? task.title : '...' }}</h2>
-          <div>
-            <button v-if="task && !editing" @click="editing = true">✎ {{ $t('field.title') }}</button>
-            <button class="ghost" @click="$emit('close')">✕ {{ $t('action.close') }}</button>
+          <h2>{{ task ? task.title : '…' }}</h2>
+          <div class="modal-header-actions">
+            <button v-if="task && !editing" @click="editing = true">✎ {{ $t('action.edit') }}</button>
+            <button class="ghost" @click="$emit('close')">✕</button>
           </div>
         </div>
         <div class="modal-body" v-if="task">
+          <!-- Edit form -->
           <div v-if="editing">
             <div class="form-row">
-              <label>{{ $t('field.title') }}</label>
+              <label>{{ $t('field.title') }} <span class="required">*</span></label>
               <input type="text" v-model="form.title">
             </div>
             <div class="form-row">
               <label>{{ $t('field.description') }}</label>
-              <textarea v-model="form.description"></textarea>
+              <description-editor v-model="form.description" :rows="10"></description-editor>
             </div>
             <div class="form-inline">
               <div class="form-row" style="flex:1">
@@ -249,74 +343,112 @@ const TaskModal = {
               <div class="form-row" style="flex:1">
                 <label>{{ $t('field.server') }}</label>
                 <select v-model="form.preferred_server">
-                  <option value="">(default)</option>
+                  <option value="">{{ $t('field.default') }}</option>
                   <option v-for="s in $root.state.servers" :key="s.id" :value="s.id">{{ s.name || s.id }}</option>
                 </select>
               </div>
               <div class="form-row" style="flex:1">
                 <label>{{ $t('field.model') }}</label>
                 <select v-model="form.preferred_model">
-                  <option value="">(default)</option>
+                  <option value="">{{ $t('field.default') }}</option>
                   <option v-for="m in modelsForSelected" :key="m.name" :value="m.name">{{ m.name }}</option>
                 </select>
               </div>
             </div>
             <div class="form-row">
               <label>{{ $t('field.tags') }}</label>
-              <input type="text" v-model="form.tags">
+              <input type="text" v-model="form.tags" :placeholder="$t('placeholder.tags')">
             </div>
             <div class="form-row">
               <label>{{ $t('field.dependencies') }}</label>
               <input type="text" v-model="form.dependencies" placeholder="task-id-1, task-id-2">
             </div>
-            <div class="modal-footer" style="padding:0">
+            <div class="edit-actions">
               <button @click="editing = false">{{ $t('action.cancel') }}</button>
               <button class="primary" @click="save">{{ $t('action.save') }}</button>
             </div>
           </div>
-          <div v-else>
-            <p v-if="task.description" style="white-space:pre-wrap">{{ task.description }}</p>
-            <p v-else style="color:var(--text-dim)">(no description)</p>
 
-            <h3 style="margin-top:16px">Attempts</h3>
-            <div class="execute-pane">
-              <div class="attempt-list">
+          <!-- Read view -->
+          <div v-else>
+            <div v-if="task.description" class="task-desc" v-html="renderedDescription"></div>
+            <p v-else class="task-desc-empty">{{ $t('task.no_description') }}</p>
+
+            <h3 class="attempts-heading">
+              {{ $t('attempt.heading') }}
+              <span class="attempts-count">{{ attempts.length }}</span>
+              <button v-if="attempts.length > 1 || attempts.length === 0"
+                      class="ghost small" @click="listOpen = !listOpen">
+                {{ listOpen ? $t('attempt.collapse') : $t('attempt.expand') }}
+              </button>
+            </h3>
+
+            <div class="attempt-panel" :class="{ stacked: attempts.length <= 1 }">
+              <div class="attempt-list" v-show="attemptListVisible">
                 <div v-for="a in attempts" :key="a.id" class="attempt-item"
                      :class="{active: a.id === activeAttemptId}"
                      @click="activeAttemptId = a.id">
                   <div class="state" :class="a.state">{{ $t('attempt.state.' + a.state) }}</div>
-                  <div>{{ a.server_id }} / {{ a.model }}</div>
-                  <div style="color:var(--text-dim); font-size:11px">{{ a.id.slice(0,8) }}</div>
+                  <div class="meta">{{ a.server_id }} / {{ a.model }}</div>
+                  <div class="time">{{ formatTime(a.started_at) }}</div>
+                  <div class="shortid">{{ a.id.slice(0,8) }}</div>
                 </div>
-                <button v-if="task.status === 'plan' || task.status === 'verify' || task.status === 'execute'" class="primary" @click="startNew" style="margin-top:8px; width:100%">+ {{ $t('action.new_attempt') }}</button>
+                <button v-if="!canStartFirst || attempts.length > 0" class="secondary small new-attempt-btn"
+                        @click="confirmNewAttempt = true">
+                  + {{ $t('action.new_attempt') }}
+                </button>
+                <button v-if="canStartFirst && attempts.length === 0" class="primary start-btn"
+                        @click="confirmNewAttempt = true">
+                  ▶ {{ $t('action.start') }}
+                </button>
               </div>
               <div class="attempt-content">
                 <event-stream :attempt-id="activeAttemptId"></event-stream>
                 <div class="input-bar" v-if="activeAttemptId">
                   <input type="text" v-model="input" :placeholder="$t('placeholder.send_message')" @keyup.enter="sendMsg">
                   <button class="primary" @click="sendMsg">{{ $t('action.send') }}</button>
-                  <button class="danger" @click="cancelAttempt">{{ $t('action.stop') }}</button>
+                  <button class="danger small" @click="cancelAttempt">{{ $t('action.stop') }}</button>
                 </div>
               </div>
             </div>
           </div>
         </div>
+
+        <!-- Footer -->
         <div class="modal-footer" v-if="task && !editing">
-          <button class="danger" v-if="!showDeleteConfirm" @click="showDeleteConfirm = true">{{ $t('action.delete') }}</button>
-          <button class="danger" v-else @click="del">Confirm delete?</button>
-          <button class="primary" v-if="task.status === 'plan' && task.trigger_mode === 'manual'" @click="startNew">▶ {{ $t('action.start') }}</button>
+          <!-- Delete only visible when task sits in Archive (#6) -->
+          <button v-if="isArchive && !confirmDelete" class="danger" @click="confirmDelete = true">
+            {{ $t('action.delete') }}
+          </button>
+          <button v-if="isArchive && confirmDelete" class="danger" @click="del">
+            {{ $t('action.confirm_delete') }}
+          </button>
+        </div>
+
+        <!-- New attempt confirmation (#3) -->
+        <div v-if="confirmNewAttempt" class="modal-overlay inner" @click.self="confirmNewAttempt = false">
+          <div class="modal confirm">
+            <div class="modal-body">
+              <p><strong>{{ $t('confirm.new_attempt.title') }}</strong></p>
+              <p class="muted">{{ $t('confirm.new_attempt.body') }}</p>
+            </div>
+            <div class="modal-footer">
+              <button @click="confirmNewAttempt = false">{{ $t('action.cancel') }}</button>
+              <button class="primary" @click="actuallyStartAttempt">{{ $t('action.confirm') }}</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   `,
-  computed: {
-    modelsForSelected() {
-      const id = this.form.preferred_server;
-      const s = this.$root.state.servers.find((x) => x.id === id);
-      return s ? (s.models || []) : [];
-    },
-  },
   methods: {
+    formatTime(ts) {
+      if (!ts) return '';
+      try {
+        const d = new Date(ts);
+        return new Intl.DateTimeFormat(currentLang.value, { dateStyle: 'short', timeStyle: 'medium' }).format(d);
+      } catch { return ts; }
+    },
     async load() {
       if (!this.taskId) { this.task = null; return; }
       try {
@@ -333,9 +465,9 @@ const TaskModal = {
           dependencies: (r.task.dependencies || []).join(', '),
         };
         const ar = await api('/api/tasks/' + this.taskId + '/attempts');
-        this.attempts = ar.attempts || [];
-        if (!this.activeAttemptId && this.attempts.length) {
-          this.activeAttemptId = this.attempts[this.attempts.length - 1].id;
+        this.attempts = (ar.attempts || []).sort((a, b) => String(a.started_at || '').localeCompare(String(b.started_at || '')));
+        if (!this.activeAttemptId || !this.attempts.some((a) => a.id === this.activeAttemptId)) {
+          this.activeAttemptId = this.attempts.length ? this.attempts[this.attempts.length - 1].id : null;
         }
       } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
@@ -366,13 +498,15 @@ const TaskModal = {
         this.$emit('refresh');
       } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
-    async startNew() {
+    async actuallyStartAttempt() {
+      this.confirmNewAttempt = false;
       try {
         const r = await api('/api/tasks/' + this.taskId + '/attempts', {
           method: 'POST',
           body: { server_id: this.form.preferred_server || '', model: this.form.preferred_model || '' },
         });
-        this.activeAttemptId = r.attempt ? r.attempt.id : null;
+        if (r.attempt) this.activeAttemptId = r.attempt.id;
+        await this.load();
         this.$emit('refresh');
       } catch (e) {
         if (e.body && e.body.code === 'concurrency_limit') {
@@ -386,9 +520,8 @@ const TaskModal = {
       if (!this.input.trim() || !this.activeAttemptId) return;
       const text = this.input;
       this.input = '';
-      try {
-        await api('/api/attempts/' + this.activeAttemptId + '/messages', { method: 'POST', body: { text } });
-      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+      try { await api('/api/attempts/' + this.activeAttemptId + '/messages', { method: 'POST', body: { text } }); }
+      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
     async cancelAttempt() {
       if (!this.activeAttemptId) return;
@@ -398,75 +531,16 @@ const TaskModal = {
   },
 };
 
-const NewTaskModal = {
-  emits: ['close', 'created'],
-  data() {
-    return { form: { title: '', description: '', priority: 3, trigger_mode: 'auto', preferred_server: '', tags: '' } };
-  },
-  template: `
-    <div class="modal-overlay" @click.self="$emit('close')">
-      <div class="modal" style="max-width:520px">
-        <div class="modal-header"><h2>{{ $t('action.new_task') }}</h2><button class="ghost" @click="$emit('close')">✕</button></div>
-        <div class="modal-body">
-          <div class="form-row"><label>{{ $t('field.title') }}</label><input type="text" v-model="form.title" autofocus></div>
-          <div class="form-row"><label>{{ $t('field.description') }}</label><textarea v-model="form.description"></textarea></div>
-          <div class="form-inline">
-            <div class="form-row" style="flex:1">
-              <label>{{ $t('field.priority') }}</label>
-              <select v-model.number="form.priority"><option v-for="p in [1,2,3,4,5]" :key="p" :value="p">P{{ p }}</option></select>
-            </div>
-            <div class="form-row" style="flex:1">
-              <label>{{ $t('field.trigger') }}</label>
-              <select v-model="form.trigger_mode">
-                <option value="auto">{{ $t('field.trigger.auto') }}</option>
-                <option value="manual">{{ $t('field.trigger.manual') }}</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-row">
-            <label>{{ $t('field.server') }}</label>
-            <select v-model="form.preferred_server">
-              <option value="">(default)</option>
-              <option v-for="s in $root.state.servers" :key="s.id" :value="s.id">{{ s.name || s.id }}</option>
-            </select>
-          </div>
-          <div class="form-row"><label>{{ $t('field.tags') }}</label><input type="text" v-model="form.tags"></div>
-        </div>
-        <div class="modal-footer">
-          <button @click="$emit('close')">{{ $t('action.cancel') }}</button>
-          <button class="primary" @click="save">{{ $t('action.save') }}</button>
-        </div>
-      </div>
-    </div>
-  `,
-  methods: {
-    async save() {
-      if (!this.form.title.trim()) return;
-      try {
-        const body = {
-          title: this.form.title,
-          description: this.form.description,
-          priority: this.form.priority,
-          trigger_mode: this.form.trigger_mode,
-          preferred_server: this.form.preferred_server,
-          status: 'plan',
-          tags: this.form.tags.split(',').map((s) => s.trim()).filter(Boolean),
-        };
-        await api('/api/tasks', { method: 'POST', body });
-        this.$emit('created');
-        this.$emit('close');
-      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
-    },
-  },
-};
+// ---------------- Settings modal ----------------
 
 const SettingsModal = {
   emits: ['close'],
   data() {
     return {
       tab: 'servers',
-      editServer: null, // draft server object
+      editServer: null,
       newPw: '', oldPw: '', enableForm: { username: '', password: '' },
+      oss: {}, ossNewSecret: '',
     };
   },
   computed: {
@@ -475,12 +549,18 @@ const SettingsModal = {
     settings() { return this.$root.state.settings; },
     auth() { return this.$root.state.auth; },
   },
+  mounted() {
+    this.oss = Object.assign({
+      enabled: false, endpoint: '', bucket: '', access_key_id: '',
+      path_prefix: '', public_base: '',
+    }, this.settings.oss || {});
+  },
   template: `
     <div class="modal-overlay" @click.self="$emit('close')">
-      <div class="modal" style="max-width:900px">
+      <div class="modal" style="max-width:960px">
         <div class="modal-header">
           <h2>{{ $t('action.settings') }}</h2>
-          <div>
+          <div class="modal-header-actions">
             <button @click="reloadConfig">{{ $t('action.reload_config') }}</button>
             <button class="ghost" @click="$emit('close')">✕</button>
           </div>
@@ -492,52 +572,62 @@ const SettingsModal = {
               <button :class="{active: tab==='global'}" @click="tab='global'">{{ $t('settings.nav.global') }}</button>
               <button :class="{active: tab==='access'}" @click="tab='access'">{{ $t('settings.nav.access') }}</button>
               <button :class="{active: tab==='preferences'}" @click="tab='preferences'">{{ $t('settings.nav.preferences') }}</button>
+              <button :class="{active: tab==='integrations'}" @click="tab='integrations'">{{ $t('settings.nav.integrations') }}</button>
               <button :class="{active: tab==='archive'}" @click="tab='archive'">{{ $t('settings.nav.archive') }}</button>
             </div>
             <div class="settings-content">
               <!-- Servers -->
               <div v-if="tab==='servers'" class="settings-section">
                 <h3>{{ $t('settings.nav.servers') }}</h3>
+                <p class="helper">{{ $t('settings.servers_helper') }}</p>
                 <table class="tbl">
-                  <thead><tr><th>ID</th><th>Name</th><th>Base URL</th><th>Models</th><th>Default</th><th></th></tr></thead>
+                  <thead><tr>
+                    <th>ID</th><th>{{ $t('th.name') }}</th><th>{{ $t('th.base_url') }}</th>
+                    <th>{{ $t('th.models') }}</th><th>{{ $t('th.default') }}</th><th></th>
+                  </tr></thead>
                   <tbody>
                     <tr v-for="s in servers" :key="s.id">
-                      <td>{{ s.id }}</td><td>{{ s.name }}</td><td>{{ s.base_url }}</td>
+                      <td>{{ s.id }}</td>
+                      <td>{{ s.name }}</td>
+                      <td><code>{{ s.base_url }}</code></td>
                       <td>{{ (s.models||[]).map(m=>m.name).join(', ') }}</td>
                       <td>{{ s.is_default ? '✓' : '' }}</td>
                       <td>
-                        <button @click="editServerInit(s)">✎</button>
+                        <button @click="editServerInit(s)">{{ $t('action.edit') }}</button>
                         <button @click="testServer(s.id)">{{ $t('action.test_connection') }}</button>
                         <button class="danger" @click="delServer(s.id)">✕</button>
                       </td>
                     </tr>
                   </tbody>
                 </table>
-                <button class="primary" @click="editServerInit(null)" style="margin-top:10px">+ New server</button>
-                <div v-if="editServer" style="margin-top:16px; border-top:1px solid var(--border); padding-top:10px">
-                  <h4>Edit server</h4>
+                <button class="primary" @click="editServerInit(null)" style="margin-top:10px">+ {{ $t('action.new_server') }}</button>
+
+                <div v-if="editServer" class="server-edit">
+                  <h4>{{ editServer.__edit ? $t('action.edit_server') : $t('action.new_server') }}</h4>
                   <div class="form-row"><label>ID</label><input type="text" v-model="editServer.id" :disabled="editServer.__edit"></div>
-                  <div class="form-row"><label>Name</label><input type="text" v-model="editServer.name"></div>
-                  <div class="form-row"><label>Base URL</label><input type="text" v-model="editServer.base_url"></div>
-                  <div class="form-row"><label>API Key (Hermes API_SERVER_KEY)</label><input type="password" v-model="editServer.api_key" placeholder="leave blank to keep existing"></div>
-                  <div class="form-row"><label>Max concurrent (server)</label><input type="number" v-model.number="editServer.max_concurrent"></div>
-                  <div class="form-row"><label><input type="checkbox" v-model="editServer.is_default"> Default server</label></div>
-                  <h4>Models</h4>
+                  <div class="form-row"><label>{{ $t('th.name') }}</label><input type="text" v-model="editServer.name"></div>
+                  <div class="form-row"><label>{{ $t('th.base_url') }}</label><input type="text" v-model="editServer.base_url"></div>
+                  <div class="form-row"><label>API Key (Hermes <code>API_SERVER_KEY</code>)</label><input type="password" v-model="editServer.api_key" :placeholder="$t('field.api_key_placeholder')"></div>
+                  <div class="form-row"><label>{{ $t('settings.max_concurrent_server') }}</label><input type="number" v-model.number="editServer.max_concurrent"></div>
+                  <div class="form-row"><label><input type="checkbox" v-model="editServer.is_default"> {{ $t('settings.default_server') }}</label></div>
+
+                  <h4>{{ $t('settings.models_title') }}</h4>
+                  <p class="helper">{{ $t('settings.models_helper') }}</p>
                   <table class="tbl">
-                    <thead><tr><th>Name</th><th>Default</th><th>Max concurrent</th><th></th></tr></thead>
+                    <thead><tr><th>{{ $t('th.name') }}</th><th>{{ $t('th.default') }}</th><th>{{ $t('settings.max_concurrent_profile') }}</th><th></th></tr></thead>
                     <tbody>
                       <tr v-for="(m, idx) in editServer.models" :key="idx">
-                        <td><input type="text" v-model="m.name"></td>
+                        <td><input type="text" v-model="m.name" placeholder="hermes-agent"></td>
                         <td><input type="checkbox" v-model="m.is_default"></td>
                         <td><input type="number" v-model.number="m.max_concurrent" style="width:80px"></td>
-                        <td><button class="danger" @click="editServer.models.splice(idx, 1)">✕</button></td>
+                        <td><button class="danger small" @click="editServer.models.splice(idx, 1)">✕</button></td>
                       </tr>
                     </tbody>
                   </table>
-                  <button @click="editServer.models.push({ name: '', max_concurrent: 5 })">+ Model</button>
-                  <div style="margin-top:12px">
-                    <button class="primary" @click="saveServer">{{ $t('action.save') }}</button>
+                  <button @click="editServer.models.push({ name: '', max_concurrent: 5 })">+ {{ $t('settings.add_profile') }}</button>
+                  <div class="edit-actions">
                     <button @click="editServer = null">{{ $t('action.cancel') }}</button>
+                    <button class="primary" @click="saveServer">{{ $t('action.save') }}</button>
                   </div>
                 </div>
               </div>
@@ -555,19 +645,19 @@ const SettingsModal = {
               <div v-if="tab==='access'" class="settings-section">
                 <h3>{{ $t('settings.nav.access') }}</h3>
                 <div v-if="!auth.enabled">
-                  <p>Password login is disabled. Enable it to protect the board.</p>
+                  <p>{{ $t('settings.auth_intro_off') }}</p>
                   <div class="form-row"><label>{{ $t('field.username') }}</label><input type="text" v-model="enableForm.username"></div>
                   <div class="form-row"><label>{{ $t('field.password') }}</label><input type="password" v-model="enableForm.password"></div>
                   <button class="primary" @click="enableAuth">{{ $t('action.enable_auth') }}</button>
                 </div>
                 <div v-else>
-                  <p>Logged in as <strong>{{ auth.username }}</strong>.</p>
+                  <p>{{ $t('settings.auth_intro_on', { u: auth.username }) }}</p>
                   <h4>{{ $t('action.change_password') }}</h4>
                   <div class="form-row"><label>{{ $t('field.old_password') }}</label><input type="password" v-model="oldPw"></div>
                   <div class="form-row"><label>{{ $t('field.new_password') }}</label><input type="password" v-model="newPw"></div>
                   <button class="primary" @click="changePw">{{ $t('action.change_password') }}</button>
-                  <hr style="margin:20px 0; border-color: var(--border)">
-                  <div class="form-row"><label>Current password (to disable)</label><input type="password" v-model="oldPw"></div>
+                  <hr>
+                  <div class="form-row"><label>{{ $t('field.current_password') }}</label><input type="password" v-model="oldPw"></div>
                   <button class="danger" @click="disableAuth">{{ $t('action.disable_auth') }}</button>
                 </div>
               </div>
@@ -578,20 +668,43 @@ const SettingsModal = {
                 <div class="form-row">
                   <label>{{ $t('settings.language') }}</label>
                   <select v-model="preferences.language">
-                    <option value="">(auto)</option>
+                    <option value="">{{ $t('settings.language_auto') }}</option>
                     <option value="en">English</option>
                     <option value="zh-CN">简体中文</option>
                   </select>
                 </div>
+                <div class="form-row">
+                  <label>{{ $t('settings.theme') }}</label>
+                  <select v-model="preferences.theme">
+                    <option value="dark">{{ $t('settings.theme_dark') }}</option>
+                    <option value="light">{{ $t('settings.theme_light') }}</option>
+                  </select>
+                </div>
                 <div class="form-row"><label><input type="checkbox" v-model="preferences.sound.enabled"> {{ $t('settings.sound_enabled') }}</label></div>
                 <div class="form-row">
-                  <label>{{ $t('settings.sound_volume') }}: {{ preferences.sound.volume }}</label>
+                  <label>{{ $t('settings.sound_volume') }}: {{ Math.round((preferences.sound.volume||0)*100) }}%</label>
                   <input type="range" min="0" max="1" step="0.05" v-model.number="preferences.sound.volume">
                 </div>
                 <div class="form-row"><label><input type="checkbox" v-model="preferences.sound.events.execute_start"> {{ $t('settings.sound_execute_start') }}</label></div>
                 <div class="form-row"><label><input type="checkbox" v-model="preferences.sound.events.needs_input"> {{ $t('settings.sound_needs_input') }}</label></div>
                 <div class="form-row"><label><input type="checkbox" v-model="preferences.sound.events.done"> {{ $t('settings.sound_done') }}</label></div>
                 <button class="primary" @click="savePrefs">{{ $t('action.save') }}</button>
+              </div>
+
+              <!-- Integrations (Aliyun OSS) -->
+              <div v-if="tab==='integrations'" class="settings-section">
+                <h3>{{ $t('settings.nav.integrations') }}</h3>
+                <p class="helper">{{ $t('settings.oss_helper') }}</p>
+                <div class="form-row"><label><input type="checkbox" v-model="oss.enabled"> {{ $t('settings.oss_enable') }}</label></div>
+                <div class="form-row"><label>Endpoint</label><input type="text" v-model="oss.endpoint" placeholder="oss-cn-hangzhou.aliyuncs.com"></div>
+                <div class="form-row"><label>Bucket</label><input type="text" v-model="oss.bucket"></div>
+                <div class="form-row"><label>AccessKey ID</label><input type="text" v-model="oss.access_key_id"></div>
+                <div class="form-row"><label>AccessKey Secret</label>
+                  <input type="password" v-model="ossNewSecret" :placeholder="settings.oss_has_secret ? $t('settings.oss_keep_secret') : ''">
+                </div>
+                <div class="form-row"><label>{{ $t('settings.oss_prefix') }}</label><input type="text" v-model="oss.path_prefix" placeholder="hermes-taskboard/"></div>
+                <div class="form-row"><label>{{ $t('settings.oss_public_base') }}</label><input type="text" v-model="oss.public_base" placeholder="https://cdn.example.com/"></div>
+                <button class="primary" @click="saveOSS">{{ $t('action.save') }}</button>
               </div>
 
               <!-- Archive -->
@@ -611,7 +724,11 @@ const SettingsModal = {
       if (s) {
         this.editServer = { ...s, api_key: '', __edit: true, models: (s.models || []).map((m) => ({ ...m })) };
       } else {
-        this.editServer = { id: '', name: '', base_url: 'http://127.0.0.1:8642', api_key: '', is_default: this.servers.length === 0, max_concurrent: 10, models: [{ name: 'hermes-agent', is_default: true, max_concurrent: 5 }] };
+        this.editServer = {
+          id: '', name: '', base_url: 'http://127.0.0.1:8642',
+          api_key: '', is_default: this.servers.length === 0, max_concurrent: 10,
+          models: [{ name: 'hermes-agent', is_default: true, max_concurrent: 5 }],
+        };
       }
     },
     async saveServer() {
@@ -626,40 +743,61 @@ const SettingsModal = {
         if (s.__edit) await api('/api/servers/' + s.id, { method: 'PATCH', body: payload });
         else await api('/api/servers', { method: 'POST', body: payload });
         this.editServer = null;
-        await refreshAll();
+        await refreshServers();
         toast(t('toast.saved'));
       } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
     async delServer(id) {
-      if (!confirm('Delete server ' + id + '?')) return;
-      try { await api('/api/servers/' + id, { method: 'DELETE' }); await refreshAll(); } catch (e) { toast(e.message, 'error'); }
+      if (!confirm(t('confirm.delete_server', { id }))) return;
+      try { await api('/api/servers/' + id, { method: 'DELETE' }); await refreshServers(); }
+      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
     async testServer(id) {
       try {
         const r = await api('/api/servers/' + id + '/test', { method: 'POST' });
-        toast(r.ok ? 'OK' : ('Failed: ' + (r.error || '')));
-      } catch (e) { toast(e.message, 'error'); }
+        toast(r.ok ? t('toast.ok') : t('toast.error', { err: r.error || '' }), r.ok ? 'info' : 'error');
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
     async saveSettings() {
-      try { await api('/api/settings', { method: 'PUT', body: this.settings }); toast(t('toast.saved')); await refreshAll(); } catch (e) { toast(e.message, 'error'); }
+      try { await api('/api/settings', { method: 'PUT', body: this.settings }); toast(t('toast.saved')); await refreshSettings(); }
+      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
     async savePrefs() {
       try {
         await api('/api/preferences', { method: 'PUT', body: this.preferences });
         if (this.preferences.sound) setSoundPrefs(this.preferences.sound);
         if (this.preferences.language) await setLanguage(this.preferences.language);
+        applyTheme(this.preferences.theme || 'dark');
         toast(t('toast.saved'));
-      } catch (e) { toast(e.message, 'error'); }
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
-    async reloadConfig() { try { await api('/api/config/reload', { method: 'POST' }); await refreshAll(); toast(t('toast.saved')); } catch (e) { toast(e.message, 'error'); } },
+    async saveOSS() {
+      const payload = { oss: { ...this.oss, access_key_secret: this.ossNewSecret || '' } };
+      try {
+        await api('/api/settings', { method: 'PUT', body: payload });
+        this.ossNewSecret = '';
+        await refreshSettings();
+        this.oss = Object.assign({}, this.settings.oss || {});
+        toast(t('toast.saved'));
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+    async reloadConfig() {
+      try { await api('/api/config/reload', { method: 'POST' }); await refreshAll(); toast(t('toast.saved')); }
+      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
     async enableAuth() {
-      try { await api('/api/auth/enable', { method: 'POST', body: this.enableForm }); await refreshAuth(); toast(t('toast.saved')); } catch (e) { toast(e.message, 'error'); }
+      try { await api('/api/auth/enable', { method: 'POST', body: this.enableForm }); await refreshAuth(); toast(t('toast.saved')); }
+      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
     async disableAuth() {
-      try { await api('/api/auth/disable', { method: 'POST', body: { password: this.oldPw } }); await refreshAuth(); toast(t('toast.saved')); } catch (e) { toast(e.message, 'error'); }
+      try { await api('/api/auth/disable', { method: 'POST', body: { password: this.oldPw } }); await refreshAuth(); toast(t('toast.saved')); }
+      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
     async changePw() {
-      try { await api('/api/auth/change', { method: 'POST', body: { old_password: this.oldPw, new_password: this.newPw } }); this.oldPw = ''; this.newPw = ''; toast(t('toast.saved')); } catch (e) { toast(e.message, 'error'); }
+      try {
+        await api('/api/auth/change', { method: 'POST', body: { old_password: this.oldPw, new_password: this.newPw } });
+        this.oldPw = ''; this.newPw = ''; toast(t('toast.saved'));
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
   },
 };
@@ -672,9 +810,9 @@ const Login = {
         <h1>{{ $t('login.title') }}</h1>
         <div class="form-row"><label>{{ $t('field.username') }}</label><input type="text" v-model="u" autofocus></div>
         <div class="form-row"><label>{{ $t('field.password') }}</label><input type="password" v-model="p" @keyup.enter="submit"></div>
-        <p v-if="err" style="color:var(--danger)">{{ err }}</p>
+        <p v-if="err" class="error-line">{{ err }}</p>
         <button class="primary" style="width:100%" @click="submit">{{ $t('login.submit') }}</button>
-        <p style="color:var(--text-dim); font-size:12px; margin-top:10px">{{ $t('login.first_time_hint') }}</p>
+        <p class="hint">{{ $t('login.first_time_hint') }}</p>
       </div>
     </div>
   `,
@@ -690,23 +828,45 @@ const Login = {
 
 // ---------------- Root App ----------------
 
+const drag = createDragController({
+  async onDrop({ taskId, toStatus, beforeId, afterId }) {
+    if (!toStatus) return;
+    try {
+      const body = { to: toStatus, reason: 'drag', before_id: beforeId || '', after_id: afterId || '' };
+      await api('/api/tasks/' + taskId + '/transition', { method: 'POST', body });
+      await refreshTasks();
+    } catch (e) {
+      if (e.body && e.body.code === 'concurrency_limit') {
+        toast(t('toast.concurrency_limit', { level: e.body.level }), 'warning');
+      } else {
+        toast(t('toast.error', { err: e.message }), 'error');
+      }
+      await refreshTasks();
+    }
+  },
+});
+
 const App = {
   components: { Column, TaskModal, NewTaskModal, SettingsModal, Login },
-  data() { return { state, search: '', showNew: false, route: location.pathname, columns: COLUMNS }; },
+  provide: { drag },
+  data() { return { state, search: '', columns: COLUMNS }; },
   computed: {
-    isLogin() { return this.route === '/login'; },
+    isLogin() { return state.route === '/login'; },
     grouped() {
       const out = {};
       for (const c of COLUMNS) out[c] = [];
-      for (const t of state.tasks) {
-        if (this.search && !t.title.toLowerCase().includes(this.search.toLowerCase()) &&
-            !((t.description_excerpt || '').toLowerCase().includes(this.search.toLowerCase()))) continue;
-        if (!out[t.status]) out[t.status] = [];
-        out[t.status].push(t);
+      const q = this.search.trim().toLowerCase();
+      for (const task of state.tasks) {
+        if (q && !task.title.toLowerCase().includes(q) && !(task.description_excerpt || '').toLowerCase().includes(q)) continue;
+        (out[task.status] || (out[task.status] = [])).push(task);
       }
+      // The backend returns rows in (status, position ASC) order, so just keep
+      // the array order. Don't re-sort here — that's issue #8.
       return out;
     },
     isMobile() { return window.innerWidth < 768; },
+    themeIsLight() { return state.preferences.theme === 'light'; },
+    langLabel() { return currentLang.value === 'zh-CN' ? '中' : 'EN'; },
   },
   template: `
     <div v-if="isLogin"><login></login></div>
@@ -715,27 +875,43 @@ const App = {
         <h1><span class="logo">⧉</span> {{ $t('app.title') }}</h1>
         <div class="spacer"></div>
         <input type="search" v-model="search" :placeholder="$t('placeholder.search')">
-        <button @click="showNew = true">+ {{ $t('action.new_task') }}</button>
-        <button @click="state.showSettings = true">⚙ {{ $t('action.settings') }}</button>
-        <button @click="toggleLang">🌐 {{ curLang() === 'zh-CN' ? '中' : 'EN' }}</button>
+        <button class="icon" :title="$t('action.toggle_theme')" @click="toggleTheme">
+          {{ themeIsLight ? '☀' : '☾' }}
+        </button>
+        <button class="icon" :title="$t('action.toggle_lang')" @click="toggleLang">
+          🌐 {{ langLabel }}
+        </button>
+        <button @click="openSettings">⚙ {{ $t('action.settings') }}</button>
         <button v-if="state.auth.enabled && state.auth.logged_in" @click="logout">{{ $t('action.logout') }}</button>
       </div>
+
       <div class="board-tabs" v-if="isMobile">
         <button v-for="c in columns" :key="c" :class="{active: c === state.mobileColumn}" @click="state.mobileColumn = c">
           {{ $t('col.' + c) }}
         </button>
       </div>
+
       <div class="board">
         <column v-for="c in columns" :key="c"
                 :class="{'hidden-mobile': isMobile && c !== state.mobileColumn}"
                 :status="c" :tasks="grouped[c] || []"
-                @drop-task="onDrop"
+                :header-action="c === 'draft'"
                 @open-task="id => state.openTaskId = id">
+          <template #action v-if="c === 'draft'">
+            <button class="primary small" @click="state.showNewTask = true">+ {{ $t('action.new_task') }}</button>
+          </template>
         </column>
       </div>
-      <task-modal v-if="state.openTaskId" :task-id="state.openTaskId" @close="state.openTaskId = null" @refresh="doRefresh"></task-modal>
-      <new-task-modal v-if="showNew" @close="showNew = false" @created="onCreated"></new-task-modal>
-      <settings-modal v-if="state.showSettings" @close="state.showSettings = false"></settings-modal>
+
+      <task-modal v-if="state.openTaskId"
+                  :task-id="state.openTaskId"
+                  @close="state.openTaskId = null"
+                  @refresh="doRefresh"></task-modal>
+      <new-task-modal v-if="state.showNewTask"
+                      @close="state.showNewTask = false"
+                      @created="onCreated"></new-task-modal>
+      <settings-modal v-if="state.showSettings"
+                      @close="closeSettings"></settings-modal>
 
       <div class="toasts">
         <div v-for="tt in state.toasts" :key="tt.id" class="toast" :class="tt.kind">{{ tt.msg }}</div>
@@ -745,32 +921,28 @@ const App = {
   mounted() {
     this.subscribeBoard();
     window.addEventListener('resize', () => this.$forceUpdate());
-    onLanguageChange(() => this.$forceUpdate());
   },
   methods: {
-    curLang() { return currentLanguage(); },
+    openSettings() {
+      // Ensure stale state from a prior open doesn't prevent reopening (#12).
+      // We assign false → true so Vue always sees the transition.
+      state.showSettings = false;
+      this.$nextTick(() => { state.showSettings = true; });
+    },
+    closeSettings() { state.showSettings = false; },
     async toggleLang() {
-      const next = currentLanguage() === 'zh-CN' ? 'en' : 'zh-CN';
+      const next = currentLang.value === 'zh-CN' ? 'en' : 'zh-CN';
       await setLanguage(next);
+      state.preferences.language = next;
+      try { await api('/api/preferences', { method: 'PUT', body: state.preferences }); } catch {}
     },
+    toggleTheme() { saveTheme(state.preferences.theme === 'light' ? 'dark' : 'light'); },
     async logout() { await api('/api/auth/logout', { method: 'POST' }); location.href = '/login'; },
-    async onDrop({ taskId, to }) {
-      try {
-        await api('/api/tasks/' + taskId + '/transition', { method: 'POST', body: { to, reason: 'drag' } });
-        await refreshAll();
-      } catch (e) {
-        if (e.body && e.body.code === 'concurrency_limit') {
-          toast(t('toast.concurrency_limit', { level: e.body.level }), 'warning');
-        } else {
-          toast(t('toast.error', { err: e.message }), 'error');
-        }
-      }
-    },
-    onCreated() { refreshAll(); },
-    async doRefresh() { await refreshAll(); },
+    onCreated() { refreshTasks(); },
+    doRefresh() { refreshAll(); },
     subscribeBoard() {
       sseSubscribe('/api/stream/board', (evt) => {
-        refreshAll();
+        refreshTasks();
         if (!evt) return;
         if (evt.state === 'running') playSound('execute_start');
         if (evt.state === 'needs_input') playSound('needs_input');
@@ -784,10 +956,10 @@ const App = {
   await initI18n();
   await refreshAuth();
   await refreshAll();
+  applyTheme(state.preferences.theme || 'dark');
 
   const app = createApp(App);
-  // expose state & $t globally
+  // Reactive $t that tracks currentLang automatically.
   app.config.globalProperties.$t = t;
-  app.config.globalProperties.$root_state = state;
   app.mount('#app');
 })();

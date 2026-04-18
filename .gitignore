@@ -4,6 +4,8 @@
 # Go
 /bin/
 /dist/
+/taskboard
+/hermes-taskboard
 *.exe
 *.test
 *.out

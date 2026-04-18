@@ -40,12 +40,18 @@ func (s *Store) CreateTask(ctx context.Context, t *Task) error {
 		return err
 	}
 	defer tx.Rollback()
+	// Position: max + 1024 within target column so new cards land at the end.
+	var maxPos sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(position) FROM tasks WHERE status=?`, string(t.Status)).Scan(&maxPos); err != nil {
+		return err
+	}
+	t.Position = maxPos.Int64 + 1024
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tasks(id,title,status,priority,trigger_mode,preferred_server,preferred_model,created_at,updated_at,description_excerpt)
-         VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO tasks(id,title,status,priority,trigger_mode,preferred_server,preferred_model,created_at,updated_at,description_excerpt,position)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		t.ID, t.Title, string(t.Status), t.Priority, string(t.TriggerMode),
 		nullStr(t.PreferredServer), nullStr(t.PreferredModel),
-		now.UnixMilli(), now.UnixMilli(), t.DescriptionExcerpt,
+		now.UnixMilli(), now.UnixMilli(), t.DescriptionExcerpt, t.Position,
 	); err != nil {
 		return err
 	}
@@ -95,9 +101,19 @@ func (s *Store) UpdateTask(ctx context.Context, t *Task) error {
 }
 
 func (s *Store) SetTaskStatus(ctx context.Context, id string, to TaskStatus) error {
-	res, err := s.DB.ExecContext(ctx,
-		`UPDATE tasks SET status=?, updated_at=? WHERE id=?`,
-		string(to), time.Now().UnixMilli(), id,
+	// When status changes, park at end of the target column (position = max+1024).
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var maxPos sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(position) FROM tasks WHERE status=?`, string(to)).Scan(&maxPos); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET status=?, updated_at=?, position=? WHERE id=?`,
+		string(to), time.Now().UnixMilli(), maxPos.Int64+1024, id,
 	)
 	if err != nil {
 		return err
@@ -106,7 +122,129 @@ func (s *Store) SetTaskStatus(ctx context.Context, id string, to TaskStatus) err
 	if n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return tx.Commit()
+}
+
+// MoveTask relocates a task into `to` column at a specific slot:
+//   - afterID empty, beforeID empty → end of column
+//   - afterID empty, beforeID set   → before given task
+//   - afterID set,   beforeID empty → after given task
+//   - afterID set,   beforeID set   → midpoint between the two
+// New position is chosen between neighbors; if neighbors collide, renumbers
+// the column with 1024-spaced positions to recover.
+func (s *Store) MoveTask(ctx context.Context, id string, to TaskStatus, afterID, beforeID string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	type row struct {
+		id  string
+		pos int64
+	}
+	var neighbors []row
+	rows, err := tx.QueryContext(ctx, `SELECT id, position FROM tasks WHERE status=? AND id != ? ORDER BY position ASC`, string(to), id)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.pos); err != nil {
+			rows.Close()
+			return err
+		}
+		neighbors = append(neighbors, r)
+	}
+	rows.Close()
+
+	findIdx := func(tid string) int {
+		for i, n := range neighbors {
+			if n.id == tid {
+				return i
+			}
+		}
+		return -1
+	}
+
+	var lo, hi int64
+	var haveLo, haveHi bool
+	if afterID != "" {
+		if i := findIdx(afterID); i >= 0 {
+			lo = neighbors[i].pos
+			haveLo = true
+			if i+1 < len(neighbors) {
+				hi = neighbors[i+1].pos
+				haveHi = true
+			}
+		}
+	} else if beforeID != "" {
+		if i := findIdx(beforeID); i >= 0 {
+			hi = neighbors[i].pos
+			haveHi = true
+			if i > 0 {
+				lo = neighbors[i-1].pos
+				haveLo = true
+			}
+		}
+	} else {
+		// End of column.
+		if len(neighbors) > 0 {
+			lo = neighbors[len(neighbors)-1].pos
+			haveLo = true
+		}
+	}
+
+	var newPos int64
+	switch {
+	case haveLo && haveHi:
+		if hi-lo <= 1 {
+			// collision — renumber column with 1024 spacing to recover.
+			for i, n := range neighbors {
+				if _, err := tx.ExecContext(ctx, `UPDATE tasks SET position=? WHERE id=?`, int64(i+1)*1024, n.id); err != nil {
+					return err
+				}
+			}
+			// Recompute neighbors' positions.
+			for i := range neighbors {
+				neighbors[i].pos = int64(i+1) * 1024
+			}
+			if afterID != "" {
+				i := findIdx(afterID)
+				newPos = neighbors[i].pos + 512
+			} else if beforeID != "" {
+				i := findIdx(beforeID)
+				if i > 0 {
+					newPos = (neighbors[i-1].pos + neighbors[i].pos) / 2
+				} else {
+					newPos = neighbors[i].pos - 512
+				}
+			} else {
+				newPos = neighbors[len(neighbors)-1].pos + 1024
+			}
+		} else {
+			newPos = (lo + hi) / 2
+		}
+	case haveLo:
+		newPos = lo + 1024
+	case haveHi:
+		newPos = hi - 1024
+	default:
+		newPos = 1024
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET status=?, position=?, updated_at=? WHERE id=?`,
+		string(to), newPos, time.Now().UnixMilli(), id,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
 }
 
 func (s *Store) DeleteTask(ctx context.Context, id string) ([]string, error) {
@@ -151,7 +289,7 @@ func (s *Store) DeleteTask(ctx context.Context, id string) ([]string, error) {
 // GetTask loads a task + tags + deps (description still in fsstore).
 func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
 	row := s.DB.QueryRowContext(ctx,
-		`SELECT id,title,status,priority,trigger_mode,preferred_server,preferred_model,created_at,updated_at,description_excerpt
+		`SELECT id,title,status,priority,trigger_mode,preferred_server,preferred_model,created_at,updated_at,description_excerpt,position
          FROM tasks WHERE id=?`, id)
 	t, err := scanTask(row.Scan)
 	if err != nil {
@@ -184,7 +322,7 @@ type TaskFilter struct {
 
 func (s *Store) ListTasks(ctx context.Context, f TaskFilter) ([]*Task, error) {
 	sb := &strings.Builder{}
-	sb.WriteString(`SELECT t.id,t.title,t.status,t.priority,t.trigger_mode,t.preferred_server,t.preferred_model,t.created_at,t.updated_at,t.description_excerpt FROM tasks t`)
+	sb.WriteString(`SELECT t.id,t.title,t.status,t.priority,t.trigger_mode,t.preferred_server,t.preferred_model,t.created_at,t.updated_at,t.description_excerpt,t.position FROM tasks t`)
 	args := []any{}
 	where := []string{}
 	if f.Tag != "" {
@@ -212,7 +350,10 @@ func (s *Store) ListTasks(ctx context.Context, f TaskFilter) ([]*Task, error) {
 	if len(where) > 0 {
 		sb.WriteString(" WHERE " + strings.Join(where, " AND "))
 	}
-	sb.WriteString(" ORDER BY t.priority ASC, t.updated_at DESC")
+	// Preserve the user's per-column drag order (position ASC). `status` is
+	// the primary sort so the backend emits cards grouped by column even
+	// though the frontend groups independently.
+	sb.WriteString(" ORDER BY t.status, t.position ASC")
 	if f.Limit > 0 {
 		sb.WriteString(fmt.Sprintf(" LIMIT %d OFFSET %d", f.Limit, f.Offset))
 	}
@@ -508,13 +649,14 @@ type scanner func(dest ...any) error
 
 func scanTask(scan scanner) (*Task, error) {
 	var (
-		t               Task
+		t                Task
 		createdAt, updAt int64
 		prefSrv, prefMdl sql.NullString
 		excerpt          sql.NullString
+		position         int64
 	)
 	var status, trigger string
-	if err := scan(&t.ID, &t.Title, &status, &t.Priority, &trigger, &prefSrv, &prefMdl, &createdAt, &updAt, &excerpt); err != nil {
+	if err := scan(&t.ID, &t.Title, &status, &t.Priority, &trigger, &prefSrv, &prefMdl, &createdAt, &updAt, &excerpt, &position); err != nil {
 		return nil, err
 	}
 	t.Status = TaskStatus(status)
@@ -524,6 +666,7 @@ func scanTask(scan scanner) (*Task, error) {
 	t.DescriptionExcerpt = excerpt.String
 	t.CreatedAt = time.UnixMilli(createdAt)
 	t.UpdatedAt = time.UnixMilli(updAt)
+	t.Position = position
 	t.Tags = []string{}
 	t.Dependencies = []string{}
 	return &t, nil

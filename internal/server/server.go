@@ -20,19 +20,21 @@ import (
 	"github.com/ahkimkoo/hermes-taskboard/internal/sse"
 	"github.com/ahkimkoo/hermes-taskboard/internal/store"
 	"github.com/ahkimkoo/hermes-taskboard/internal/store/fsstore"
+	"github.com/ahkimkoo/hermes-taskboard/internal/uploads"
 )
 
 type Server struct {
-	Cfg    *config.Store
-	Store  *store.Store
-	FS     *fsstore.FS
-	Pool   *hermes.Pool
-	Hub    *sse.Hub
-	Board  *board.Service
-	Runner *attempt.Runner
-	Auth   *auth.Service
-	Logger *slog.Logger
-	Web    fs.FS
+	Cfg     *config.Store
+	Store   *store.Store
+	FS      *fsstore.FS
+	Pool    *hermes.Pool
+	Hub     *sse.Hub
+	Board   *board.Service
+	Runner  *attempt.Runner
+	Auth    *auth.Service
+	Logger  *slog.Logger
+	Web     fs.FS
+	DataDir string
 
 	mu   sync.Mutex
 	http atomic.Pointer[http.Server]
@@ -41,12 +43,27 @@ type Server struct {
 func New(
 	cfg *config.Store, st *store.Store, fs *fsstore.FS, pool *hermes.Pool,
 	hub *sse.Hub, b *board.Service, r *attempt.Runner, a *auth.Service,
-	logger *slog.Logger, web embed.FS,
+	logger *slog.Logger, web embed.FS, dataDir string,
 ) *Server {
 	sub, _ := fsGetSub(web, "web")
 	return &Server{
 		Cfg: cfg, Store: st, FS: fs, Pool: pool, Hub: hub, Board: b, Runner: r, Auth: a,
-		Logger: logger, Web: sub,
+		Logger: logger, Web: sub, DataDir: dataDir,
+	}
+}
+
+// uploadsService builds a per-request uploads.Service from current config.
+func (s *Server) uploadsService() *uploads.Service {
+	c := s.Cfg.Snapshot()
+	return &uploads.Service{
+		LocalDir:       s.DataDir + "/uploads",
+		OSSEnabled:     c.OSS.Enabled && c.OSS.AccessKeyID != "" && (c.OSS.AccessKeySecret != "" || c.OSS.AccessKeySecretEnc != ""),
+		OSSEndpoint:    c.OSS.Endpoint,
+		OSSBucket:      c.OSS.Bucket,
+		OSSAccessKeyID: c.OSS.AccessKeyID,
+		OSSSecret:      c.OSS.DecryptedAccessKeySecret(s.Cfg.Secret()),
+		OSSPathPrefix:  c.OSS.PathPrefix,
+		OSSPublicBase:  c.OSS.PublicBase,
 	}
 }
 
@@ -102,6 +119,10 @@ func (s *Server) Handler() http.Handler {
 	// --- streaming ---
 	mux.HandleFunc("/api/stream/board", s.hStreamBoard)
 	mux.HandleFunc("/api/stream/attempt/", s.hStreamAttempt)
+
+	// --- uploads ---
+	mux.HandleFunc("/api/uploads", s.hUploadFile)
+	mux.HandleFunc("/uploads/", s.hUploadServe)
 
 	// --- misc ---
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +231,7 @@ func isPublic(r *http.Request) bool {
 		strings.HasPrefix(p, "/api/auth/enable") {
 		return true
 	}
-	// static / web assets
+	// static / web assets + locally-served uploads
 	if !strings.HasPrefix(p, "/api/") {
 		return true
 	}

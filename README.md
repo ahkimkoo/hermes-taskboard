@@ -156,7 +156,12 @@ Frontend sources live at `internal/webfs/web/` and are served straight out of th
 
 - `go build ./...` — static checks.
 - `./docs/smoke.sh` — API smoke test (create → transition → delete).
-- Browser check — open the UI, create a task, click Start, watch events stream. The screenshots under `docs/screenshots/` were captured with Playwright against a real Hermes instance running on the same host.
+- **`tests/ui_test.py`** — Playwright UI regression suite. Covers every promise documented in the CHANGELOG: drag UX, ordering, theme toggle, i18n purity, settings modal re-open, attempt list, delete-only-in-archive, rich-text editor, and column subtitles. Run against any live server:
+  ```bash
+  pip install playwright && playwright install chromium
+  TASKBOARD=http://127.0.0.1:1900 python3 tests/ui_test.py
+  ```
+  Every test begins with a fresh `page.goto` reload so ordering between cases is irrelevant.
 
 ### License
 
@@ -308,9 +313,14 @@ go build -o bin/tb ./cmd/taskboard
 
 ### 测试
 
-- `go build ./...`：类型与静态检查
-- `./docs/smoke.sh`：API 冒烟测试（创建 → 迁移 → 删除 一个循环）
-- 浏览器冒烟：打开 UI → 新建任务 → 点开始 → 观察 SSE 事件流。`docs/screenshots/` 下的截图都是用 Playwright 对真实 Hermes 实例跑出来的。
+- `go build ./...`：类型 / 静态检查
+- `./docs/smoke.sh`：后端 API 冒烟（创建 → 迁移 → 删除 一轮）
+- **`tests/ui_test.py`**：Playwright UI 回归套件。逐条覆盖 CHANGELOG 里列的改动：拖拽手感、卡片排序、主题切换、中英纯净切换、设置窗反复打开、尝试列表折叠、归档才能删除、富文本编辑器、列副标题……每次改完界面都应该跑一下：
+  ```bash
+  pip install playwright && playwright install chromium
+  TASKBOARD=http://127.0.0.1:1900 python3 tests/ui_test.py
+  ```
+  每个 case 都会先 `page.goto` 一次，保证不同 case 之间没有状态残留。
 
 ### License
 
