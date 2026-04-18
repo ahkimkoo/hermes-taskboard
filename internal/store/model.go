@@ -1,0 +1,84 @@
+package store
+
+import "time"
+
+type TaskStatus string
+
+const (
+	StatusDraft   TaskStatus = "draft"
+	StatusPlan    TaskStatus = "plan"
+	StatusExecute TaskStatus = "execute"
+	StatusVerify  TaskStatus = "verify"
+	StatusDone    TaskStatus = "done"
+	StatusArchive TaskStatus = "archive"
+)
+
+type TriggerMode string
+
+const (
+	TriggerAuto   TriggerMode = "auto"
+	TriggerManual TriggerMode = "manual"
+)
+
+type AttemptState string
+
+const (
+	AttemptQueued     AttemptState = "queued"
+	AttemptRunning    AttemptState = "running"
+	AttemptNeedsInput AttemptState = "needs_input"
+	AttemptCompleted  AttemptState = "completed"
+	AttemptFailed     AttemptState = "failed"
+	AttemptCancelled  AttemptState = "cancelled"
+)
+
+// Task is the SQL row + enriched tags/deps (description loaded separately via fsstore).
+type Task struct {
+	ID                 string      `json:"id"`
+	Title              string      `json:"title"`
+	Description        string      `json:"description,omitempty"` // loaded from fsstore
+	Status             TaskStatus  `json:"status"`
+	Priority           int         `json:"priority"`
+	TriggerMode        TriggerMode `json:"trigger_mode"`
+	PreferredServer    string      `json:"preferred_server,omitempty"`
+	PreferredModel     string      `json:"preferred_model,omitempty"`
+	CreatedAt          time.Time   `json:"created_at"`
+	UpdatedAt          time.Time   `json:"updated_at"`
+	DescriptionExcerpt string      `json:"description_excerpt,omitempty"`
+	Tags               []string    `json:"tags"`
+	Dependencies       []string    `json:"dependencies"`
+	AttemptCount       int         `json:"attempt_count"`
+	ActiveAttempts     int         `json:"active_attempts"`
+}
+
+type Tag struct {
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+// Attempt mirrors the DB row.
+type Attempt struct {
+	ID        string       `json:"id"`
+	TaskID    string       `json:"task_id"`
+	ServerID  string       `json:"server_id"`
+	Model     string       `json:"model"`
+	State     AttemptState `json:"state"`
+	StartedAt *time.Time   `json:"started_at,omitempty"`
+	EndedAt   *time.Time   `json:"ended_at,omitempty"`
+}
+
+// AttemptMeta is the JSON stored at data/attempt/{id}/meta.json.
+type AttemptMeta struct {
+	ID       string          `json:"id"`
+	TaskID   string          `json:"task_id"`
+	ServerID string          `json:"server_id"`
+	Model    string          `json:"model"`
+	Session  AttemptSession  `json:"session"`
+	Summary  string          `json:"summary,omitempty"`
+}
+
+type AttemptSession struct {
+	ConversationID   string   `json:"conversation_id"`
+	Runs             []string `json:"runs"`
+	CurrentRunID     string   `json:"current_run_id,omitempty"`
+	LatestResponseID string   `json:"latest_response_id,omitempty"`
+}

@@ -1,0 +1,556 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// Store is the repository facade. All SQL access goes through here.
+type Store struct {
+	DB *sql.DB
+}
+
+func New(db *sql.DB) *Store { return &Store{DB: db} }
+
+var ErrNotFound = errors.New("not found")
+
+// ----- tasks -----
+
+func (s *Store) CreateTask(ctx context.Context, t *Task) error {
+	if t.ID == "" {
+		return errors.New("task id required")
+	}
+	if t.Status == "" {
+		t.Status = StatusDraft
+	}
+	if t.Priority == 0 {
+		t.Priority = 3
+	}
+	if t.TriggerMode == "" {
+		t.TriggerMode = TriggerAuto
+	}
+	now := time.Now()
+	t.CreatedAt, t.UpdatedAt = now, now
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO tasks(id,title,status,priority,trigger_mode,preferred_server,preferred_model,created_at,updated_at,description_excerpt)
+         VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		t.ID, t.Title, string(t.Status), t.Priority, string(t.TriggerMode),
+		nullStr(t.PreferredServer), nullStr(t.PreferredModel),
+		now.UnixMilli(), now.UnixMilli(), t.DescriptionExcerpt,
+	); err != nil {
+		return err
+	}
+	if err := writeTags(ctx, tx, t.ID, t.Tags); err != nil {
+		return err
+	}
+	if err := writeDeps(ctx, tx, t.ID, t.Dependencies); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) UpdateTask(ctx context.Context, t *Task) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	t.UpdatedAt = now
+	res, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET title=?,priority=?,trigger_mode=?,preferred_server=?,preferred_model=?,updated_at=?,description_excerpt=? WHERE id=?`,
+		t.Title, t.Priority, string(t.TriggerMode),
+		nullStr(t.PreferredServer), nullStr(t.PreferredModel),
+		now.UnixMilli(), t.DescriptionExcerpt, t.ID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM task_tags WHERE task_id=?`, t.ID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM task_deps WHERE task_id=?`, t.ID); err != nil {
+		return err
+	}
+	if err := writeTags(ctx, tx, t.ID, t.Tags); err != nil {
+		return err
+	}
+	if err := writeDeps(ctx, tx, t.ID, t.Dependencies); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) SetTaskStatus(ctx context.Context, id string, to TaskStatus) error {
+	res, err := s.DB.ExecContext(ctx,
+		`UPDATE tasks SET status=?, updated_at=? WHERE id=?`,
+		string(to), time.Now().UnixMilli(), id,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) DeleteTask(ctx context.Context, id string) ([]string, error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	// Collect attempt ids first so caller can clean FS.
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM attempts WHERE task_id=?`, id)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var aid string
+		if err := rows.Scan(&aid); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, aid)
+	}
+	rows.Close()
+
+	for _, q := range []string{
+		`DELETE FROM task_tags WHERE task_id=?`,
+		`DELETE FROM task_deps WHERE task_id=?`,
+		`DELETE FROM task_deps WHERE depends_on=?`,
+		`DELETE FROM attempts WHERE task_id=?`,
+		`DELETE FROM tasks WHERE id=?`,
+	} {
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// GetTask loads a task + tags + deps (description still in fsstore).
+func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
+	row := s.DB.QueryRowContext(ctx,
+		`SELECT id,title,status,priority,trigger_mode,preferred_server,preferred_model,created_at,updated_at,description_excerpt
+         FROM tasks WHERE id=?`, id)
+	t, err := scanTask(row.Scan)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if err := s.loadTaskTagsDeps(ctx, t); err != nil {
+		return nil, err
+	}
+	cnt, active, err := s.attemptCounts(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	t.AttemptCount, t.ActiveAttempts = cnt, active
+	return t, nil
+}
+
+// ListTasks applies filters and returns tasks sorted by priority asc, updated_at desc.
+type TaskFilter struct {
+	Status   string
+	Tag      string
+	Query    string
+	Server   string
+	Model    string
+	Limit    int
+	Offset   int
+}
+
+func (s *Store) ListTasks(ctx context.Context, f TaskFilter) ([]*Task, error) {
+	sb := &strings.Builder{}
+	sb.WriteString(`SELECT t.id,t.title,t.status,t.priority,t.trigger_mode,t.preferred_server,t.preferred_model,t.created_at,t.updated_at,t.description_excerpt FROM tasks t`)
+	args := []any{}
+	where := []string{}
+	if f.Tag != "" {
+		sb.WriteString(` JOIN task_tags tt ON tt.task_id=t.id`)
+		where = append(where, "tt.tag=?")
+		args = append(args, f.Tag)
+	}
+	if f.Status != "" {
+		where = append(where, "t.status=?")
+		args = append(args, f.Status)
+	}
+	if f.Server != "" {
+		where = append(where, "t.preferred_server=?")
+		args = append(args, f.Server)
+	}
+	if f.Model != "" {
+		where = append(where, "t.preferred_model=?")
+		args = append(args, f.Model)
+	}
+	if f.Query != "" {
+		where = append(where, "(t.title LIKE ? OR COALESCE(t.description_excerpt,'') LIKE ?)")
+		q := "%" + f.Query + "%"
+		args = append(args, q, q)
+	}
+	if len(where) > 0 {
+		sb.WriteString(" WHERE " + strings.Join(where, " AND "))
+	}
+	sb.WriteString(" ORDER BY t.priority ASC, t.updated_at DESC")
+	if f.Limit > 0 {
+		sb.WriteString(fmt.Sprintf(" LIMIT %d OFFSET %d", f.Limit, f.Offset))
+	}
+	rows, err := s.DB.QueryContext(ctx, sb.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []*Task
+	for rows.Next() {
+		t, err := scanTask(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// populate tags/deps/attempt counts
+	for _, t := range list {
+		if err := s.loadTaskTagsDeps(ctx, t); err != nil {
+			return nil, err
+		}
+		cnt, active, err := s.attemptCounts(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		t.AttemptCount, t.ActiveAttempts = cnt, active
+	}
+	return list, nil
+}
+
+func (s *Store) TaskIDs(ctx context.Context, status TaskStatus) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM tasks WHERE status=?`, string(status))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// AllDependenciesDone returns whether every dep of taskID is status=done.
+func (s *Store) AllDependenciesDone(ctx context.Context, taskID string) (bool, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT COUNT(*) FROM task_deps d
+         JOIN tasks t ON t.id=d.depends_on
+         WHERE d.task_id=? AND t.status != 'done'`, taskID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return true, nil
+	}
+	var n int
+	if err := rows.Scan(&n); err != nil {
+		return false, err
+	}
+	return n == 0, nil
+}
+
+// ----- attempts -----
+
+func (s *Store) CreateAttempt(ctx context.Context, a *Attempt) error {
+	now := time.Now()
+	a.StartedAt = &now
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO attempts(id,task_id,server_id,model,state,started_at,ended_at) VALUES(?,?,?,?,?,?,NULL)`,
+		a.ID, a.TaskID, a.ServerID, a.Model, string(a.State), now.UnixMilli(),
+	)
+	return err
+}
+
+func (s *Store) UpdateAttemptState(ctx context.Context, id string, state AttemptState) error {
+	now := time.Now()
+	var endedAt any
+	if state == AttemptCompleted || state == AttemptFailed || state == AttemptCancelled {
+		endedAt = now.UnixMilli()
+	}
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE attempts SET state=?, ended_at=COALESCE(?, ended_at) WHERE id=?`,
+		string(state), endedAt, id,
+	)
+	return err
+}
+
+func (s *Store) GetAttempt(ctx context.Context, id string) (*Attempt, error) {
+	row := s.DB.QueryRowContext(ctx,
+		`SELECT id,task_id,server_id,model,state,started_at,ended_at FROM attempts WHERE id=?`, id)
+	return scanAttempt(row.Scan)
+}
+
+func (s *Store) ListAttemptsForTask(ctx context.Context, taskID string) ([]*Attempt, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id,task_id,server_id,model,state,started_at,ended_at FROM attempts WHERE task_id=? ORDER BY started_at ASC`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Attempt
+	for rows.Next() {
+		a, err := scanAttempt(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListActiveAttempts(ctx context.Context) ([]*Attempt, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id,task_id,server_id,model,state,started_at,ended_at FROM attempts WHERE state IN ('queued','running','needs_input')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Attempt
+	for rows.Next() {
+		a, err := scanAttempt(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// AllAttemptsTerminal returns true if every attempt for task is in terminal state.
+// Returns false when there are no attempts yet.
+func (s *Store) AllAttemptsTerminal(ctx context.Context, taskID string) (bool, int, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT COUNT(*), SUM(CASE WHEN state IN ('completed','failed','cancelled') THEN 1 ELSE 0 END) FROM attempts WHERE task_id=?`, taskID)
+	if err != nil {
+		return false, 0, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return false, 0, nil
+	}
+	var total, term sql.NullInt64
+	if err := rows.Scan(&total, &term); err != nil {
+		return false, 0, err
+	}
+	if total.Int64 == 0 {
+		return false, 0, nil
+	}
+	return total.Int64 == term.Int64, int(total.Int64), nil
+}
+
+// CountActiveByServerModel returns (global, server, server+model) active counts.
+func (s *Store) CountActive(ctx context.Context, serverID, model string) (global, byServer, byPair int, err error) {
+	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM attempts WHERE state IN ('queued','running','needs_input')`).Scan(&global)
+	if err != nil {
+		return
+	}
+	err = s.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM attempts WHERE state IN ('queued','running','needs_input') AND server_id=?`, serverID).Scan(&byServer)
+	if err != nil {
+		return
+	}
+	err = s.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM attempts WHERE state IN ('queued','running','needs_input') AND server_id=? AND model=?`,
+		serverID, model).Scan(&byPair)
+	return
+}
+
+// ----- tags -----
+
+func (s *Store) ListTags(ctx context.Context) ([]Tag, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT name, COALESCE(color,'') FROM tags ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Tag
+	for rows.Next() {
+		var t Tag
+		if err := rows.Scan(&t.Name, &t.Color); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertTag(ctx context.Context, t Tag) error {
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO tags(name,color) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET color=excluded.color`,
+		t.Name, t.Color)
+	return err
+}
+
+func (s *Store) DeleteTag(ctx context.Context, name string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM task_tags WHERE tag=?`, name); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE name=?`, name); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ----- helpers -----
+
+func (s *Store) loadTaskTagsDeps(ctx context.Context, t *Task) error {
+	rows, err := s.DB.QueryContext(ctx, `SELECT tag FROM task_tags WHERE task_id=? ORDER BY tag`, t.ID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			rows.Close()
+			return err
+		}
+		t.Tags = append(t.Tags, tag)
+	}
+	rows.Close()
+
+	rows, err = s.DB.QueryContext(ctx, `SELECT depends_on FROM task_deps WHERE task_id=?`, t.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return err
+		}
+		t.Dependencies = append(t.Dependencies, d)
+	}
+	return rows.Err()
+}
+
+func (s *Store) attemptCounts(ctx context.Context, taskID string) (total, active int, err error) {
+	var totalN, activeN sql.NullInt64
+	err = s.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*), SUM(CASE WHEN state IN ('queued','running','needs_input') THEN 1 ELSE 0 END) FROM attempts WHERE task_id=?`,
+		taskID,
+	).Scan(&totalN, &activeN)
+	if err != nil {
+		return
+	}
+	total = int(totalN.Int64)
+	active = int(activeN.Int64)
+	return
+}
+
+func writeTags(ctx context.Context, tx *sql.Tx, taskID string, tags []string) error {
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO tags(name) VALUES(?)`, tag); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO task_tags(task_id,tag) VALUES(?,?)`, taskID, tag); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeDeps(ctx context.Context, tx *sql.Tx, taskID string, deps []string) error {
+	for _, d := range deps {
+		if d == "" || d == taskID {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO task_deps(task_id,depends_on) VALUES(?,?)`, taskID, d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type scanner func(dest ...any) error
+
+func scanTask(scan scanner) (*Task, error) {
+	var (
+		t               Task
+		createdAt, updAt int64
+		prefSrv, prefMdl sql.NullString
+		excerpt          sql.NullString
+	)
+	var status, trigger string
+	if err := scan(&t.ID, &t.Title, &status, &t.Priority, &trigger, &prefSrv, &prefMdl, &createdAt, &updAt, &excerpt); err != nil {
+		return nil, err
+	}
+	t.Status = TaskStatus(status)
+	t.TriggerMode = TriggerMode(trigger)
+	t.PreferredServer = prefSrv.String
+	t.PreferredModel = prefMdl.String
+	t.DescriptionExcerpt = excerpt.String
+	t.CreatedAt = time.UnixMilli(createdAt)
+	t.UpdatedAt = time.UnixMilli(updAt)
+	t.Tags = []string{}
+	t.Dependencies = []string{}
+	return &t, nil
+}
+
+func scanAttempt(scan scanner) (*Attempt, error) {
+	var a Attempt
+	var start, end sql.NullInt64
+	var state string
+	if err := scan(&a.ID, &a.TaskID, &a.ServerID, &a.Model, &state, &start, &end); err != nil {
+		return nil, err
+	}
+	a.State = AttemptState(state)
+	if start.Valid {
+		t := time.UnixMilli(start.Int64)
+		a.StartedAt = &t
+	}
+	if end.Valid {
+		t := time.UnixMilli(end.Int64)
+		a.EndedAt = &t
+	}
+	return &a, nil
+}
+
+func nullStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}

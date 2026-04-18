@@ -1,0 +1,33 @@
+/* Executing: green conic-gradient rotating border */
+@property --glow-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes glow-rotate {
+  to { --glow-angle: 360deg; }
+}
+.card.executing {
+  border: 2px solid transparent;
+  background:
+    linear-gradient(var(--bg-elev-2), var(--bg-elev-2)) padding-box,
+    conic-gradient(from var(--glow-angle, 0deg), #00e676, #00c853, #00e676) border-box;
+  animation: glow-rotate 2.5s linear infinite;
+}
+
+/* Needs-input flashing orange */
+@keyframes flash-orange {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 152, 0, 0.8); border-color: var(--warning); }
+  50% { box-shadow: 0 0 0 6px rgba(255, 152, 0, 0.2); border-color: var(--warning); }
+}
+.card.needs-input {
+  border: 2px solid var(--warning);
+  animation: flash-orange 1.2s ease-in-out infinite;
+}
+
+/* Card move into verify */
+@keyframes slide-in {
+  from { transform: translateX(-30px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.card.enter { animation: slide-in 0.3s ease-out; }

@@ -1,0 +1,48 @@
+/* 1200px+ : 6 columns standard */
+
+@media (max-width: 1199px) and (min-width: 768px) {
+  .board { flex-wrap: nowrap; }
+  .column { min-width: 280px; }
+}
+
+@media (max-width: 767px) {
+  .topbar input[type="search"] { width: 100%; }
+  .board {
+    display: block;
+    padding: 0;
+  }
+  .board-tabs {
+    display: flex;
+    overflow-x: auto;
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--border);
+    padding: 6px 10px;
+    position: sticky; top: 54px; z-index: 5;
+  }
+  .board-tabs button {
+    background: transparent;
+    border: none;
+    padding: 8px 12px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .board-tabs button.active {
+    color: var(--accent);
+    border-bottom: 2px solid var(--accent);
+  }
+  .column {
+    max-width: none;
+    border-radius: 0;
+    margin: 0;
+  }
+  .column.hidden-mobile { display: none; }
+  .modal { max-height: 100vh; border-radius: 0; }
+  .execute-pane { grid-template-columns: 1fr; height: auto; }
+  .attempt-list { border-right: none; border-bottom: 1px solid var(--border); max-height: 100px; }
+  .settings-grid { grid-template-columns: 1fr; }
+}
+
+/* iOS safe area */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .input-bar { padding-bottom: env(safe-area-inset-bottom); }
+}
