@@ -1,8 +1,8 @@
 # Hermes Task Board
 
-> A Trello-style kanban for driving [Hermes Agent](https://github.com/hermes-agent) — define tasks, dispatch them to one or more Hermes sessions, watch the agent think + tool-call in real time, then verify and archive.
+> A Trello-style kanban that drives [Hermes Agent](https://github.com/NousResearch/hermes-agent) in batches — define tasks, dispatch them sequentially or in parallel, watch the agent work, verify, archive.
 >
-> **Single Go binary · SQLite + filesystem · Vue 3 (no build step) · PWA · i18n (中 / EN)**
+> Single Go binary · SQLite + filesystem · Vue 3 (no build step) · PWA · bilingual UI.
 
 [English](#english) · [简体中文](#简体中文)
 
@@ -14,61 +14,61 @@
 
 ### Why this exists
 
-[Hermes](https://github.com/hermes-agent) is a genuinely impressive agent. Compared to OpenClaw, it has **self-evolution**: it actually gets smarter the more you use it, accumulating memory, skills, and context so that it behaves less like a stateless tool and more like a **digital teammate who grows with you over time**.
+[Hermes](https://github.com/NousResearch/hermes-agent) is one of the more interesting agents out there. Unlike OpenClaw and most other agent frameworks, Hermes **learns from use** — every session adds to its memory, skills, and context, so it compounds: the agent you're working with six months in is measurably sharper than the one you started with. It isn't a stateless tool that vanishes after each reply; it's a digital collaborator that grows alongside you.
 
-Hermes also plugs into a surprising number of messaging gateways — Telegram, Discord, Slack, WhatsApp, 微信, 飞书, 钉钉, QQ, and more — and steering it from an IM client is a delightful experience. But that workflow has a hard ceiling:
+Hermes also plugs into a remarkable range of messaging platforms — Telegram, Discord, Slack, WhatsApp, WeChat, Feishu (Lark), DingTalk, QQ, and more — and steering it from a chat client is genuinely enjoyable. The snag is that chat-driven workflows have a hard ceiling:
 
-- You can effectively only **drive one task at a time** through a chat thread.
-- Switching **sessions** and **agent profiles** mid-flight is clunky — you lose your train of thought, and parallelism is basically off the table.
+- A conversation is strictly serial. You can only drive one task at a time.
+- Switching sessions or agent profiles mid-flight is awkward: you lose your train of thought, and running things in parallel is basically off the table.
 
-For power users who have a genuine **backlog** of things they want Hermes to chew through — refactors, audits, nightly sweeps, batches of small scripted jobs — the IM-first model becomes the bottleneck. You need a way to **list everything up front**, declare dependencies and priorities, and then let Hermes work the queue sequentially or in parallel while you get on with something else.
+Once you actually have a **backlog** — a batch of refactors, an audit pass, a nightly sweep, a stack of small scripted jobs — the chat-first model starts to fight you. What you want is to queue everything up front, declare priorities and dependencies, then step away and let Hermes chew through it in order or in parallel while you do something else.
 
-That's what this project is for. **Hermes Task Board turns Hermes from "one-at-a-time chatbot" into a batch-capable work partner**, and gets dramatically more leverage out of every minute of Hermes's runtime. Define the backlog once, let the board + scheduler dispatch it, watch the tool calls stream live, verify, move on.
+That's what this project is for. **Hermes Task Board turns Hermes from a chatbot you tend one conversation at a time into a batch-capable work partner.** Plan once, dispatch automatically, watch the tool calls stream live, verify, move on. The goal is simple: get dramatically more out of every hour Hermes is running.
 
 ### What it does
 
-Hermes Agent executes tools, edits files, and runs shell commands. This project gives you a 6-column kanban to:
+Hermes Agent executes tools, edits files, and runs shell commands. This project gives you a 6-column kanban so you can:
 
-1. **Define** tasks (markdown description, tags, priority, dependencies, preferred Hermes server + model).
-2. **Dispatch** each task to a Hermes conversation as one or more parallel **Attempts** (auto-trigger via scheduler or click *Start*).
-3. **Watch** Hermes think and tool-call live — NDJSON event stream → SSE → browser.
-4. **Verify** the result, ask follow-up questions (still the same session), then move to Done / Archive.
+1. **Define** tasks — markdown description, tags, priority, dependencies, preferred Hermes server + model.
+2. **Dispatch** each task to a Hermes conversation as one or more parallel **Attempts** (auto-triggered by the scheduler, or manually via *Start*).
+3. **Watch** Hermes think and tool-call in real time — NDJSON event log on disk, pushed to the browser over SSE.
+4. **Verify** the result, ask follow-up questions in the same session, then move the card to Done or Archive.
 
 ### Screenshots
 
 | | |
 |---|---|
-| ![Board EN](docs/screenshots/board-en.png) | ![Board 中文](docs/screenshots/board-zh.png) |
-| 6-column desktop board, English | Same board, switched to 中文 live |
+| ![Board EN](docs/screenshots/board-en.png) | ![Board ZH](docs/screenshots/board-zh.png) |
+| Desktop board, English | The same board after toggling to Chinese |
 | ![Attempt live](docs/screenshots/attempt-live.png) | ![Settings](docs/screenshots/settings-servers.png) |
-| Live SSE stream during a real Hermes attempt | Hermes Servers settings page |
+| Live SSE stream from a running Hermes attempt | Hermes Servers settings page |
 | ![Mobile](docs/screenshots/board-mobile.png) | ![Login](docs/screenshots/login.png) |
-| Phone: one column + swipe-tab per status | Optional password login page |
+| Phone layout: one column at a time, status tabs on top | Optional password login page |
 
-### Quick start for end users (download a release)
+### Quick start (download a release)
 
 ```bash
-# 1. Grab the binary for your platform from the GitHub releases page
+# 1. Grab the binary for your platform from the GitHub releases page:
 #    https://github.com/ahkimkoo/hermes-taskboard/releases
 curl -LO https://github.com/ahkimkoo/hermes-taskboard/releases/latest/download/hermes-taskboard-v0.1.0-linux-amd64.tar.gz
 tar -xzf hermes-taskboard-v0.1.0-linux-amd64.tar.gz
 cd hermes-taskboard-v0.1.0-linux-amd64
 
-# 2. (Re)start your Hermes gateway with the API server enabled
+# 2. (Re)start your Hermes gateway with the HTTP API enabled.
 API_SERVER_ENABLED=true API_SERVER_KEY=your-strong-key hermes gateway run
 
-# 3. Start the board
+# 3. Start the board.
 ./hermes-taskboard -data ./data
-# → open http://127.0.0.1:1900 in your browser
+# then open http://127.0.0.1:1900 in your browser
 ```
 
-On first visit: click **⚙ Settings → Hermes Servers → New server**, point it at `http://127.0.0.1:8642` and paste the same `API_SERVER_KEY`. Hit **Test Connection**. Done — create a task and click **▶ Start**.
+On first visit, click **⚙ Settings → Hermes Servers → New server**, point `base_url` at `http://127.0.0.1:8642` and paste the same `API_SERVER_KEY`. Hit **Test Connection** — green means you're good. Back on the board, create a task and click **▶ Start**.
 
 ### Set up Hermes for this board
 
-Hermes (gateway) exposes an OpenAI-compatible HTTP API at port **8642**. Enable it with either:
+The Hermes gateway ships an OpenAI-compatible HTTP API on port **8642**. Enable it one of three ways:
 
-- **env vars** (one-off):
+- **Environment variables** (quick and dirty):
   ```bash
   API_SERVER_ENABLED=true \
   API_SERVER_KEY=choose-a-strong-key \
@@ -76,29 +76,29 @@ Hermes (gateway) exposes an OpenAI-compatible HTTP API at port **8642**. Enable 
   API_SERVER_HOST=127.0.0.1 \
     hermes gateway run
   ```
-- **`~/.hermes/.env`** (persistent): add the same four lines without the trailing command.
-- **`~/.hermes/config.yaml`** → `platforms.api_server` block (see Hermes docs for the precise schema).
+- **`~/.hermes/.env`** (persistent): put the same four lines there.
+- **`~/.hermes/config.yaml` → `platforms.api_server`** (see Hermes docs for the exact schema).
 
-Confirm it's up:
+Sanity check:
 
 ```bash
 curl -H "Authorization: Bearer your-strong-key" http://127.0.0.1:8642/health/detailed
 curl -H "Authorization: Bearer your-strong-key" http://127.0.0.1:8642/v1/models
 ```
 
-If you want to expose the API to your LAN, set `API_SERVER_HOST=0.0.0.0` **and** give Hermes a ≥8-char key — it will refuse network binds otherwise.
+If you want other machines on your LAN to reach the API, set `API_SERVER_HOST=0.0.0.0` **and** use a key of at least 8 characters — Hermes refuses to bind network interfaces without one.
 
 ### Build from source
 
 ```bash
 git clone git@github.com:ahkimkoo/hermes-taskboard.git
 cd hermes-taskboard
-./build.sh                       # host platform
-GOOS=linux GOARCH=arm64 ./build.sh  # cross-compile
-VERSION=v0.1.0 ./release.sh      # cross-platform tarballs under dist/
+./build.sh                           # current host platform
+GOOS=linux GOARCH=arm64 ./build.sh   # cross-compile
+VERSION=v0.1.0 ./release.sh          # cross-platform archives under dist/
 ```
 
-`release.sh` builds linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64 by default, each archive shipping the binary, `config.example.yaml`, the empty `data/` skeleton, and `README.md` + `CHANGELOG.md` + `LICENSE`.
+`release.sh` produces `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, and `windows/amd64` archives by default. Each archive ships the binary, `config.example.yaml`, an empty `data/` skeleton (`db/`, `task/`, `attempt/`), and a copy of `README.md`, `CHANGELOG.md`, and `LICENSE`.
 
 ### Docker
 
@@ -114,47 +114,47 @@ docker run -d --name taskboard \
   hermes-taskboard:dev
 ```
 
-Then in the app's **Settings → Hermes Servers** use `http://host.docker.internal:8642` (since Hermes runs on the host, not inside the container).
+In the app's **Settings → Hermes Servers**, set `base_url` to `http://host.docker.internal:8642` (Hermes runs on the host, not inside the container).
 
 ### Architecture
 
 ```
-Browser (Vue 3)              Hermes Task Board (Go)             Hermes Gateway
------------------            ---------------------------        ------------------
-Kanban view    ────SSE──────► HTTP + SSE hub
-Execute modal  ────HTTP─────► Board service (state machine)
-                              │
-                              ▼
-                              Scheduler ──┐
-                              AttemptRunner ─────HTTP + SSE───► /v1/responses
-                              │                                  /v1/runs/{id}/events
-                              ▼
-                              SQLite + data/{task,attempt}/      model: hermes-agent
+Browser (Vue 3)              Hermes Task Board (Go)            Hermes Gateway
+-----------------            ---------------------------       ------------------
+Kanban view      ────SSE───► HTTP + SSE hub
+Execute modal    ────HTTP──► Board service (state machine)
+                             │
+                             ▼
+                             Scheduler  ─┐
+                             AttemptRunner ───HTTP + SSE────► /v1/responses
+                             │                                /v1/runs/{id}/events
+                             ▼
+                             SQLite + data/{task,attempt}/    model: hermes-agent
 ```
 
-- **State machine**: `draft → plan → execute → verify → done → archive`. Only `plan → execute`, `execute → verify`, and `verify → execute` are auto-transitions; everything else is a user drag.
-- **1 Attempt = 1 Hermes conversation**. Verify-stage follow-ups stay in the same conversation — they just spawn a new `run_id`.
-- **Concurrency** is gated at 3 levels: global, server, and (server, model) profile. Defaults: 50 / 10 / 5.
+- **State machine:** `draft → plan → execute → verify → done → archive`. Only `plan → execute`, `execute → verify`, and `verify → execute` are auto-transitions; everything else happens via drag.
+- **One Attempt = one Hermes conversation.** Follow-ups during verification stay in the same conversation — they just spawn a new `run_id`.
+- **Concurrency** is gated at three levels: global, per-server, and per `(server, model)` profile. Defaults are 50 / 10 / 5.
 
 ### Config hot-reload
 
-Everything configurable lives in `data/config.yaml`. Edit it by hand, then either hit *Reload config from file* in the Settings page or `POST /api/config/reload` — no restart.
+Everything configurable — credentials, registered Hermes servers, scheduler knobs, preferences — lives in `data/config.yaml`. Edit it by hand, then either click **Reload config from file** in the Settings page or `POST /api/config/reload`. No restart required.
 
 ### Development
 
 ```bash
-go build ./...          # type-check
+go build ./...               # type-check
 go build -o bin/tb ./cmd/taskboard
-./bin/tb -data ./data   # dev run (frontend is embedded via go:embed)
+./bin/tb -data ./data        # dev run; the frontend is embedded via go:embed
 ```
 
-Frontend lives at `internal/webfs/web/` and is served directly out of the binary. Editing `.js/.css/.html` in that folder needs a rebuild; there's no Vite / Rollup.
+Frontend sources live at `internal/webfs/web/` and are served straight out of the binary. Editing `.js`, `.css`, or `.html` in that directory requires a Go rebuild — there's no Vite or Rollup in the loop.
 
 ### Testing
 
 - `go build ./...` — static checks.
-- Manual API smoke test: `./docs/smoke.sh` (create → transition → delete cycle).
-- Browser tests: open the UI, create a task, click Start, watch events stream. (`playwright` screenshots under `docs/screenshots/` were generated live against a real Hermes instance.)
+- `./docs/smoke.sh` — API smoke test (create → transition → delete).
+- Browser check — open the UI, create a task, click Start, watch events stream. The screenshots under `docs/screenshots/` were captured with Playwright against a real Hermes instance running on the same host.
 
 ### License
 
@@ -166,36 +166,36 @@ MIT.
 
 ### 项目初衷
 
-[Hermes](https://github.com/hermes-agent) 是一个相当了不起的 Agent。相比 OpenClaw，它最核心的优势是**自我进化能力** —— 越用越聪明，会随着使用时间的推移不断沉淀记忆、积累技能、继承上下文，不只是一个"工具"，而更像一位**和你一起成长的"数字伙伴"**。
+[Hermes](https://github.com/NousResearch/hermes-agent) 是目前最有意思的 Agent 之一。不同于 OpenClaw 这类"无状态工具"，Hermes 会**在使用中成长** —— 每一次对话都会沉淀到它的记忆、技能和上下文里，用得越久越聪明。它不是一个用完即走的工具，更像一位**和你一起成长的数字伙伴**，越用越合手。
 
-Hermes 还能对接相当多的消息网关 —— Telegram、Discord、Slack、WhatsApp、微信、飞书、钉钉、QQ 等 —— 通过这些即时通讯工具遥控 Hermes 的体验非常好。但这种使用方式有一个天然的天花板：
+Hermes 还能对接几乎所有主流的即时通讯平台 —— Telegram、Discord、Slack、WhatsApp、微信、飞书、钉钉、QQ 等等 —— 在聊天窗口里随手遥控 Hermes 干活，体验相当不错。但聊天驱动的工作流也存在一个天然的瓶颈：
 
-- 你实质上**只能一次做一个任务**，IM 会话是串行的。
-- 途中要**切换 session、切换 agent profile** 时操作起来比较复杂，容易打断思路，并行执行几乎没戏。
+- 一段对话是严格串行的，一次只能推进一件事。
+- 中途想切换 session、切换 agent profile 都有些别扭，思路容易被打断，更谈不上并行执行。
 
-对于想让 Hermes 真正啃下一个**任务清单**的重度使用者 —— 一批重构、一次合规审计、一批夜间定时清理、一批批量小脚本 —— IM-first 的用法反而变成了瓶颈。你需要一个能**一次把所有事情都列出来**、声明好先后顺序与依赖、然后让 Hermes 按顺序或并行去执行的工具，这样你就可以把注意力腾出来干别的。
+当你手头真的攒了一堆事情想交给 Hermes —— 一批重构、一次代码审计、一个夜间数据清理、一堆零散的小脚本 —— 这种聊天式的用法反而成了效率天花板。你需要的是把待办一次性列清楚，标好优先级和依赖关系，然后让 Hermes 按顺序或者并行地去啃，自己则可以腾出手来做别的事。
 
-这就是本项目存在的意义。**Hermes Task Board 把 Hermes 从"一次一件"的聊天机器人升级成批量可用的工作搭档**，让每一分钟 Hermes 的运行时间都发挥出最大价值。一次定义完 backlog，看板 + 调度器自动分发，工具调用实时可见，验证完继续下一件 —— 极大地提高 Hermes 的使用效率。
+本项目就是为此而生。**Hermes Task Board 把 Hermes 从"一次一件"的聊天助手，升级成能吃批量活的工作搭档**：从任务清单里按优先级自动派发、工具调用实时可见、逐个验收。目标只有一个 —— 让 Hermes 的每一小时运行时间都发挥出成倍的价值。
 
 ### 这是什么
 
-Hermes Agent 能跑工具、改文件、执行 shell 命令。本项目给它加一个 6 列看板：
+Hermes Agent 本身负责调用工具、编辑文件、执行 shell 命令。本项目给它加了一个 6 列看板，让你可以：
 
-1. **定义**任务（markdown 描述、标签、优先级、依赖、指定 Hermes server + model）。
-2. **分派**到 Hermes：每张卡可以并行开多个 **Attempt**（调度器自动触发，或手动点 *Start*）。
-3. **实时观察**：Hermes 的思考、工具调用流、最终回复 —— NDJSON → SSE → 浏览器。
-4. **验证**结果，在同一个 Session 里追问，然后拖到 Done / Archive。
+1. **定义**任务 —— markdown 描述、标签、优先级、依赖、指定使用哪一个 Hermes Server 和 model。
+2. **分派**到 Hermes —— 每张卡可以并行开多个 **Attempt**（调度器自动触发，或手动点"开始"）。
+3. **实时观察** Hermes 的思考流与工具调用 —— 落盘为 NDJSON 事件日志，通过 SSE 推送到浏览器。
+4. **验证**结果，在同一个 Session 里继续追问，确认后把卡片拖到"完成"或"归档"。
 
 ### 截图
 
 | | |
 |---|---|
-| ![看板 English](docs/screenshots/board-en.png) | ![看板 中文](docs/screenshots/board-zh.png) |
-| 桌面 6 列看板 · English | 同一界面实时切到中文 |
-| ![执行面板](docs/screenshots/attempt-live.png) | ![设置](docs/screenshots/settings-servers.png) |
-| 真实 Hermes 调用的 SSE 流 | Hermes Servers 设置页 |
-| ![移动端](docs/screenshots/board-mobile.png) | ![登录](docs/screenshots/login.png) |
-| 手机端单列 + 顶栏状态 tab | 可选开启的账号密码登录页 |
+| ![看板英文](docs/screenshots/board-en.png) | ![看板中文](docs/screenshots/board-zh.png) |
+| 桌面端 6 列看板 · 英文界面 | 同一界面切换到中文后的样子 |
+| ![执行面板](docs/screenshots/attempt-live.png) | ![设置页](docs/screenshots/settings-servers.png) |
+| 真实 Hermes 调用中的 SSE 事件流 | Hermes Servers 管理页 |
+| ![手机端](docs/screenshots/board-mobile.png) | ![登录页](docs/screenshots/login.png) |
+| 手机端一次展示一列，顶部状态 tab 切换 | 可选开启的账号密码登录页 |
 
 ### 普通用户快速上手（下载 release 包运行）
 
@@ -206,21 +206,21 @@ curl -LO https://github.com/ahkimkoo/hermes-taskboard/releases/latest/download/h
 tar -xzf hermes-taskboard-v0.1.0-linux-amd64.tar.gz
 cd hermes-taskboard-v0.1.0-linux-amd64
 
-# 2. 带上 API_SERVER_KEY 启动你的 Hermes gateway
+# 2. 带上 API_SERVER_KEY 启动 Hermes gateway
 API_SERVER_ENABLED=true API_SERVER_KEY=你的强密钥 hermes gateway run
 
-# 3. 启动本看板
+# 3. 启动看板
 ./hermes-taskboard -data ./data
-# 打开浏览器：http://127.0.0.1:1900
+# 然后在浏览器里打开 http://127.0.0.1:1900
 ```
 
-首次进页面：**⚙ 设置 → Hermes Servers → New server**，把 `base_url` 填 `http://127.0.0.1:8642`，`api_key` 填你刚才那个强密钥，点 **测试连接** 通过即可。回看板，新建一张任务，点 **▶ 开始**。
+首次打开页面后，点 **⚙ 设置 → Hermes Servers → 新增 server**，把 `base_url` 填成 `http://127.0.0.1:8642`，`api_key` 填刚才那个强密钥，点 **测试连接**，绿了就 OK。回到看板，新建一张任务，点 **▶ 开始** 即可。
 
-### Hermes 侧配置（必读）
+### Hermes 侧配置
 
-Hermes 的 gateway 自带一个 OpenAI 兼容的 HTTP API（默认端口 **8642**）。有三种启用方式，三选一：
+Hermes 自带的 gateway 提供了一个 OpenAI 兼容的 HTTP API，默认端口 **8642**。开启方式三选一：
 
-- **环境变量（临时）**：
+- **环境变量（临时使用）**：
   ```bash
   API_SERVER_ENABLED=true \
   API_SERVER_KEY=一个至少 8 位的强密钥 \
@@ -228,8 +228,8 @@ Hermes 的 gateway 自带一个 OpenAI 兼容的 HTTP API（默认端口 **8642*
   API_SERVER_HOST=127.0.0.1 \
     hermes gateway run
   ```
-- **`~/.hermes/.env`（持久）**：把上面四行放进去。
-- **`~/.hermes/config.yaml` 的 `platforms.api_server` 段**（具体字段见 Hermes 官方文档）。
+- **`~/.hermes/.env`（持久化）**：把上面四行写进去即可。
+- **`~/.hermes/config.yaml` 的 `platforms.api_server` 段**：具体字段见 Hermes 官方文档。
 
 验证：
 
@@ -238,27 +238,27 @@ curl -H "Authorization: Bearer 你的强密钥" http://127.0.0.1:8642/health/det
 curl -H "Authorization: Bearer 你的强密钥" http://127.0.0.1:8642/v1/models
 ```
 
-如果要让局域网里的其他机器访问，把 host 改成 `0.0.0.0`，同时 `API_SERVER_KEY` 必须 ≥8 位 —— Hermes 会自己拒绝空密钥 + 公网绑定的组合。
+如果需要局域网里其他机器也能访问，把 host 改成 `0.0.0.0`，并且 `API_SERVER_KEY` 至少 8 位 —— Hermes 会拒绝"空密钥 + 公网绑定"这种危险组合。
 
 ### 从源码构建
 
 ```bash
 git clone git@github.com:ahkimkoo/hermes-taskboard.git
 cd hermes-taskboard
-./build.sh                        # 当前平台
+./build.sh                           # 当前平台
 GOOS=linux GOARCH=arm64 ./build.sh   # 交叉编译
-VERSION=v0.1.0 ./release.sh       # 一次打所有平台的 release 包到 dist/
+VERSION=v0.1.0 ./release.sh          # 一次性打齐所有平台到 dist/
 ```
 
-`release.sh` 默认打 linux/amd64、linux/arm64、darwin/amd64、darwin/arm64、windows/amd64 五种，每个压缩包里都包含：可执行文件、`config.example.yaml`、空的 `data/` 骨架目录、`README.md`、`CHANGELOG.md`、`LICENSE`。
+`release.sh` 默认产出 linux/amd64、linux/arm64、darwin/amd64、darwin/arm64、windows/amd64 五种压缩包，每个包里都包含可执行文件、`config.example.yaml`、空的 `data/` 骨架目录（`db/`、`task/`、`attempt/`），以及 `README.md`、`CHANGELOG.md`、`LICENSE`。
 
-### Docker 方式
+### Docker 部署
 
 ```bash
-# 打镜像
+# 构建镜像
 docker build -t hermes-taskboard:dev .
 
-# 运行（数据挂到宿主机目录）
+# 运行（把数据挂到宿主机目录）
 docker run -d --name taskboard \
   -p 1900:1900 \
   -v "$PWD/tb-data:/data" \
@@ -266,47 +266,47 @@ docker run -d --name taskboard \
   hermes-taskboard:dev
 ```
 
-然后在设置里 Hermes Server 的 `base_url` 填 `http://host.docker.internal:8642`（因为 Hermes 跑在宿主机，不在容器里）。
+然后在设置里把 Hermes Server 的 `base_url` 填成 `http://host.docker.internal:8642` —— 因为 Hermes 跑在宿主机上，不在容器里。
 
 ### 架构概览
 
 ```
 浏览器 (Vue 3)               Hermes Task Board (Go)            Hermes Gateway
 -----------------            ---------------------------       ------------------
-看板视图        ────SSE────► HTTP + SSE hub
-执行面板        ────HTTP───► Board 状态机
+看板视图         ────SSE───► HTTP + SSE hub
+执行面板         ────HTTP──► Board 状态机
                              │
                              ▼
-                             Scheduler ─┐
+                             调度器  ─┐
                              AttemptRunner ────HTTP + SSE────► /v1/responses
                              │                                 /v1/runs/{id}/events
                              ▼
                              SQLite + data/{task,attempt}/     model: hermes-agent
 ```
 
-- **状态机**：`draft → plan → execute → verify → done → archive`。只有 `plan → execute`、`execute → verify`、`verify → execute` 三条是后端自动迁移，其余全部由用户拖拽触发。
-- **1 Attempt = 1 Hermes conversation**：在 Verify 阶段追问不开新 Attempt，只在同一 conversation 下起一个新 `run_id`。
-- **并发三级闸门**：全局 / server 级 / (server, model) 级，默认 50 / 10 / 5。
+- **状态机**：`draft → plan → execute → verify → done → archive`。只有 `plan → execute`、`execute → verify`、`verify → execute` 是后端自动迁移，其余全部由用户拖拽触发。
+- **1 Attempt = 1 Hermes conversation**：验证阶段追问并不新开 Attempt，只是在同一 conversation 下起一个新的 `run_id`。
+- **三级并发闸门**：全局 / 单个 Server / `(server, model)` 三层上限，默认 50 / 10 / 5。
 
 ### 配置热加载
 
-所有配置都在 `data/config.yaml`。你可以 `vim` 直接改，然后在设置页顶部点 **从文件重新加载配置**（或 `POST /api/config/reload`），不用重启进程。
+所有可配置项 —— 账号密码、已注册的 Hermes Servers、调度参数、偏好设置 —— 全都写在 `data/config.yaml` 里。可以直接 `vim` 改，改完在设置页点 **从文件重新加载配置**（或 `POST /api/config/reload`）即可生效，不用重启进程。
 
 ### 开发
 
 ```bash
 go build ./...
 go build -o bin/tb ./cmd/taskboard
-./bin/tb -data ./data    # 前端通过 go:embed 打包，直接用就行
+./bin/tb -data ./data    # 前端通过 go:embed 打包进二进制，不用单独构建
 ```
 
-前端源文件在 `internal/webfs/web/`，没有 webpack/Vite，改完 `.js/.css/.html` 需要重编 Go 二进制。
+前端源文件放在 `internal/webfs/web/`，没有 Vite / webpack 之类的构建链路，改完 `.js`/`.css`/`.html` 需要重编 Go 二进制。
 
 ### 测试
 
-- `go build ./...`：类型/静态检查
-- API 冒烟：`./docs/smoke.sh`（创建 → 迁移 → 删除）
-- 浏览器冒烟：打开 UI → 新建任务 → 点 Start → 看 SSE 流。`docs/screenshots/` 下的截图都是用 playwright 对真实 Hermes 实例跑出来的。
+- `go build ./...`：类型与静态检查
+- `./docs/smoke.sh`：API 冒烟测试（创建 → 迁移 → 删除 一个循环）
+- 浏览器冒烟：打开 UI → 新建任务 → 点开始 → 观察 SSE 事件流。`docs/screenshots/` 下的截图都是用 Playwright 对真实 Hermes 实例跑出来的。
 
 ### License
 

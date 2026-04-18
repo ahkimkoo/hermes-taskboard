@@ -6,7 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## 2026-04-18
 
 ### Docs (later)
-- `README.md` 中英两个版本各新增 **项目初衷 / Why this exists** 段落：说明 Hermes 的自我进化能力与"数字伙伴"定位、列出它支持的 IM 网关（Telegram / Discord / Slack / WhatsApp / 微信 / 飞书 / 钉钉 / QQ…），并阐明 IM-first 使用方式的天花板（只能一次一件、切 session / profile 不方便），从而论证本项目"让 Hermes 能按 backlog 批量 / 并行工作"的价值。
+- 重写 `README.md`，让中英两个版本各自读起来像母语原生写的文档而不是相互的对照翻译：
+  - 英文段落里不再混入中文字符（之前把 "微信/飞书/钉钉/QQ" 直接塞进了英文段，现在换成 `WeChat / Feishu (Lark) / DingTalk / QQ`）。
+  - 中文段落减少生硬的 English 术语，改用地道表达（如 "backlog" → "待办清单"、"IM-first" → "聊天驱动的工作流"）。
+  - 截图 caption、小节标题也按各自语言的习惯顺一遍。
+- Hermes 链接更正为 `https://github.com/NousResearch/hermes-agent`（之前指向不存在的 `https://github.com/hermes-agent`）。
+- 顶部 tagline 精简，去掉看起来奇怪的 `i18n (中 / EN)`。
+- `README.md` 中英两个版本各新增 **项目初衷 / Why this exists** 段落（同日早先）：说明 Hermes 的自我进化能力与"数字伙伴"定位、列出它支持的消息网关，并阐明聊天驱动工作流的瓶颈。
 
 ### Docs
 - `docs/requirements.md` 升到 v0.2：在 §4.8.1 / §4.8.5 开头各加了一个"契约"引言块，把两条关键规则提升为明显红线：
