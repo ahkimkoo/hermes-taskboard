@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## 2026-04-19
 
+### UX additions (round 4)
+- **Image upload now requires an image host**: verified by reading Hermes's `gateway/platforms/api_server.py` that the server forwards `input` text verbatim to the upstream LLM (DashScope, etc.) and silently drops `image_url` content parts. Since the LLM can't reach `http://127.0.0.1:1900/uploads/*`, local storage is useless in any realistic setup. The Insert image button and paste/drop handlers are now hidden unless Aliyun OSS is configured; `POST /api/uploads` returns `503 image_upload_disabled` in the same case. A helpful hint underneath the description editor explains why and points to Settings → Integrations.
+- **Task modals no longer close on overlay click**: the task-open and new-task modals now only close via the explicit × in the header (or Cancel for new-task). Accidentally clicking the dimmed area around the modal while editing a long description no longer discards the whole thing. Settings and confirmation modals keep their existing overlay-click behaviour since they don't risk losing user input.
+- Tests: 3 new cases (`test_uploads_gated`, `test_task_modal_overlay_noclose`, `test_new_task_overlay_noclose`); existing `test_editor_controls` now asserts the Insert-image button is absent without OSS. Suite is 21/21 green.
+
 ### UX additions (round 3)
 - **Tag input**: tags are now a chip-based control with autocomplete backed by the `tags` table. Every tag ever used on any task becomes a suggestion for future tasks. Commit via Enter, `,`, or Tab; remove via chip-× or backspace on an empty input. (New `TagInput` component.)
 - **Dependencies**: new-task / edit-task forms now have a **Depends on** picker. Each dependency is `{task_id, required_state}` where state is either **Verify** (start once the target's attempts finished, even if the user hasn't accepted yet) or **Done** (wait for human acceptance). Scheduler's `AllDependenciesDone` honours the state per edge. (New `DependencyPicker` component, schema migration for `task_deps.required_state`.)

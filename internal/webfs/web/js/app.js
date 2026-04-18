@@ -206,11 +206,11 @@ const NewTaskModal = {
     depCandidates() { return this.$root.state.tasks; },
   },
   template: `
-    <div class="modal-overlay" @click.self="$emit('close')">
+    <div class="modal-overlay">
       <div class="modal" style="max-width:640px">
         <div class="modal-header">
           <h2>{{ $t('action.new_task') }}</h2>
-          <button class="ghost" @click="$emit('close')">✕</button>
+          <button class="ghost close-btn" @click="$emit('close')">✕</button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -219,7 +219,7 @@ const NewTaskModal = {
           </div>
           <div class="form-row">
             <label>{{ $t('field.description') }} <span class="optional">({{ $t('field.optional') }})</span></label>
-            <description-editor v-model="form.description" :placeholder="$t('placeholder.description')" :rows="8"></description-editor>
+            <description-editor v-model="form.description" :placeholder="$t('placeholder.description')" :rows="8" :image-upload-enabled="$root.imageUploadEnabled"></description-editor>
           </div>
           <div class="form-inline">
             <div class="form-row" style="flex:1">
@@ -327,13 +327,13 @@ const TaskModal = {
     },
   },
   template: `
-    <div class="modal-overlay" @click.self="$emit('close')">
+    <div class="modal-overlay">
       <div class="modal">
         <div class="modal-header">
           <h2>{{ task ? task.title : '…' }}</h2>
           <div class="modal-header-actions">
             <button v-if="task && !editing" @click="editing = true">✎ {{ $t('action.edit') }}</button>
-            <button class="ghost" @click="$emit('close')">✕</button>
+            <button class="ghost close-btn" @click="$emit('close')">✕</button>
           </div>
         </div>
         <div class="modal-body" v-if="task">
@@ -345,7 +345,7 @@ const TaskModal = {
             </div>
             <div class="form-row">
               <label>{{ $t('field.description') }} <span class="optional">({{ $t('field.optional') }})</span></label>
-              <description-editor v-model="form.description" :rows="10"></description-editor>
+              <description-editor v-model="form.description" :rows="10" :image-upload-enabled="$root.imageUploadEnabled"></description-editor>
             </div>
             <div class="form-inline">
               <div class="form-row" style="flex:1">
@@ -880,6 +880,11 @@ const App = {
   data() { return { state, search: '', columns: COLUMNS }; },
   computed: {
     isLogin() { return state.route === '/login'; },
+    imageUploadEnabled() {
+      const s = state.settings || {};
+      const oss = s.oss || {};
+      return !!(oss.enabled && s.oss_has_secret);
+    },
     grouped() {
       const out = {};
       for (const c of COLUMNS) out[c] = [];

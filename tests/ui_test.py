@@ -78,8 +78,16 @@ class Ctx:
 def test(name: str):
     def deco(fn):
         def wrap(page, *a, **kw):
-            # Fresh slate per test: reload page so no stale modals linger between cases.
+            # Fresh slate per test: reset language to English + theme to dark,
+            # then reload so no stale modals linger between cases.
             try:
+                page.evaluate("""() => {
+                  localStorage.setItem('lang', 'en');
+                  return fetch('/api/preferences', {method:'PUT', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({language:'en', theme:'dark',
+                      sound:{enabled:true, volume:0.7,
+                        events:{execute_start:true, needs_input:true, done:true}}})});
+                }""")
                 page.goto(BASE + "/", wait_until="domcontentloaded")
                 wait_for_app(page)
             except Exception as e:
@@ -160,22 +168,21 @@ def test_settings_models_helper(page: Page):
 
 @test("#9 i18n toggles fully — no mixed language")
 def test_i18n_switch(page: Page):
-    # Toggle to Chinese (button shows '🌐 EN' while in English)
+    # Start in English (decorator reset it). Click the lang toggle → Chinese.
     lang_btn = page.locator(".topbar button:has-text('🌐')").first
-    # current state - check an English-only phrase
-    draft_title = column_for(page, "draft").locator(".column-title").first.inner_text()
+    draft_title_en = column_for(page, "draft").locator(".column-title").first.inner_text()
     lang_btn.click()
-    page.wait_for_timeout(400)
-    draft_title_after = column_for(page, "draft").locator(".column-title").first.inner_text()
-    assert draft_title != draft_title_after, f"language toggle had no effect ({draft_title!r}→{draft_title_after!r})"
-    # The subtitle for Plan should now read Chinese — assert no stray English
+    page.wait_for_timeout(500)
+    draft_title_zh = column_for(page, "draft").locator(".column-title").first.inner_text()
+    assert draft_title_en != draft_title_zh, f"language toggle had no effect ({draft_title_en!r}→{draft_title_zh!r})"
+    # After toggle the Plan subtitle should be pure Chinese.
     plan_sub = column_for(page, "plan").locator(".column-subtitle").first.inner_text()
-    # Either pure Chinese OR pure English is acceptable — the test is that it's
-    # not a mix of both. "Queued" or "Plan" or "ready" bleeding into Chinese is a bug.
     assert not any(kw in plan_sub for kw in ["Queued", "ready for", "execution"]), f"English leaked into Chinese: {plan_sub!r}"
-    # switch back
+    # Toggle back — subtitle should NOT contain Chinese characters once we're in English again.
     lang_btn.click()
-    page.wait_for_timeout(400)
+    page.wait_for_timeout(500)
+    plan_sub_after = column_for(page, "plan").locator(".column-subtitle").first.inner_text()
+    assert not any(ord(c) >= 0x4E00 for c in plan_sub_after), f"Chinese leaked into English: {plan_sub_after!r}"
 
 
 @test("#5 theme toggle changes <html> class and persists")
@@ -247,22 +254,76 @@ def test_title_required(page: Page):
     page.locator(".modal-footer button:has-text('Cancel')").click()
 
 
-@test("#2 Description editor has Write/Preview tabs + image-insert control")
+@test("#2 Description editor: Write/Preview tabs + image gating by OSS")
 def test_editor_controls(page: Page):
     page.locator(".column[data-status='draft'] button:has-text('New Task')").click()
     page.wait_for_selector(".modal-header h2")
     toolbar = page.locator(".desc-toolbar").first
     assert toolbar.locator("button:has-text('Write')").count() > 0
     assert toolbar.locator("button:has-text('Preview')").count() > 0
-    assert toolbar.locator("button:has-text('Insert image')").count() > 0
-    # Write → Preview roundtrip
+    # Image upload is hidden unless OSS is configured — we never configure it
+    # in tests, so the button must be absent.
+    assert toolbar.locator("button:has-text('Insert image')").count() == 0, (
+        "Insert image button should be hidden when OSS is not configured"
+    )
+    # The hint should explain why it's off.
+    hint = page.locator(".desc-hint").first.inner_text().lower()
+    assert "oss" in hint or "上传" in hint, f"hint must explain gating: {hint!r}"
+    # Write → Preview roundtrip still works.
     page.locator("textarea").first.fill("# hi\n\n**bold** text")
     toolbar.locator("button:has-text('Preview')").click()
-    preview = page.locator(".desc-preview").first
-    inner = preview.inner_html()
-    assert "<h1>hi</h1>" in inner.lower() or "<h1>hi</h1>" in inner
-    assert "<strong>bold</strong>" in inner.lower()
+    preview_html = page.locator(".desc-preview").first.inner_html().lower()
+    assert "<h1>hi</h1>" in preview_html
+    assert "<strong>bold</strong>" in preview_html
     page.locator(".modal-footer button:has-text('Cancel')").click()
+
+
+@test("task modal: clicking the overlay outside the modal does NOT close it")
+def test_task_modal_overlay_noclose(page: Page):
+    uniq = f"stay-open-{uuid.uuid4().hex[:6]}"
+    tid = api_create_task(page, uniq, status="draft")
+    try:
+        page.reload(); wait_for_app(page)
+        page.locator(f".card:has(.card-title:has-text(\"{uniq}\"))").first.click()
+        page.wait_for_selector(".modal-header h2")
+        # Click outside the modal (near the top-left of the overlay).
+        # Without @click.self, this should be a no-op.
+        box = page.locator(".modal").first.bounding_box()
+        # Click 20 px to the left of the modal — that's on the overlay.
+        page.mouse.click(max(5, box["x"] - 20), box["y"] + 40)
+        page.wait_for_timeout(400)
+        # Modal should still be open.
+        assert page.locator(".modal-header h2").count() > 0, "overlay click should NOT have closed the modal"
+        # Explicit × must work.
+        page.locator(".modal .close-btn").first.click()
+        page.wait_for_selector(".modal-header h2", state="detached", timeout=3000)
+    finally:
+        api_delete_task(page, tid)
+
+
+@test("new-task modal: overlay click does NOT close either")
+def test_new_task_overlay_noclose(page: Page):
+    page.locator(".column[data-status='draft'] button:has-text('New Task')").click()
+    page.wait_for_selector(".modal-header h2:has-text('New Task')")
+    box = page.locator(".modal").first.bounding_box()
+    page.mouse.click(max(5, box["x"] - 20), box["y"] + 40)
+    page.wait_for_timeout(300)
+    assert page.locator(".modal-header h2:has-text('New Task')").count() > 0, "overlay click should not close new-task modal"
+    # Cancel button (inside the modal) closes it.
+    page.locator(".modal-footer button:has-text('Cancel')").click()
+    page.wait_for_selector(".modal-header h2:has-text('New Task')", state="detached", timeout=3000)
+
+
+@test("POST /api/uploads returns 503 when OSS is not configured")
+def test_uploads_gated(page: Page):
+    res = page.evaluate("""async () => {
+      const fd = new FormData();
+      fd.append('file', new Blob([new Uint8Array([137,80,78,71])], {type:'image/png'}), 'x.png');
+      const r = await fetch('/api/uploads', {method:'POST', body: fd});
+      return { status: r.status, body: await r.json().catch(() => null) };
+    }""")
+    assert res["status"] == 503, f"expected 503 without OSS, got {res}"
+    assert res["body"] and res["body"].get("code") == "image_upload_disabled", res
 
 
 @test("#3 attempt list collapsed when there are no attempts yet (single-pane)")
@@ -348,35 +409,31 @@ def test_no_js_errors(page: Page):
 
 @test("tag input accepts Enter + autocomplete + chip removal")
 def test_tag_input(page: Page):
-    # Seed a known tag name on one task so it appears in /api/tags suggestions.
-    seed = f"unittag-{uuid.uuid4().hex[:6]}"
-    seed_id = page.evaluate(
+    # Seed a uniquely-prefixed tag so only the freshly-created one matches.
+    seed = f"unittag{uuid.uuid4().hex[:8]}"
+    page.evaluate(
         "async ({t}) => (await fetch('/api/tags', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name: t})}).then(r => r.json()))",
         {"t": seed},
     )
-    # Open New Task modal and type the tag prefix — autocomplete should show it.
     page.locator(".column[data-status='draft'] button:has-text('New Task')").click()
     page.wait_for_selector(".modal-header h2")
     page.locator("input[type='text']").first.fill("tag-test title")
-    # TagInput input is the last text input in the modal (after description, title).
-    tag_input_box = page.locator(".tag-input input").first
+    modal = page.locator(".modal").first
+    tag_input_box = modal.locator(".tag-input input").first
     tag_input_box.click()
-    tag_input_box.type(seed[:6], delay=10)  # partial match
-    # Suggestion dropdown should contain the seeded tag.
-    page.wait_for_selector(".tag-suggest-item", timeout=2000)
-    # Pick the first suggestion.
-    page.locator(".tag-suggest-item").first.click()
-    # Chip should now exist.
-    assert page.locator(f".tag-chip.removable:has-text(\"{seed}\")").count() > 0, "chip missing after selecting suggestion"
+    tag_input_box.type(seed[:8], delay=10)
+    # Filter suggestion list by text so we don't pick a stale row.
+    page.wait_for_selector(f".tag-suggest-item:has-text(\"{seed}\")", timeout=3000)
+    modal.locator(f".tag-suggest-item:has-text(\"{seed}\")").first.click()
+    assert modal.locator(f".tag-chip.removable:has-text(\"{seed}\")").count() > 0, "chip missing after selecting suggestion"
     # Free-typed tag via Enter.
-    tag_input_box.type("alpha-" + uuid.uuid4().hex[:4], delay=10)
+    freetyped = "alpha" + uuid.uuid4().hex[:4]
+    tag_input_box.type(freetyped, delay=10)
     tag_input_box.press("Enter")
-    chip_count = page.locator(".tag-chip.removable").count()
+    chip_count = modal.locator(".tag-chip.removable").count()
     assert chip_count >= 2, f"expected ≥2 chips, got {chip_count}"
-    # Remove via × — there must be at least one fewer chip.
-    page.locator(".tag-chip.removable .x").first.click()
-    assert page.locator(".tag-chip.removable").count() == chip_count - 1
-    # Cancel new-task dialog.
+    modal.locator(".tag-chip.removable .x").first.click()
+    assert modal.locator(".tag-chip.removable").count() == chip_count - 1
     page.locator(".modal-footer button:has-text('Cancel')").click()
 
 
@@ -430,8 +487,22 @@ def main():
         ctx = browser.new_context(viewport={"width": 1400, "height": 900})
         page = ctx.new_page()
         js_errors = []
+
+        def _is_expected(text: str) -> bool:
+            # The uploads-gating test deliberately triggers a 503 — the
+            # browser logs a generic "Failed to load resource: … 503 …" line
+            # without the URL, so key off the status code alone.
+            return "503" in text
+
         page.on("pageerror", lambda err: js_errors.append(str(err)))
-        page.on("console", lambda m: js_errors.append(f"{m.type}: {m.text}") if m.type == "error" else None)
+        page.on(
+            "console",
+            lambda m: (
+                js_errors.append(f"{m.type}: {m.text}")
+                if m.type == "error" and not _is_expected(m.text)
+                else None
+            ),
+        )
         page.goto(BASE + "/", wait_until="domcontentloaded")
         wait_for_app(page)
 
@@ -455,6 +526,9 @@ def main():
         test_tag_input(page)
         test_dependency_picker(page)
         test_optional_markers(page)
+        test_task_modal_overlay_noclose(page)
+        test_new_task_overlay_noclose(page)
+        test_uploads_gated(page)
 
         # Final: check we had no unexpected page errors during the whole run.
         if js_errors:

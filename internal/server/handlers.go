@@ -1011,9 +1011,24 @@ func (s *Server) hAuthChange(w http.ResponseWriter, r *http.Request) {
 
 // hUploadFile accepts a multipart form file named "file" and returns {url}.
 // Size limit: 10 MB. Content types allowed: image/*.
+//
+// We refuse uploads outright unless Aliyun OSS is configured: Hermes forwards
+// the task description verbatim as text to its LLM provider (verified against
+// gateway/platforms/api_server.py), so a locally-hosted URL can't be fetched
+// by the LLM. Without OSS there is literally no way for the image to reach
+// the model — we fail loud instead of silently saving bytes nobody will see.
 func (s *Server) hUploadFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "method not allowed", 405)
+		return
+	}
+	cur := s.Cfg.Snapshot()
+	ossOK := cur.OSS.Enabled && cur.OSS.AccessKeyID != "" && (cur.OSS.AccessKeySecret != "" || cur.OSS.AccessKeySecretEnc != "")
+	if !ossOK {
+		writeJSON(w, 503, map[string]any{
+			"code":    "image_upload_disabled",
+			"message": "image uploads require a reachable image host (Aliyun OSS) in Settings → Integrations",
+		})
 		return
 	}
 	const maxUpload = 10 << 20 // 10 MB

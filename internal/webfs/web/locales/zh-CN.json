@@ -84,6 +84,8 @@
   "editor.insert_image": "插入图片",
   "editor.uploading": "正在上传…",
   "editor.hint": "提示：可以直接粘贴、拖拽或选择图片 —— 会自动上传并插入 Markdown 引用。",
+  "editor.hint_no_upload": "当前未启用图片上传：Hermes 会把任务描述原样转发给背后的 LLM，LLM 无法访问本机的图片 URL，本地存储没有意义。请在「设置 → 第三方集成」里配置阿里云 OSS 后才能使用图片。",
+  "editor.image_disabled_alert": "图片上传未启用。请先在「设置 → 第三方集成」里配置图片图床（阿里云 OSS），这样生成的图片 URL 才能被 Hermes 背后的 LLM 访问到。",
   "event.args": "入参",
   "event.output": "输出",
   "toast.ok": "OK。",

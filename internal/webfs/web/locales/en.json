@@ -84,6 +84,8 @@
   "editor.insert_image": "Insert image",
   "editor.uploading": "Uploading…",
   "editor.hint": "Tip: paste, drop, or pick an image — it will be uploaded and a Markdown reference inserted.",
+  "editor.hint_no_upload": "Image uploads are disabled: Hermes forwards the description verbatim to its LLM provider, which cannot fetch images served from this host. Configure Aliyun OSS in Settings → Integrations to enable image uploads.",
+  "editor.image_disabled_alert": "Image upload is disabled. Configure an image host (Settings → Integrations → Aliyun OSS) so the image URL is reachable from Hermes's LLM provider.",
   "event.args": "Arguments",
   "event.output": "Output",
   "toast.ok": "OK.",
