@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## 2026-04-18
 
 ### Docs (later)
+- 在 `README.md` 的 "Set up Hermes for this board / Hermes 侧配置" 两节各加上 Hermes 官方 API Server 文档直链：<https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server>。用户读完本项目的最小化配置说明后，可以直接跳到上游文档查所有可配置字段。
 - 重写 `README.md`，让中英两个版本各自读起来像母语原生写的文档而不是相互的对照翻译：
   - 英文段落里不再混入中文字符（之前把 "微信/飞书/钉钉/QQ" 直接塞进了英文段，现在换成 `WeChat / Feishu (Lark) / DingTalk / QQ`）。
   - 中文段落减少生硬的 English 术语，改用地道表达（如 "backlog" → "待办清单"、"IM-first" → "聊天驱动的工作流"）。
