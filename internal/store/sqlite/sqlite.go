@@ -27,8 +27,9 @@ CREATE TABLE IF NOT EXISTS tasks (
 -- (idx_tasks_status_position created after migrate, see migrate())
 
 CREATE TABLE IF NOT EXISTS task_deps (
-  task_id    TEXT NOT NULL,
-  depends_on TEXT NOT NULL,
+  task_id        TEXT NOT NULL,
+  depends_on     TEXT NOT NULL,
+  required_state TEXT NOT NULL DEFAULT 'done',
   PRIMARY KEY (task_id, depends_on)
 );
 
@@ -101,6 +102,16 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	}
 	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_tasks_status_position ON tasks(status, position)`); err != nil {
 		return fmt.Errorf("create idx_tasks_status_position: %w", err)
+	}
+	// task_deps.required_state — default to 'done' for pre-existing rows.
+	hasReqState, err := columnExists(ctx, db, "task_deps", "required_state")
+	if err != nil {
+		return err
+	}
+	if !hasReqState {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE task_deps ADD COLUMN required_state TEXT NOT NULL DEFAULT 'done'`); err != nil {
+			return fmt.Errorf("add task_deps.required_state: %w", err)
+		}
 	}
 	return nil
 }

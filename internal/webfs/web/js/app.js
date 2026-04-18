@@ -24,6 +24,8 @@ import { createDragController } from './drag.js';
 import { DescriptionEditor } from './description-editor.js';
 import { EventStream } from './event-stream.js';
 import { renderMarkdown as markdown } from './markdown.js';
+import { TagInput } from './tag-input.js';
+import { DependencyPicker } from './dependency-picker.js';
 
 registerPWA();
 
@@ -124,7 +126,7 @@ const Card = {
         <span v-if="task.active_attempts" class="attempt-badge running">▶ {{ task.active_attempts }}</span>
         <span v-else-if="task.attempt_count" class="attempt-badge">{{ task.attempt_count }}</span>
         <span v-for="tag in task.tags" :key="tag" class="tag-chip">{{ tag }}</span>
-        <span v-if="task.dependencies && task.dependencies.length" class="tag-chip" :title="$t('card.deps')">⛓ {{ task.dependencies.length }}</span>
+        <span v-if="task.dependencies && task.dependencies.length" class="tag-chip" :title="$t('card.deps')">⛓ {{ depCount }}</span>
       </div>
     </div>
   `,
@@ -134,6 +136,7 @@ const Card = {
       if (this.task.active_attempts > 0) c.push('executing');
       return c;
     },
+    depCount() { return (this.task.dependencies || []).length; },
   },
   methods: {
     onPointerDown(e) {
@@ -188,14 +191,20 @@ const Column = {
 };
 
 const NewTaskModal = {
-  components: { DescriptionEditor },
+  components: { DescriptionEditor, TagInput, DependencyPicker },
   emits: ['close', 'created'],
   data() {
     return {
-      form: { title: '', description: '', priority: 3, trigger_mode: 'auto', preferred_server: '', tags: '' },
+      form: {
+        title: '', description: '', priority: 3, trigger_mode: 'auto',
+        preferred_server: '', tags: [], dependencies: [],
+      },
     };
   },
-  computed: { canSave() { return this.form.title.trim().length > 0; } },
+  computed: {
+    canSave() { return this.form.title.trim().length > 0; },
+    depCandidates() { return this.$root.state.tasks; },
+  },
   template: `
     <div class="modal-overlay" @click.self="$emit('close')">
       <div class="modal" style="max-width:640px">
@@ -209,18 +218,18 @@ const NewTaskModal = {
             <input type="text" v-model="form.title" :placeholder="$t('placeholder.title')" autofocus>
           </div>
           <div class="form-row">
-            <label>{{ $t('field.description') }}</label>
+            <label>{{ $t('field.description') }} <span class="optional">({{ $t('field.optional') }})</span></label>
             <description-editor v-model="form.description" :placeholder="$t('placeholder.description')" :rows="8"></description-editor>
           </div>
           <div class="form-inline">
             <div class="form-row" style="flex:1">
-              <label>{{ $t('field.priority') }}</label>
+              <label>{{ $t('field.priority') }} <span class="optional">({{ $t('field.optional') }})</span></label>
               <select v-model.number="form.priority">
                 <option v-for="p in [1,2,3,4,5]" :key="p" :value="p">P{{ p }}</option>
               </select>
             </div>
             <div class="form-row" style="flex:1">
-              <label>{{ $t('field.trigger') }}</label>
+              <label>{{ $t('field.trigger') }} <span class="optional">({{ $t('field.optional') }})</span></label>
               <select v-model="form.trigger_mode">
                 <option value="auto">{{ $t('field.trigger.auto') }}</option>
                 <option value="manual">{{ $t('field.trigger.manual') }}</option>
@@ -228,15 +237,19 @@ const NewTaskModal = {
             </div>
           </div>
           <div class="form-row">
-            <label>{{ $t('field.server') }}</label>
+            <label>{{ $t('field.server') }} <span class="optional">({{ $t('field.optional') }})</span></label>
             <select v-model="form.preferred_server">
               <option value="">{{ $t('field.default') }}</option>
               <option v-for="s in $root.state.servers" :key="s.id" :value="s.id">{{ s.name || s.id }}</option>
             </select>
           </div>
           <div class="form-row">
-            <label>{{ $t('field.tags') }}</label>
-            <input type="text" v-model="form.tags" :placeholder="$t('placeholder.tags')">
+            <label>{{ $t('field.tags') }} <span class="optional">({{ $t('field.optional') }})</span></label>
+            <tag-input v-model="form.tags" :placeholder="$t('placeholder.tags')"></tag-input>
+          </div>
+          <div class="form-row">
+            <label>{{ $t('field.dependencies') }} <span class="optional">({{ $t('field.optional') }})</span></label>
+            <dependency-picker v-model="form.dependencies" :candidates="depCandidates"></dependency-picker>
           </div>
         </div>
         <div class="modal-footer">
@@ -256,8 +269,9 @@ const NewTaskModal = {
           priority: this.form.priority,
           trigger_mode: this.form.trigger_mode,
           preferred_server: this.form.preferred_server,
-          status: 'draft', // new tasks land in Draft per #7
-          tags: this.form.tags.split(',').map((s) => s.trim()).filter(Boolean),
+          status: 'draft', // new tasks land in Draft
+          tags: this.form.tags,
+          dependencies: this.form.dependencies.filter((d) => d.task_id),
         };
         await api('/api/tasks', { method: 'POST', body });
         this.$emit('created');
@@ -268,14 +282,18 @@ const NewTaskModal = {
 };
 
 const TaskModal = {
-  components: { DescriptionEditor, EventStream },
+  components: { DescriptionEditor, EventStream, TagInput, DependencyPicker },
   props: ['taskId'],
   emits: ['close', 'refresh'],
   data() {
     return {
       task: null,
       editing: false,
-      form: { title: '', description: '', priority: 3, trigger_mode: 'auto', preferred_server: '', preferred_model: '', tags: '', dependencies: '' },
+      form: {
+        title: '', description: '', priority: 3, trigger_mode: 'auto',
+        preferred_server: '', preferred_model: '',
+        tags: [], dependencies: [],
+      },
       attempts: [],
       activeAttemptId: null,
       input: '',
@@ -302,6 +320,11 @@ const TaskModal = {
     renderedDescription() {
       return markdown(this.task && this.task.description || '');
     },
+    depCandidates() {
+      const tasks = this.$root.state.tasks || [];
+      // Exclude self to prevent self-dependency in the dropdown.
+      return this.taskId ? tasks.filter((t) => t.id !== this.taskId) : tasks;
+    },
   },
   template: `
     <div class="modal-overlay" @click.self="$emit('close')">
@@ -321,18 +344,18 @@ const TaskModal = {
               <input type="text" v-model="form.title">
             </div>
             <div class="form-row">
-              <label>{{ $t('field.description') }}</label>
+              <label>{{ $t('field.description') }} <span class="optional">({{ $t('field.optional') }})</span></label>
               <description-editor v-model="form.description" :rows="10"></description-editor>
             </div>
             <div class="form-inline">
               <div class="form-row" style="flex:1">
-                <label>{{ $t('field.priority') }}</label>
+                <label>{{ $t('field.priority') }} <span class="optional">({{ $t('field.optional') }})</span></label>
                 <select v-model.number="form.priority">
                   <option v-for="p in [1,2,3,4,5]" :key="p" :value="p">P{{ p }}</option>
                 </select>
               </div>
               <div class="form-row" style="flex:1">
-                <label>{{ $t('field.trigger') }}</label>
+                <label>{{ $t('field.trigger') }} <span class="optional">({{ $t('field.optional') }})</span></label>
                 <select v-model="form.trigger_mode">
                   <option value="auto">{{ $t('field.trigger.auto') }}</option>
                   <option value="manual">{{ $t('field.trigger.manual') }}</option>
@@ -341,14 +364,14 @@ const TaskModal = {
             </div>
             <div class="form-inline">
               <div class="form-row" style="flex:1">
-                <label>{{ $t('field.server') }}</label>
+                <label>{{ $t('field.server') }} <span class="optional">({{ $t('field.optional') }})</span></label>
                 <select v-model="form.preferred_server">
                   <option value="">{{ $t('field.default') }}</option>
                   <option v-for="s in $root.state.servers" :key="s.id" :value="s.id">{{ s.name || s.id }}</option>
                 </select>
               </div>
               <div class="form-row" style="flex:1">
-                <label>{{ $t('field.model') }}</label>
+                <label>{{ $t('field.model') }} <span class="optional">({{ $t('field.optional') }})</span></label>
                 <select v-model="form.preferred_model">
                   <option value="">{{ $t('field.default') }}</option>
                   <option v-for="m in modelsForSelected" :key="m.name" :value="m.name">{{ m.name }}</option>
@@ -356,12 +379,12 @@ const TaskModal = {
               </div>
             </div>
             <div class="form-row">
-              <label>{{ $t('field.tags') }}</label>
-              <input type="text" v-model="form.tags" :placeholder="$t('placeholder.tags')">
+              <label>{{ $t('field.tags') }} <span class="optional">({{ $t('field.optional') }})</span></label>
+              <tag-input v-model="form.tags" :placeholder="$t('placeholder.tags')"></tag-input>
             </div>
             <div class="form-row">
-              <label>{{ $t('field.dependencies') }}</label>
-              <input type="text" v-model="form.dependencies" placeholder="task-id-1, task-id-2">
+              <label>{{ $t('field.dependencies') }} <span class="optional">({{ $t('field.optional') }})</span></label>
+              <dependency-picker v-model="form.dependencies" :candidates="depCandidates"></dependency-picker>
             </div>
             <div class="edit-actions">
               <button @click="editing = false">{{ $t('action.cancel') }}</button>
@@ -454,6 +477,11 @@ const TaskModal = {
       try {
         const r = await api('/api/tasks/' + this.taskId);
         this.task = r.task;
+        // Normalise deps: backend may return old-shape strings from a stale db
+        // or the new-shape {task_id, required_state}. Coerce to the new shape.
+        const deps = (r.task.dependencies || []).map((d) => (typeof d === 'string'
+          ? { task_id: d, required_state: 'done' }
+          : { task_id: d.task_id, required_state: d.required_state || 'done' }));
         this.form = {
           title: r.task.title,
           description: r.task.description || '',
@@ -461,8 +489,8 @@ const TaskModal = {
           trigger_mode: r.task.trigger_mode,
           preferred_server: r.task.preferred_server || '',
           preferred_model: r.task.preferred_model || '',
-          tags: (r.task.tags || []).join(', '),
-          dependencies: (r.task.dependencies || []).join(', '),
+          tags: [...(r.task.tags || [])],
+          dependencies: deps,
         };
         const ar = await api('/api/tasks/' + this.taskId + '/attempts');
         this.attempts = (ar.attempts || []).sort((a, b) => String(a.started_at || '').localeCompare(String(b.started_at || '')));
@@ -480,8 +508,8 @@ const TaskModal = {
           trigger_mode: this.form.trigger_mode,
           preferred_server: this.form.preferred_server,
           preferred_model: this.form.preferred_model,
-          tags: this.form.tags.split(',').map((s) => s.trim()).filter(Boolean),
-          dependencies: this.form.dependencies.split(',').map((s) => s.trim()).filter(Boolean),
+          tags: this.form.tags,
+          dependencies: this.form.dependencies.filter((d) => d.task_id),
         };
         await api('/api/tasks/' + this.taskId, { method: 'PATCH', body: payload });
         this.editing = false;

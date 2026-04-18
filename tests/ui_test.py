@@ -346,6 +346,81 @@ def test_no_js_errors(page: Page):
     pass  # handled in main()
 
 
+@test("tag input accepts Enter + autocomplete + chip removal")
+def test_tag_input(page: Page):
+    # Seed a known tag name on one task so it appears in /api/tags suggestions.
+    seed = f"unittag-{uuid.uuid4().hex[:6]}"
+    seed_id = page.evaluate(
+        "async ({t}) => (await fetch('/api/tags', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name: t})}).then(r => r.json()))",
+        {"t": seed},
+    )
+    # Open New Task modal and type the tag prefix — autocomplete should show it.
+    page.locator(".column[data-status='draft'] button:has-text('New Task')").click()
+    page.wait_for_selector(".modal-header h2")
+    page.locator("input[type='text']").first.fill("tag-test title")
+    # TagInput input is the last text input in the modal (after description, title).
+    tag_input_box = page.locator(".tag-input input").first
+    tag_input_box.click()
+    tag_input_box.type(seed[:6], delay=10)  # partial match
+    # Suggestion dropdown should contain the seeded tag.
+    page.wait_for_selector(".tag-suggest-item", timeout=2000)
+    # Pick the first suggestion.
+    page.locator(".tag-suggest-item").first.click()
+    # Chip should now exist.
+    assert page.locator(f".tag-chip.removable:has-text(\"{seed}\")").count() > 0, "chip missing after selecting suggestion"
+    # Free-typed tag via Enter.
+    tag_input_box.type("alpha-" + uuid.uuid4().hex[:4], delay=10)
+    tag_input_box.press("Enter")
+    chip_count = page.locator(".tag-chip.removable").count()
+    assert chip_count >= 2, f"expected ≥2 chips, got {chip_count}"
+    # Remove via × — there must be at least one fewer chip.
+    page.locator(".tag-chip.removable .x").first.click()
+    assert page.locator(".tag-chip.removable").count() == chip_count - 1
+    # Cancel new-task dialog.
+    page.locator(".modal-footer button:has-text('Cancel')").click()
+
+
+@test("dependencies picker: create a dep with required_state 'verify'")
+def test_dependency_picker(page: Page):
+    # Create two tasks via API — one will be the dep target, one the dependent.
+    target = api_create_task(page, f"DepTarget {uuid.uuid4().hex[:6]}", status="plan")
+    dependent = api_create_task(page, f"Dependent {uuid.uuid4().hex[:6]}", status="draft")
+    try:
+        page.reload(); wait_for_app(page)
+        find_card_by_title(page, "Dependent").first.click()
+        page.wait_for_selector(".modal-header h2")
+        # Click Edit to enter the form.
+        page.locator(".modal-header button:has-text('Edit')").first.click()
+        page.wait_for_selector(".dep-picker")
+        # Add a row.
+        page.locator(".dep-picker button:has-text('Add a dependency')").click()
+        # First <select> in the row is the task picker.
+        page.locator(".dep-row select").first.select_option(value=target)
+        # Second <select> is required_state.
+        page.locator(".dep-row select").nth(1).select_option(value="verify")
+        # Save.
+        page.locator(".edit-actions button.primary:has-text('Save')").click()
+        page.wait_for_timeout(500)
+        # Re-fetch the task and verify the dep landed with the right state.
+        got = page.evaluate("id => fetch('/api/tasks/' + id).then(r => r.json())", dependent)
+        deps = got["task"]["dependencies"]
+        assert any(d["task_id"] == target and d["required_state"] == "verify" for d in deps), f"deps={deps}"
+    finally:
+        api_delete_task(page, dependent)
+        api_delete_task(page, target)
+
+
+@test("optional markers: every non-title form row shows (optional)")
+def test_optional_markers(page: Page):
+    page.locator(".column[data-status='draft'] button:has-text('New Task')").click()
+    page.wait_for_selector(".modal-header h2")
+    required_count = page.locator(".form-row .required").count()
+    optional_count = page.locator(".form-row .optional").count()
+    assert required_count == 1, f"Exactly one '*' required marker expected, got {required_count}"
+    assert optional_count >= 5, f"Expected multiple '(optional)' markers, got {optional_count}"
+    page.locator(".modal-footer button:has-text('Cancel')").click()
+
+
 # ---------- runner ----------
 
 
@@ -377,6 +452,9 @@ def main():
         test_attempts_collapsed_when_empty(page)
         test_drag_visual(page)
         test_drag_reorder(page)
+        test_tag_input(page)
+        test_dependency_picker(page)
+        test_optional_markers(page)
 
         # Final: check we had no unexpected page errors during the whole run.
         if js_errors:

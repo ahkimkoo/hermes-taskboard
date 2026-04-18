@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## 2026-04-19
 
+### UX additions (round 3)
+- **Tag input**: tags are now a chip-based control with autocomplete backed by the `tags` table. Every tag ever used on any task becomes a suggestion for future tasks. Commit via Enter, `,`, or Tab; remove via chip-× or backspace on an empty input. (New `TagInput` component.)
+- **Dependencies**: new-task / edit-task forms now have a **Depends on** picker. Each dependency is `{task_id, required_state}` where state is either **Verify** (start once the target's attempts finished, even if the user hasn't accepted yet) or **Done** (wait for human acceptance). Scheduler's `AllDependenciesDone` honours the state per edge. (New `DependencyPicker` component, schema migration for `task_deps.required_state`.)
+- **Required vs optional** — forms now show a red ★ after **Title** and an inline `(optional)` marker after every other label. Title is the only required field.
+- API: create/patch `/api/tasks` accept dependencies as either `["id", ...]` (legacy, implicit `done` gate) or `[{task_id, required_state}, ...]`; the backend normalises and stores in the richer shape.
+- Tests: 3 new Playwright cases — tag-input autocomplete + chip remove; dependency-picker round-trip with `required_state=verify`; optional-marker audit on the new-task form. Suite is 18/18 green.
+
 ### UX overhaul (round 2)
 - **Drag & drop** rewritten on top of pointer events: the source card hides with a dotted placeholder, a styled floating clone follows the cursor, and the drop commits to an exact slot (between neighbours, not just "the column"). Feels more like Trello, far less like a browser HTML5 drag-ghost. (Requirement #1)
 - **Task ordering is now user-controlled**: added a `position` column to the `tasks` table with an automatic migration for existing DBs (positions seeded from `created_at`). New tasks land at the end of the Draft column; drag-to-reorder persists and survives reloads. The list API no longer sorts by priority — it returns rows by `(status, position)` and the client simply iterates. (Requirements #7, #8)

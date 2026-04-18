@@ -252,6 +252,44 @@ body.dragging-active * { cursor: grabbing !important; }
 .server-edit { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
 .server-edit h4 { margin-bottom: 6px; }
 
+/* ---------- TagInput ---------- */
+.tag-input {
+  display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+  padding: 4px 8px; min-height: 34px;
+  background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 6px;
+  position: relative; cursor: text;
+}
+.tag-input.focused { border-color: var(--accent); }
+.tag-input input {
+  flex: 1; min-width: 100px; border: none; background: transparent;
+  padding: 4px 2px; font-size: 13px; outline: none;
+}
+.tag-chip.removable { display: inline-flex; align-items: center; gap: 4px; padding-right: 4px; }
+.tag-chip.removable .x {
+  background: transparent; border: none; color: var(--text-dim);
+  padding: 0 2px; font-size: 14px; line-height: 1; cursor: pointer;
+}
+.tag-chip.removable .x:hover { color: var(--danger); }
+.tag-suggest {
+  position: absolute; left: 0; top: 100%; margin-top: 4px;
+  min-width: 160px; max-height: 200px; overflow-y: auto;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: var(--shadow); z-index: 30;
+}
+.tag-suggest-item {
+  padding: 6px 10px; font-size: 13px; cursor: pointer;
+}
+.tag-suggest-item:hover { background: var(--bg-elev-2); color: var(--accent); }
+
+/* ---------- DependencyPicker ---------- */
+.dep-picker { display: flex; flex-direction: column; gap: 6px; }
+.dep-row { display: flex; gap: 6px; align-items: center; }
+.dep-row select { flex: 1; }
+.dep-row .dep-when { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
+.dep-hint { font-size: 11px; color: var(--text-muted); line-height: 1.4; margin-top: 2px; }
+
+.optional { color: var(--text-muted); font-weight: 400; font-size: 11px; }
+
 /* ---------- Toasts ---------- */
 .toasts { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }
 .toast { padding: 10px 14px; border-radius: 8px; background: var(--bg-elev-2); border-left: 4px solid var(--accent); max-width: 360px; box-shadow: var(--shadow); color: var(--text); }

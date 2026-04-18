@@ -45,15 +45,44 @@ func (s *Server) hListTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 type createTaskReq struct {
-	Title           string   `json:"title"`
-	Description     string   `json:"description,omitempty"`
-	Priority        int      `json:"priority,omitempty"`
-	Status          string   `json:"status,omitempty"`
-	TriggerMode     string   `json:"trigger_mode,omitempty"`
-	PreferredServer string   `json:"preferred_server,omitempty"`
-	PreferredModel  string   `json:"preferred_model,omitempty"`
-	Tags            []string `json:"tags,omitempty"`
-	Dependencies    []string `json:"dependencies,omitempty"`
+	Title           string            `json:"title"`
+	Description     string            `json:"description,omitempty"`
+	Priority        int               `json:"priority,omitempty"`
+	Status          string            `json:"status,omitempty"`
+	TriggerMode     string            `json:"trigger_mode,omitempty"`
+	PreferredServer string            `json:"preferred_server,omitempty"`
+	PreferredModel  string            `json:"preferred_model,omitempty"`
+	Tags            []string          `json:"tags,omitempty"`
+	Dependencies    []json.RawMessage `json:"dependencies,omitempty"` // []string or []{task_id,required_state}
+}
+
+// normalizeDeps converts mixed string / object entries into the canonical TaskDep form.
+// Legacy payloads that pass a bare string are assumed to mean required_state="done".
+func normalizeDeps(raws []json.RawMessage) []store.TaskDep {
+	out := make([]store.TaskDep, 0, len(raws))
+	for _, raw := range raws {
+		if len(raw) == 0 {
+			continue
+		}
+		// Try object first.
+		var obj struct {
+			TaskID        string `json:"task_id"`
+			RequiredState string `json:"required_state"`
+		}
+		if err := json.Unmarshal(raw, &obj); err == nil && obj.TaskID != "" {
+			if obj.RequiredState == "" {
+				obj.RequiredState = "done"
+			}
+			out = append(out, store.TaskDep{TaskID: obj.TaskID, RequiredState: obj.RequiredState})
+			continue
+		}
+		// Fall back to string.
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil && s != "" {
+			out = append(out, store.TaskDep{TaskID: s, RequiredState: "done"})
+		}
+	}
+	return out
 }
 
 func (s *Server) hCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +116,7 @@ func (s *Server) hCreateTask(w http.ResponseWriter, r *http.Request) {
 		PreferredServer:    req.PreferredServer,
 		PreferredModel:     req.PreferredModel,
 		Tags:               req.Tags,
-		Dependencies:       req.Dependencies,
+		Dependencies:       normalizeDeps(req.Dependencies),
 		DescriptionExcerpt: truncExcerpt(req.Description, 200),
 	}
 	if err := s.Store.CreateTask(r.Context(), t); err != nil {
@@ -154,14 +183,14 @@ func (s *Server) hGetTask(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 type patchTaskReq struct {
-	Title           *string   `json:"title,omitempty"`
-	Description     *string   `json:"description,omitempty"`
-	Priority        *int      `json:"priority,omitempty"`
-	TriggerMode     *string   `json:"trigger_mode,omitempty"`
-	PreferredServer *string   `json:"preferred_server,omitempty"`
-	PreferredModel  *string   `json:"preferred_model,omitempty"`
-	Tags            *[]string `json:"tags,omitempty"`
-	Dependencies    *[]string `json:"dependencies,omitempty"`
+	Title           *string            `json:"title,omitempty"`
+	Description     *string            `json:"description,omitempty"`
+	Priority        *int               `json:"priority,omitempty"`
+	TriggerMode     *string            `json:"trigger_mode,omitempty"`
+	PreferredServer *string            `json:"preferred_server,omitempty"`
+	PreferredModel  *string            `json:"preferred_model,omitempty"`
+	Tags            *[]string          `json:"tags,omitempty"`
+	Dependencies    *[]json.RawMessage `json:"dependencies,omitempty"`
 }
 
 func (s *Server) hPatchTask(w http.ResponseWriter, r *http.Request, id string) {
@@ -194,7 +223,7 @@ func (s *Server) hPatchTask(w http.ResponseWriter, r *http.Request, id string) {
 		t.Tags = *req.Tags
 	}
 	if req.Dependencies != nil {
-		t.Dependencies = *req.Dependencies
+		t.Dependencies = normalizeDeps(*req.Dependencies)
 	}
 	if req.Description != nil {
 		t.DescriptionExcerpt = truncExcerpt(*req.Description, 200)

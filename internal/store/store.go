@@ -404,12 +404,23 @@ func (s *Store) TaskIDs(ctx context.Context, status TaskStatus) ([]string, error
 	return ids, rows.Err()
 }
 
-// AllDependenciesDone returns whether every dep of taskID is status=done.
+// AllDependenciesDone returns whether every dep of taskID is satisfied,
+// per its recorded required_state.
+//
+// Satisfaction semantics:
+//   required_state='verify'  → target ∈ {verify, done, archive}
+//   required_state='done'    → target ∈ {done, archive}
 func (s *Store) AllDependenciesDone(ctx context.Context, taskID string) (bool, error) {
-	rows, err := s.DB.QueryContext(ctx,
-		`SELECT COUNT(*) FROM task_deps d
-         JOIN tasks t ON t.id=d.depends_on
-         WHERE d.task_id=? AND t.status != 'done'`, taskID)
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT COUNT(*) FROM task_deps d
+		JOIN tasks t ON t.id = d.depends_on
+		WHERE d.task_id = ?
+		  AND NOT (
+		    (d.required_state = 'verify' AND t.status IN ('verify','done','archive'))
+		    OR
+		    (d.required_state = 'done'   AND t.status IN ('done','archive'))
+		  )
+	`, taskID)
 	if err != nil {
 		return false, err
 	}
@@ -588,14 +599,14 @@ func (s *Store) loadTaskTagsDeps(ctx context.Context, t *Task) error {
 	}
 	rows.Close()
 
-	rows, err = s.DB.QueryContext(ctx, `SELECT depends_on FROM task_deps WHERE task_id=?`, t.ID)
+	rows, err = s.DB.QueryContext(ctx, `SELECT depends_on, required_state FROM task_deps WHERE task_id=?`, t.ID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var d string
-		if err := rows.Scan(&d); err != nil {
+		var d TaskDep
+		if err := rows.Scan(&d.TaskID, &d.RequiredState); err != nil {
 			return err
 		}
 		t.Dependencies = append(t.Dependencies, d)
@@ -633,12 +644,18 @@ func writeTags(ctx context.Context, tx *sql.Tx, taskID string, tags []string) er
 	return nil
 }
 
-func writeDeps(ctx context.Context, tx *sql.Tx, taskID string, deps []string) error {
+func writeDeps(ctx context.Context, tx *sql.Tx, taskID string, deps []TaskDep) error {
 	for _, d := range deps {
-		if d == "" || d == taskID {
+		if d.TaskID == "" || d.TaskID == taskID {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO task_deps(task_id,depends_on) VALUES(?,?)`, taskID, d); err != nil {
+		state := strings.ToLower(strings.TrimSpace(d.RequiredState))
+		if state != "verify" && state != "done" {
+			state = "done"
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR REPLACE INTO task_deps(task_id, depends_on, required_state) VALUES(?,?,?)`,
+			taskID, d.TaskID, state); err != nil {
 			return err
 		}
 	}
@@ -668,7 +685,7 @@ func scanTask(scan scanner) (*Task, error) {
 	t.UpdatedAt = time.UnixMilli(updAt)
 	t.Position = position
 	t.Tags = []string{}
-	t.Dependencies = []string{}
+	t.Dependencies = []TaskDep{}
 	return &t, nil
 }
 

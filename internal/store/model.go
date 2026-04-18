@@ -31,6 +31,18 @@ const (
 	AttemptCancelled  AttemptState = "cancelled"
 )
 
+// TaskDep is a single dependency edge: the current task won't be dispatched
+// until the target task reaches at least the given state.
+//
+//   required_state="verify" — satisfied once target enters verify (i.e. its
+//                             attempts finished; user hasn't accepted yet).
+//                             Dependents can start already.
+//   required_state="done"   — target must be Done (human-accepted) or Archive.
+type TaskDep struct {
+	TaskID        string `json:"task_id"`
+	RequiredState string `json:"required_state"` // "verify" | "done" (default "done")
+}
+
 // Task is the SQL row + enriched tags/deps (description loaded separately via fsstore).
 type Task struct {
 	ID                 string      `json:"id"`
@@ -46,7 +58,7 @@ type Task struct {
 	UpdatedAt          time.Time   `json:"updated_at"`
 	DescriptionExcerpt string      `json:"description_excerpt,omitempty"`
 	Tags               []string    `json:"tags"`
-	Dependencies       []string    `json:"dependencies"`
+	Dependencies       []TaskDep   `json:"dependencies"`
 	AttemptCount       int         `json:"attempt_count"`
 	ActiveAttempts     int         `json:"active_attempts"`
 }
