@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## 2026-04-18
 
+### Docs
+- `docs/requirements.md` 升到 v0.2：在 §4.8.1 / §4.8.5 开头各加了一个"契约"引言块，把两条关键规则提升为明显红线：
+  1. 每个接入的 Hermes Server 必须配置 Server 级并发上限（默认 10），每个 profile（如 `hermes-agent`）再配置自己的并发上限（**默认 5**），任一层级超限即拒绝新 Attempt。
+  2. 所有系统设置（账号密码、Hermes Servers、各类开关）统一存 `data/config.yaml`；启动时读入内存、修改时先刷内存再原子写回、设置页必须提供"从文件重新加载配置"按钮（`POST /api/config/reload`），支持手改 YAML 后热刷新免重启。
+- 文档顶部新增修订历史段。
+
 ### Added
 - Initial implementation of the Hermes Task Board.
 - Single Go binary with embedded Vue 3 frontend (`go:embed`) — no separate build step for the web app.
