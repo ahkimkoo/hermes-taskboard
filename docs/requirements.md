@@ -1,8 +1,15 @@
 # Hermes Task Board 需求与架构设计文档
 
-> 版本：v0.1 · 草案
+> 版本：v0.2
 > 作者：Claude Code
 > 目标读者：后端 / 前端 / 运维
+
+## 修订历史
+
+- **v0.2 (2026-04-18)** — 强化两条关键约束（§4.8 系统设置）：
+  1. **Hermes Server 的并发限额必须分两级可配置**：一个是本 Server 的整体并发上限（默认 10），另一个是 `(server, profile)` 维度的并发上限（默认 **5**）。profile 即 Hermes 侧的 agent/model，如 `hermes-agent`。任一层级超限都必须拒绝新的 Attempt 起启。
+  2. **所有系统设置统一走 `data/config.yaml`**：含账号密码、已注册 Hermes Servers、调度 / 归档 / 偏好等全部开关。启动时读 YAML → 缓存到内存（`atomic.Pointer[Config]`）；任何修改**先更新内存、再原子写回文件**；设置页面必须提供**"从文件重新加载配置"按钮**，对应 `POST /api/config/reload`，允许用户直接 `vim data/config.yaml` 后热刷新而不必重启进程。失败回滚并保留旧快照。
+- **v0.1 (初稿)** — 首版需求与架构草案。
 
 ---
 
@@ -188,17 +195,21 @@ Hermes 官方提供两种接入方式：**ACP（Agent Client Protocol）** 与 *
 ### 4.8 系统设置
 
 #### 4.8.1 Hermes Server 管理（多 server、多 model）
+
+> **并发配置规则（重申）**
+> 每个接入的 Hermes Server **必须**独立设置最大并发任务数；同时每个 Server 下的每个 profile（Hermes 侧的 agent，例如 `hermes-agent`）也可单独指定并发上限，**profile 级默认 5**。超过任一层级上限的新 Attempt 必须被拒绝——`auto` 任务留在 Plan 等下一轮扫描；`manual` 返回 409 `concurrency_limit` 并指明受限层级。
+
 - 设置页提供 Server 列表的增 / 改 / 删；每个 Server 字段：
   - `id`（稳定 slug，用户可编辑，作为任务里的 `preferred_server` 值；系统生成后一般不改）
   - `name`（展示名，唯一）
   - `base_url`（例如 `http://127.0.0.1:8642`）
   - `api_key`（对应 Hermes 的 `API_SERVER_KEY`，以 Bearer Token 发送；`config.yaml` 存储时用 `APP_SECRET` AES-GCM 加密成 `api_key_enc`）
   - `is_default`（整个系统仅一个 default server）
-  - `max_concurrent`（本 Server 整体最大并发 Attempt 数，默认 10）
+  - `max_concurrent`（**Server 级并发上限**：本 Server 整体最大并发 Attempt 数，**默认 10**）
   - `models[]`（本 Server 的可用 profiles）：每项字段
     - `name`（profile 名；`hermes-agent` 为 Hermes 默认）
     - `is_default`（该 Server 内默认 model，未指定时用它）
-    - `max_concurrent`（本 (server, model) 组合的最大并发，**默认 5**）
+    - `max_concurrent`（**Profile 级并发上限**：本 `(server, model)` 组合的最大并发 Attempt 数，**默认 5**；用户可在设置页对每个 profile 单独调整）
 - 页面上"Test Connection"按钮：调用 `GET /health/detailed` + `GET /v1/models` 校验 key 与当前可用模型；返回结果用于提醒"配置里声明的 model 是否在 server 上真实存在"。
 - Models 由用户在配置里声明（含并发上限等策略），**不**自动同步 `GET /v1/models`；`GET /v1/models` 只作参考展示，点"Import"可一键把 server 尚未声明的 model 追加到 `models[]`（默认并发 5）。
 - 删除 Server：若仍有任务 / attempt 引用它，先弹确认；删除后任务里的 `preferred_server` 清为 null（回落到默认 server）。
@@ -230,7 +241,12 @@ Hermes 官方提供两种接入方式：**ACP（Agent Client Protocol）** 与 *
 - 仅允许**单用户**（v1 不做多用户、不做角色权限），保持简单。
 
 #### 4.8.5 配置文件与热加载（**重要**）
-**所有"系统设置"统一存在 `data/config.yaml`**，SQLite **不**再承担配置职责，只存业务数据（tasks、attempts、tags、deps）。
+
+> **契约（重申）**
+> 1. **所有系统设置（账号密码、已注册 Hermes Server、调度 / 归档 / 偏好等所有开关）统一存在 `data/config.yaml`**；SQLite 只存业务数据（tasks、attempts、tags、deps）。
+> 2. **启动时**：进程读取 YAML 并缓存到内存（`atomic.Pointer[Config]` 无锁快照）。
+> 3. **修改时**：通过 API / 设置页触发的任何配置变更，**先更新内存**，再**原子写回** `data/config.yaml`（`tmp → fsync → rename`）；写失败则回滚内存、保留旧快照。
+> 4. **手动编辑 + 热加载**：设置页顶部必须提供 **"从文件重新加载配置"按钮**（`POST /api/config/reload`）——用户直接 `vim data/config.yaml` 改完点一下即可生效，**不必重启进程**。失败时保留旧快照并返回详细错误。
 
 包含内容：
 - `auth.*`（账号密码、session secret、TTL）
