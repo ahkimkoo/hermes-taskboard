@@ -12,6 +12,19 @@
 
 ## English
 
+### Why this exists
+
+[Hermes](https://github.com/hermes-agent) is a genuinely impressive agent. Compared to OpenClaw, it has **self-evolution**: it actually gets smarter the more you use it, accumulating memory, skills, and context so that it behaves less like a stateless tool and more like a **digital teammate who grows with you over time**.
+
+Hermes also plugs into a surprising number of messaging gateways — Telegram, Discord, Slack, WhatsApp, 微信, 飞书, 钉钉, QQ, and more — and steering it from an IM client is a delightful experience. But that workflow has a hard ceiling:
+
+- You can effectively only **drive one task at a time** through a chat thread.
+- Switching **sessions** and **agent profiles** mid-flight is clunky — you lose your train of thought, and parallelism is basically off the table.
+
+For power users who have a genuine **backlog** of things they want Hermes to chew through — refactors, audits, nightly sweeps, batches of small scripted jobs — the IM-first model becomes the bottleneck. You need a way to **list everything up front**, declare dependencies and priorities, and then let Hermes work the queue sequentially or in parallel while you get on with something else.
+
+That's what this project is for. **Hermes Task Board turns Hermes from "one-at-a-time chatbot" into a batch-capable work partner**, and gets dramatically more leverage out of every minute of Hermes's runtime. Define the backlog once, let the board + scheduler dispatch it, watch the tool calls stream live, verify, move on.
+
 ### What it does
 
 Hermes Agent executes tools, edits files, and runs shell commands. This project gives you a 6-column kanban to:
@@ -150,6 +163,19 @@ MIT.
 ---
 
 ## 简体中文
+
+### 项目初衷
+
+[Hermes](https://github.com/hermes-agent) 是一个相当了不起的 Agent。相比 OpenClaw，它最核心的优势是**自我进化能力** —— 越用越聪明，会随着使用时间的推移不断沉淀记忆、积累技能、继承上下文，不只是一个"工具"，而更像一位**和你一起成长的"数字伙伴"**。
+
+Hermes 还能对接相当多的消息网关 —— Telegram、Discord、Slack、WhatsApp、微信、飞书、钉钉、QQ 等 —— 通过这些即时通讯工具遥控 Hermes 的体验非常好。但这种使用方式有一个天然的天花板：
+
+- 你实质上**只能一次做一个任务**，IM 会话是串行的。
+- 途中要**切换 session、切换 agent profile** 时操作起来比较复杂，容易打断思路，并行执行几乎没戏。
+
+对于想让 Hermes 真正啃下一个**任务清单**的重度使用者 —— 一批重构、一次合规审计、一批夜间定时清理、一批批量小脚本 —— IM-first 的用法反而变成了瓶颈。你需要一个能**一次把所有事情都列出来**、声明好先后顺序与依赖、然后让 Hermes 按顺序或并行去执行的工具，这样你就可以把注意力腾出来干别的。
+
+这就是本项目存在的意义。**Hermes Task Board 把 Hermes 从"一次一件"的聊天机器人升级成批量可用的工作搭档**，让每一分钟 Hermes 的运行时间都发挥出最大价值。一次定义完 backlog，看板 + 调度器自动分发，工具调用实时可见，验证完继续下一件 —— 极大地提高 Hermes 的使用效率。
 
 ### 这是什么
 

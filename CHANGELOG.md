@@ -5,6 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## 2026-04-18
 
+### Docs (later)
+- `README.md` 中英两个版本各新增 **项目初衷 / Why this exists** 段落：说明 Hermes 的自我进化能力与"数字伙伴"定位、列出它支持的 IM 网关（Telegram / Discord / Slack / WhatsApp / 微信 / 飞书 / 钉钉 / QQ…），并阐明 IM-first 使用方式的天花板（只能一次一件、切 session / profile 不方便），从而论证本项目"让 Hermes 能按 backlog 批量 / 并行工作"的价值。
+
 ### Docs
 - `docs/requirements.md` 升到 v0.2：在 §4.8.1 / §4.8.5 开头各加了一个"契约"引言块，把两条关键规则提升为明显红线：
   1. 每个接入的 Hermes Server 必须配置 Server 级并发上限（默认 10），每个 profile（如 `hermes-agent`）再配置自己的并发上限（**默认 5**），任一层级超限即拒绝新 Attempt。
