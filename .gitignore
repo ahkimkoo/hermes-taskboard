@@ -1,0 +1,22 @@
+# 运行期生成
+/data/
+
+# Go
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+vendor/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# secrets
+.env
+.env.*
+!.env.example
