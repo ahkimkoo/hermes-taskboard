@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## 2026-04-19
 
+### Fixes (round 5)
+- **Attempt list toggle now actually toggles**. Previous logic was `attemptListVisible = listOpen || attempts.length > 1`, so once a task had 2+ attempts the list stayed permanently visible no matter how many times you clicked Hide. Now a single `listOpen` flag drives visibility; it defaults to open when `attempts.length > 1` and false otherwise, and the toggle button shows whenever there is at least one attempt.
+- **Sound preview buttons** next to each event toggle in Settings → Preferences. The ▶ button plays the corresponding tone regardless of whether that specific event is enabled (so you can still audition a sound before deciding to turn it on), using the current volume draft.
+- Two new Playwright cases; suite is 23/23 green.
+
 ### UX additions (round 4)
 - **Image upload now requires an image host**: verified by reading Hermes's `gateway/platforms/api_server.py` that the server forwards `input` text verbatim to the upstream LLM (DashScope, etc.) and silently drops `image_url` content parts. Since the LLM can't reach `http://127.0.0.1:1900/uploads/*`, local storage is useless in any realistic setup. The Insert image button and paste/drop handlers are now hidden unless Aliyun OSS is configured; `POST /api/uploads` returns `503 image_upload_disabled` in the same case. A helpful hint underneath the description editor explains why and points to Settings → Integrations.
 - **Task modals no longer close on overlay click**: the task-open and new-task modals now only close via the explicit × in the header (or Cancel for new-task). Accidentally clicking the dimmed area around the modal while editing a long description no longer discards the whole thing. Settings and confirmation modals keep their existing overlay-click behaviour since they don't risk losing user input.

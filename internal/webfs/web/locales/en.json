@@ -122,6 +122,7 @@
   "settings.sound_execute_start": "Task start",
   "settings.sound_needs_input": "Needs input",
   "settings.sound_done": "Task done",
+  "settings.sound_preview": "Preview",
   "settings.oss_helper": "Aliyun OSS is used as an image host for task descriptions. When disabled, images are stored locally under data/uploads/ and served by this server.",
   "settings.oss_enable": "Use Aliyun OSS for image uploads",
   "settings.oss_prefix": "Path prefix",

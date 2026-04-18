@@ -314,9 +314,6 @@ const TaskModal = {
     currentAttempt() {
       return this.attempts.find((a) => a.id === this.activeAttemptId) || null;
     },
-    attemptListVisible() {
-      return this.listOpen || this.attempts.length > 1;
-    },
     renderedDescription() {
       return markdown(this.task && this.task.description || '');
     },
@@ -400,14 +397,14 @@ const TaskModal = {
             <h3 class="attempts-heading">
               {{ $t('attempt.heading') }}
               <span class="attempts-count">{{ attempts.length }}</span>
-              <button v-if="attempts.length > 1 || attempts.length === 0"
-                      class="ghost small" @click="listOpen = !listOpen">
+              <button v-if="attempts.length > 0"
+                      class="ghost small attempt-toggle" @click="listOpen = !listOpen">
                 {{ listOpen ? $t('attempt.collapse') : $t('attempt.expand') }}
               </button>
             </h3>
 
-            <div class="attempt-panel" :class="{ stacked: attempts.length <= 1 }">
-              <div class="attempt-list" v-show="attemptListVisible">
+            <div class="attempt-panel" :class="{ stacked: !listOpen }">
+              <div class="attempt-list" v-show="listOpen">
                 <div v-for="a in attempts" :key="a.id" class="attempt-item"
                      :class="{active: a.id === activeAttemptId}"
                      @click="activeAttemptId = a.id">
@@ -497,6 +494,9 @@ const TaskModal = {
         if (!this.activeAttemptId || !this.attempts.some((a) => a.id === this.activeAttemptId)) {
           this.activeAttemptId = this.attempts.length ? this.attempts[this.attempts.length - 1].id : null;
         }
+        // Collapse the list when there's only one attempt; expand it when
+        // there are several so users see them at a glance.
+        this.listOpen = this.attempts.length > 1;
       } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
     async save() {
@@ -713,9 +713,18 @@ const SettingsModal = {
                   <label>{{ $t('settings.sound_volume') }}: {{ Math.round((preferences.sound.volume||0)*100) }}%</label>
                   <input type="range" min="0" max="1" step="0.05" v-model.number="preferences.sound.volume">
                 </div>
-                <div class="form-row"><label><input type="checkbox" v-model="preferences.sound.events.execute_start"> {{ $t('settings.sound_execute_start') }}</label></div>
-                <div class="form-row"><label><input type="checkbox" v-model="preferences.sound.events.needs_input"> {{ $t('settings.sound_needs_input') }}</label></div>
-                <div class="form-row"><label><input type="checkbox" v-model="preferences.sound.events.done"> {{ $t('settings.sound_done') }}</label></div>
+                <div class="form-row sound-row">
+                  <label><input type="checkbox" v-model="preferences.sound.events.execute_start"> {{ $t('settings.sound_execute_start') }}</label>
+                  <button type="button" class="secondary small preview-btn" @click="previewSound('execute_start')">▶ {{ $t('settings.sound_preview') }}</button>
+                </div>
+                <div class="form-row sound-row">
+                  <label><input type="checkbox" v-model="preferences.sound.events.needs_input"> {{ $t('settings.sound_needs_input') }}</label>
+                  <button type="button" class="secondary small preview-btn" @click="previewSound('needs_input')">▶ {{ $t('settings.sound_preview') }}</button>
+                </div>
+                <div class="form-row sound-row">
+                  <label><input type="checkbox" v-model="preferences.sound.events.done"> {{ $t('settings.sound_done') }}</label>
+                  <button type="button" class="secondary small preview-btn" @click="previewSound('done')">▶ {{ $t('settings.sound_preview') }}</button>
+                </div>
                 <button class="primary" @click="savePrefs">{{ $t('action.save') }}</button>
               </div>
 
@@ -748,6 +757,20 @@ const SettingsModal = {
     </div>
   `,
   methods: {
+    previewSound(kind) {
+      // Apply the current draft volume + blanket-enable so previews work even
+      // when the specific event's checkbox is off; restore the real prefs
+      // right after. This is local-only — nothing is persisted here.
+      const draft = this.preferences.sound || { enabled: true, volume: 0.7, events: {} };
+      setSoundPrefs({
+        enabled: true,
+        volume: draft.volume,
+        events: { execute_start: true, needs_input: true, done: true },
+      });
+      playSound(kind);
+      // Restore real prefs after the short tone finishes (~0.3 s).
+      setTimeout(() => setSoundPrefs(draft), 500);
+    },
     editServerInit(s) {
       if (s) {
         this.editServer = { ...s, api_key: '', __edit: true, models: (s.models || []).map((m) => ({ ...m })) };

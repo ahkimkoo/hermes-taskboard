@@ -314,6 +314,63 @@ def test_new_task_overlay_noclose(page: Page):
     page.wait_for_selector(".modal-header h2:has-text('New Task')", state="detached", timeout=3000)
 
 
+@test("attempt list toggle: Hide/Show actually flips list visibility")
+def test_attempt_list_toggle(page: Page):
+    # Build a task with two dummy attempts inserted directly into the DB via
+    # the attempts endpoint isn't available, so we create attempts by manually
+    # hitting POST /api/tasks/{id}/attempts which will try to dispatch Hermes.
+    # That triggers real network activity — instead, use the lighter approach
+    # of mocking: insert rows via a sqlite-less SQL shim isn't possible in
+    # pure JS, so just craft two attempts via the normal Start endpoint and
+    # accept the side-effect (they'll fail fast if Hermes isn't configured —
+    # which is fine, we only care about the UI reading `attempts`).
+    tid = api_create_task(page, f"Togg-{uuid.uuid4().hex[:5]}", status="plan")
+    try:
+        # Create two attempts (server_id/model default to the registered
+        # "local" Hermes server; even if they fail to connect they'll exist
+        # in the attempts table with state=failed and UI will list them).
+        for _ in range(2):
+            page.evaluate(
+                "id => fetch('/api/tasks/' + id + '/attempts', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})",
+                tid,
+            )
+            page.wait_for_timeout(150)
+        page.reload(); wait_for_app(page)
+        page.locator(f".card:has(.card-title:has-text(\"Togg-\"))").first.click()
+        page.wait_for_selector(".attempt-panel")
+        # With 2 attempts, the list starts expanded.
+        toggle = page.locator("button.attempt-toggle").first
+        assert toggle.count() > 0, "toggle button must be visible"
+        assert page.locator(".attempt-list").first.is_visible(), "list should be visible initially with 2+ attempts"
+        toggle.click()
+        page.wait_for_timeout(200)
+        assert not page.locator(".attempt-list").first.is_visible(), "list should hide after clicking Hide"
+        toggle.click()
+        page.wait_for_timeout(200)
+        assert page.locator(".attempt-list").first.is_visible(), "list should re-show after clicking Show"
+        page.locator(".modal .close-btn").first.click()
+    finally:
+        api_delete_task(page, tid)
+
+
+@test("sound preview buttons are present and clickable")
+def test_sound_preview_buttons(page: Page):
+    page.click("button:has-text('Settings')")
+    page.wait_for_selector(".modal-header h2:has-text('Settings')")
+    page.locator(".settings-nav button:has-text('Preferences')").click()
+    page.wait_for_selector(".sound-row")
+    # One preview button per event (Task start / Needs input / Task done).
+    previews = page.locator(".sound-row button.preview-btn")
+    assert previews.count() == 3, f"expected 3 preview buttons, got {previews.count()}"
+    # Click each one — they must not throw (console errors would be caught
+    # by the test_no_js_errors aggregator). We can't verify audio in
+    # headless, but the Web Audio API must resume without exception.
+    for i in range(3):
+        previews.nth(i).click()
+        page.wait_for_timeout(60)
+    page.locator(".modal .modal-header-actions button.ghost").first.click()
+
+
 @test("POST /api/uploads returns 503 when OSS is not configured")
 def test_uploads_gated(page: Page):
     res = page.evaluate("""async () => {
@@ -529,6 +586,8 @@ def main():
         test_task_modal_overlay_noclose(page)
         test_new_task_overlay_noclose(page)
         test_uploads_gated(page)
+        test_attempt_list_toggle(page)
+        test_sound_preview_buttons(page)
 
         # Final: check we had no unexpected page errors during the whole run.
         if js_errors:

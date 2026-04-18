@@ -122,6 +122,7 @@
   "settings.sound_execute_start": "任务开始",
   "settings.sound_needs_input": "需要输入",
   "settings.sound_done": "任务完成",
+  "settings.sound_preview": "试听",
   "settings.oss_helper": "阿里云 OSS 用作任务描述里的图片图床。关闭时图片会本地存在 data/uploads/ 下，由本服务直接分发。",
   "settings.oss_enable": "启用阿里云 OSS 作为图片存储",
   "settings.oss_prefix": "路径前缀",
