@@ -1,33 +1,105 @@
-/* Executing: green conic-gradient rotating border */
+/* Card state animations — two-color "electric chase" borders.
+ *
+ * The effect is a conic-gradient painted into the card border, where most of
+ * the perimeter is transparent and two narrow bright arcs (one green→red,
+ * one green→red on the opposite side) rotate continuously. Because the arcs
+ * are opposite each other, the visible "current" looks like two sparks
+ * chasing each other around the card instead of a uniform glow.
+ *
+ * Registering `--glow-angle` as a real <angle> property lets the browser
+ * interpolate it smoothly at 60 fps; without @property the angle would jump
+ * from 0deg to 360deg instantly and the chase wouldn't animate.
+ */
 @property --glow-angle {
   syntax: '<angle>';
   initial-value: 0deg;
   inherits: false;
 }
-@keyframes glow-rotate {
+
+@keyframes glow-chase {
   to { --glow-angle: 360deg; }
 }
-.card.executing {
+
+/* Shared skeleton — both variants differ only in the two accent colors. */
+.card.running,
+.card.needs-input {
   border: 2px solid transparent;
+  background-clip: padding-box, border-box;
+  background-origin: padding-box, border-box;
+  animation: glow-chase 3s linear infinite;
+  /* Slight outer shadow in the active colour makes the chase feel brighter. */
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+  position: relative;
+}
+
+/* Running — green + red electric current. */
+.card.running {
   background:
     linear-gradient(var(--bg-elev-2), var(--bg-elev-2)) padding-box,
-    conic-gradient(from var(--glow-angle, 0deg), #00e676, #00c853, #00e676) border-box;
-  animation: glow-rotate 2.5s linear infinite;
+    conic-gradient(
+      from var(--glow-angle, 0deg),
+      transparent 0deg,
+      #00e676 30deg,
+      #ff1744 80deg,
+      transparent 110deg,
+      transparent 180deg,
+      #00e676 210deg,
+      #ff1744 260deg,
+      transparent 290deg,
+      transparent 360deg
+    ) border-box;
 }
 
-/* Needs-input flashing orange */
-@keyframes flash-orange {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 152, 0, 0.8); border-color: var(--warning); }
-  50% { box-shadow: 0 0 0 6px rgba(255, 152, 0, 0.2); border-color: var(--warning); }
-}
+/* Verify / needs-input — orange + red electric current. */
 .card.needs-input {
-  border: 2px solid var(--warning);
-  animation: flash-orange 1.2s ease-in-out infinite;
+  background:
+    linear-gradient(var(--bg-elev-2), var(--bg-elev-2)) padding-box,
+    conic-gradient(
+      from var(--glow-angle, 0deg),
+      transparent 0deg,
+      #ffb300 30deg,
+      #ff1744 80deg,
+      transparent 110deg,
+      transparent 180deg,
+      #ffb300 210deg,
+      #ff1744 260deg,
+      transparent 290deg,
+      transparent 360deg
+    ) border-box;
 }
 
-/* Card move into verify */
+/* Respect reduced-motion: drop to a static colored border instead of animating. */
+@media (prefers-reduced-motion: reduce) {
+  .card.running,
+  .card.needs-input {
+    animation: none;
+  }
+  .card.running { border-color: #00e676; background: var(--bg-elev-2); }
+  .card.needs-input { border-color: #ffb300; background: var(--bg-elev-2); }
+}
+
+/* Backwards-compat alias: older code referenced `.card.executing`. Map it to
+   the same visual as `.card.running` so any stale selector still animates. */
+.card.executing {
+  border: 2px solid transparent;
+  background-clip: padding-box, border-box;
+  background-origin: padding-box, border-box;
+  animation: glow-chase 3s linear infinite;
+  background:
+    linear-gradient(var(--bg-elev-2), var(--bg-elev-2)) padding-box,
+    conic-gradient(
+      from var(--glow-angle, 0deg),
+      transparent 0deg,
+      #00e676 30deg, #ff1744 80deg, transparent 110deg,
+      transparent 180deg,
+      #00e676 210deg, #ff1744 260deg, transparent 290deg,
+      transparent 360deg
+    ) border-box;
+}
+
+/* Card enters a column (e.g. auto-move into Verify). */
 @keyframes slide-in {
   from { transform: translateX(-30px); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
+  to   { transform: translateX(0); opacity: 1; }
 }
 .card.enter { animation: slide-in 0.3s ease-out; }

@@ -301,11 +301,11 @@ func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
 	if err := s.loadTaskTagsDeps(ctx, t); err != nil {
 		return nil, err
 	}
-	cnt, active, err := s.attemptCounts(ctx, id)
+	cnt, active, ni, err := s.attemptCounts(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	t.AttemptCount, t.ActiveAttempts = cnt, active
+	t.AttemptCount, t.ActiveAttempts, t.NeedsInputAttempts = cnt, active, ni
 	return t, nil
 }
 
@@ -378,11 +378,11 @@ func (s *Store) ListTasks(ctx context.Context, f TaskFilter) ([]*Task, error) {
 		if err := s.loadTaskTagsDeps(ctx, t); err != nil {
 			return nil, err
 		}
-		cnt, active, err := s.attemptCounts(ctx, t.ID)
+		cnt, active, ni, err := s.attemptCounts(ctx, t.ID)
 		if err != nil {
 			return nil, err
 		}
-		t.AttemptCount, t.ActiveAttempts = cnt, active
+		t.AttemptCount, t.ActiveAttempts, t.NeedsInputAttempts = cnt, active, ni
 	}
 	return list, nil
 }
@@ -614,17 +614,21 @@ func (s *Store) loadTaskTagsDeps(ctx context.Context, t *Task) error {
 	return rows.Err()
 }
 
-func (s *Store) attemptCounts(ctx context.Context, taskID string) (total, active int, err error) {
-	var totalN, activeN sql.NullInt64
-	err = s.DB.QueryRowContext(ctx,
-		`SELECT COUNT(*), SUM(CASE WHEN state IN ('queued','running','needs_input') THEN 1 ELSE 0 END) FROM attempts WHERE task_id=?`,
+func (s *Store) attemptCounts(ctx context.Context, taskID string) (total, active, needsInput int, err error) {
+	var totalN, activeN, niN sql.NullInt64
+	err = s.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       SUM(CASE WHEN state IN ('queued','running','needs_input') THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN state = 'needs_input' THEN 1 ELSE 0 END)
+		FROM attempts WHERE task_id=?`,
 		taskID,
-	).Scan(&totalN, &activeN)
+	).Scan(&totalN, &activeN, &niN)
 	if err != nil {
 		return
 	}
 	total = int(totalN.Int64)
 	active = int(activeN.Int64)
+	needsInput = int(niN.Int64)
 	return
 }
 

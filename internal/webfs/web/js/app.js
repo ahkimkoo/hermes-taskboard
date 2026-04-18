@@ -132,8 +132,20 @@ const Card = {
   `,
   computed: {
     cardClasses() {
+      // Decide which "electric chase" border to render, if any:
+      //   needs-input — any attempt is waiting for user input, OR the task
+      //                 itself is sitting in Verify awaiting review.
+      //                 Orange+red chase.
+      //   running     — task has at least one actively-executing attempt
+      //                 (but no attempt is blocked on user input).
+      //                 Green+red chase.
+      //   (none)      — static card, no animation.
+      const t = this.task;
+      const needsInput = (t.needs_input_attempts || 0) > 0 || t.status === 'verify';
+      const running = (t.active_attempts || 0) > 0;
       const c = [];
-      if (this.task.active_attempts > 0) c.push('executing');
+      if (needsInput) c.push('needs-input');
+      else if (running) c.push('running');
       return c;
     },
     depCount() { return (this.task.dependencies || []).length; },

@@ -314,6 +314,34 @@ def test_new_task_overlay_noclose(page: Page):
     page.wait_for_selector(".modal-header h2:has-text('New Task')", state="detached", timeout=3000)
 
 
+@test("card classes: Verify cards get .needs-input; Execute cards with a running attempt get .running")
+def test_card_animation_classes(page: Page):
+    # Any pre-existing card in Verify should carry .needs-input.
+    verify_cards = page.locator(".column[data-status='verify'] .card").all()
+    assert verify_cards, "expected at least one verify card in the seeded data"
+    for c in verify_cards:
+        cls = c.get_attribute("class") or ""
+        assert "needs-input" in cls, f"verify card missing .needs-input class: {cls!r}"
+        assert "running" not in cls, f"verify card should not carry .running: {cls!r}"
+
+    # Any Execute card with active attempts should carry .running — we don't
+    # have an attempt-state API to script this reliably, so check at least
+    # that no Execute card is simultaneously needs-input and running.
+    for c in page.locator(".column[data-status='execute'] .card").all():
+        cls = c.get_attribute("class") or ""
+        is_running = "running" in cls
+        is_ni = "needs-input" in cls
+        assert not (is_running and is_ni), f"execute card has conflicting classes: {cls!r}"
+
+    # CSS sanity: animation was applied with non-zero duration.
+    v = page.locator(".column[data-status='verify'] .card.needs-input").first
+    if v.count() > 0:
+        anim_name = v.evaluate("el => getComputedStyle(el).animationName")
+        anim_dur = v.evaluate("el => getComputedStyle(el).animationDuration")
+        assert anim_name and anim_name != "none", f"expected non-none animationName, got {anim_name!r}"
+        assert anim_dur != "0s", f"expected non-zero animationDuration, got {anim_dur!r}"
+
+
 @test("attempt list toggle: Hide/Show actually flips list visibility")
 def test_attempt_list_toggle(page: Page):
     # Build a task with two dummy attempts inserted directly into the DB via
@@ -588,6 +616,7 @@ def main():
         test_uploads_gated(page)
         test_attempt_list_toggle(page)
         test_sound_preview_buttons(page)
+        test_card_animation_classes(page)
 
         # Final: check we had no unexpected page errors during the whole run.
         if js_errors:

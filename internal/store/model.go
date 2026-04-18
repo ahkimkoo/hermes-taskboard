@@ -57,10 +57,11 @@ type Task struct {
 	CreatedAt          time.Time   `json:"created_at"`
 	UpdatedAt          time.Time   `json:"updated_at"`
 	DescriptionExcerpt string      `json:"description_excerpt,omitempty"`
-	Tags               []string    `json:"tags"`
-	Dependencies       []TaskDep   `json:"dependencies"`
-	AttemptCount       int         `json:"attempt_count"`
-	ActiveAttempts     int         `json:"active_attempts"`
+	Tags                []string  `json:"tags"`
+	Dependencies        []TaskDep `json:"dependencies"`
+	AttemptCount        int       `json:"attempt_count"`
+	ActiveAttempts      int       `json:"active_attempts"`       // queued + running + needs_input
+	NeedsInputAttempts  int       `json:"needs_input_attempts"`  // subset of ActiveAttempts
 }
 
 type Tag struct {

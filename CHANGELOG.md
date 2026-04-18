@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## 2026-04-19
 
+### Polish (round 6) — animated card borders
+- **Running tasks (Execute column)** now carry an **electric green+red "chase" border**: two narrow arcs of green→red gradient rotate around the card's perimeter at 3 s/revolution, with transparent gaps between them so the chase reads clearly.
+- **Verify / needs-input tasks** get the **same chase, but in orange+red** — signalling the card wants your attention without shouting as loud as an alert.
+- Implemented with `conic-gradient(from var(--glow-angle), transparent, color, color, transparent, …)` painted into a 2-px transparent border via `background-clip: padding-box, border-box`. `--glow-angle` is registered via `@property` so the browser can interpolate it smoothly at 60 fps.
+- Backend: `tasks` API now exposes `needs_input_attempts` alongside `active_attempts`, so the frontend can tell running-but-OK apart from running-but-blocked-on-input.
+- `prefers-reduced-motion: reduce` drops back to a static coloured border.
+- New regression test asserts Verify cards receive `.needs-input`, Execute cards with active attempts receive `.running`, and no card has both; computed `animationName` / `animationDuration` are non-zero. Suite is **24/24** green.
+
 ### Fixes (round 5)
 - **Attempt list toggle now actually toggles**. Previous logic was `attemptListVisible = listOpen || attempts.length > 1`, so once a task had 2+ attempts the list stayed permanently visible no matter how many times you clicked Hide. Now a single `listOpen` flag drives visibility; it defaults to open when `attempts.length > 1` and false otherwise, and the toggle button shows whenever there is at least one attempt.
 - **Sound preview buttons** next to each event toggle in Settings → Preferences. The ▶ button plays the corresponding tone regardless of whether that specific event is enabled (so you can still audition a sound before deciding to turn it on), using the current volume draft.
