@@ -16,6 +16,7 @@ import (
 	"github.com/ahkimkoo/hermes-taskboard/internal/auth"
 	"github.com/ahkimkoo/hermes-taskboard/internal/board"
 	"github.com/ahkimkoo/hermes-taskboard/internal/config"
+	cronpkg "github.com/ahkimkoo/hermes-taskboard/internal/cron"
 	"github.com/ahkimkoo/hermes-taskboard/internal/sse"
 	"github.com/ahkimkoo/hermes-taskboard/internal/store"
 	"github.com/ahkimkoo/hermes-taskboard/internal/store/fsstore"
@@ -160,6 +161,15 @@ func (s *Server) routeTasks(w http.ResponseWriter, r *http.Request) {
 			s.hListTaskAttempts(w, r, id)
 		} else {
 			s.hStartAttempt(w, r, id)
+		}
+	case len(parts) == 2 && parts[1] == "schedules":
+		switch r.Method {
+		case "GET":
+			s.hListTaskSchedules(w, r, id)
+		case "POST":
+			s.hCreateSchedule(w, r, id)
+		default:
+			http.Error(w, "method not allowed", 405)
 		}
 	default:
 		http.NotFound(w, r)
@@ -539,14 +549,24 @@ func (s *Server) streamTopic(w http.ResponseWriter, r *http.Request, topic strin
 	}
 }
 
+// writeSSE emits a Server-Sent Events frame. We intentionally DO NOT emit the
+// `event:` header: a named event is only delivered to matching
+// addEventListener(name) handlers and never to onmessage, which was silently
+// starving our generic board subscriber. Instead we inline the event name into
+// the JSON payload (key "event") so the frontend's onmessage handler can
+// discriminate from a single stream.
 func writeSSE(w http.ResponseWriter, seq uint64, event string, data map[string]any) {
 	if seq > 0 {
 		fmt.Fprintf(w, "id: %d\n", seq)
 	}
-	if event != "" {
-		fmt.Fprintf(w, "event: %s\n", event)
+	payload := make(map[string]any, len(data)+1)
+	for k, v := range data {
+		payload[k] = v
 	}
-	b, _ := json.Marshal(data)
+	if event != "" {
+		payload["event"] = event
+	}
+	b, _ := json.Marshal(payload)
 	fmt.Fprintf(w, "data: %s\n\n", b)
 }
 
@@ -784,6 +804,11 @@ func (s *Server) hUpsertTag(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
+	t.Name = strings.TrimSpace(t.Name)
+	if t.Name == "" {
+		writeErr(w, 400, errors.New("tag name required"))
+		return
+	}
 	if err := s.Store.UpsertTag(r.Context(), t); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -1005,6 +1030,107 @@ func (s *Server) hAuthChange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// ---------------- schedules ----------------
+
+type scheduleReq struct {
+	Kind    string `json:"kind"`    // "interval" | "cron"
+	Spec    string `json:"spec"`    // "15m" or cron string
+	Note    string `json:"note,omitempty"`
+	Enabled *bool  `json:"enabled,omitempty"`
+}
+
+func (s *Server) hListTaskSchedules(w http.ResponseWriter, r *http.Request, taskID string) {
+	list, err := s.Store.ListSchedulesForTask(r.Context(), taskID)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"schedules": list})
+}
+
+func (s *Server) hCreateSchedule(w http.ResponseWriter, r *http.Request, taskID string) {
+	var req scheduleReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	kind := store.ScheduleKind(strings.ToLower(strings.TrimSpace(req.Kind)))
+	if kind != store.ScheduleInterval && kind != store.ScheduleCron {
+		writeErr(w, 400, errors.New("kind must be 'interval' or 'cron'"))
+		return
+	}
+	sch := store.Schedule{
+		ID:      uuid.NewString(),
+		TaskID:  taskID,
+		Kind:    kind,
+		Spec:    strings.TrimSpace(req.Spec),
+		Note:    req.Note,
+		Enabled: true,
+	}
+	if req.Enabled != nil {
+		sch.Enabled = *req.Enabled
+	}
+	if err := cronpkg.Compute(&sch, time.Now()); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if err := s.Store.CreateSchedule(r.Context(), &sch); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 201, map[string]any{"schedule": sch})
+}
+
+// routeSchedules handles /api/schedules/{id} — PATCH toggles the enabled
+// flag; DELETE removes the row. Changing kind/spec is done via DELETE + POST
+// to avoid needing to re-derive next_run_at relative to an unknown base.
+func (s *Server) routeSchedules(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/schedules/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case "DELETE":
+		if err := s.Store.DeleteSchedule(r.Context(), id); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+	case "PATCH":
+		var req struct {
+			Enabled *bool `json:"enabled,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		if req.Enabled == nil {
+			writeErr(w, 400, errors.New("only enabled toggle is supported"))
+			return
+		}
+		existing, err := s.Store.GetSchedule(r.Context(), id)
+		if err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		if err := s.Store.SetScheduleEnabled(r.Context(), id, *req.Enabled); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		// When re-enabling, recompute next_run_at from now so it actually fires.
+		if *req.Enabled {
+			existing.Enabled = true
+			if err := cronpkg.Compute(existing, time.Now()); err == nil {
+				_ = s.Store.UpdateSchedule(r.Context(), existing)
+			}
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
 }
 
 // ---------------- uploads ----------------

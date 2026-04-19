@@ -314,6 +314,115 @@ def test_new_task_overlay_noclose(page: Page):
     page.wait_for_selector(".modal-header h2:has-text('New Task')", state="detached", timeout=3000)
 
 
+@test("tag system prompt: create, edit, delete via Settings → Tags")
+def test_tag_system_prompt(page: Page):
+    name = f"tg-{uuid.uuid4().hex[:6]}"
+    prompt = f"Run fast, say hi. Marker-{uuid.uuid4().hex[:4]}"
+    # Seed via API so UI doesn't have to fight autocomplete lists.
+    page.evaluate(
+        "async ({n, p}) => fetch('/api/tags', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name: n, color:'', system_prompt: p})}).then(r=>r.json())",
+        {"n": name, "p": prompt},
+    )
+    # Open Settings → Tags and confirm our tag is listed with the prompt.
+    page.click("button:has-text('Settings')")
+    page.wait_for_selector(".modal-header h2:has-text('Settings')")
+    page.locator(".settings-nav button:has-text('Tags')").click()
+    page.wait_for_selector(".settings-section h3:has-text('Tags')")
+    # Find the row for our tag.
+    row = page.locator(f".tbl tr:has(.tag-chip:has-text(\"{name}\"))")
+    row.wait_for(timeout=3000)
+    assert prompt[:20] in row.locator(".sys-prompt-preview").first.inner_text()
+    # Delete via DOM to exercise the full flow.
+    page.on("dialog", lambda d: d.accept())
+    row.locator("button.danger").click()
+    page.wait_for_timeout(300)
+    page.locator(".modal .modal-header-actions button.ghost").first.click()
+
+
+@test("schedule API: create, toggle off, delete round-trip")
+def test_schedule_roundtrip(page: Page):
+    tid = api_create_task(page, f"sched-{uuid.uuid4().hex[:6]}", status="plan")
+    try:
+        # Create a schedule.
+        res = page.evaluate(
+            "async ({tid}) => (await fetch('/api/tasks/'+tid+'/schedules', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({kind:'interval', spec:'30m', note:'sanity'})}).then(r=>r.json()))",
+            {"tid": tid},
+        )
+        sid = res["schedule"]["id"]
+        assert res["schedule"]["next_run_at"], "next_run_at should be set"
+        # Toggle off.
+        page.evaluate(
+            "id => fetch('/api/schedules/'+id, {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled:false})})",
+            sid,
+        )
+        # Confirm it's disabled in list.
+        r = page.evaluate("tid => fetch('/api/tasks/'+tid+'/schedules').then(r=>r.json())", tid)
+        assert r["schedules"][0]["enabled"] is False
+        # Delete.
+        page.evaluate("id => fetch('/api/schedules/'+id, {method:'DELETE'})", sid)
+        r2 = page.evaluate("tid => fetch('/api/tasks/'+tid+'/schedules').then(r=>r.json())", tid)
+        assert not (r2.get("schedules") or []), f"expected no schedules, got {r2}"
+    finally:
+        api_delete_task(page, tid)
+
+
+@test("schedule picker UI visible inside task modal")
+def test_schedule_picker_ui(page: Page):
+    tid = api_create_task(page, f"schedUI-{uuid.uuid4().hex[:6]}", status="draft")
+    try:
+        page.reload(); wait_for_app(page)
+        find_card_by_title(page, "schedUI-").first.click()
+        page.wait_for_selector(".schedule-picker")
+        # Heading should exist, and the "Add schedule" button should render
+        # when no schedules are configured yet.
+        assert page.locator(".schedule-picker button:has-text('Add schedule')").count() > 0
+        page.locator(".modal .close-btn").first.click()
+    finally:
+        api_delete_task(page, tid)
+
+
+@test("Ctrl+Enter hint appears under send input; Stop requires two clicks")
+def test_input_hints(page: Page):
+    # Just look at an existing card with attempts — pick the first Verify card
+    # since seeded data has Verify cards with attempts.
+    card = page.locator(".column[data-status='verify'] .card").first
+    if card.count() == 0:
+        # Fall back: Execute cards.
+        card = page.locator(".column[data-status='execute'] .card").first
+    assert card.count() > 0, "need a seeded card with attempts"
+    card.click()
+    page.wait_for_selector(".modal-header h2")
+    # Some tasks might not have attempts yet; just skip this check if input-area missing.
+    if page.locator(".input-area").count() == 0:
+        page.locator(".modal .close-btn").first.click()
+        return
+    hint = page.locator(".input-hint").first.inner_text().lower()
+    assert "ctrl" in hint or "⌘" in hint, f"expected hint to mention Ctrl/⌘, got {hint!r}"
+    # Stop is a 2-click: first click arms, second click triggers.
+    first_click_label = page.locator(".input-bar button.danger").first.inner_text()
+    page.locator(".input-bar button.danger").first.click()
+    page.wait_for_timeout(150)
+    second_click_label = page.locator(".input-bar button.danger").first.inner_text()
+    assert first_click_label != second_click_label, f"Stop button label must change after first click: {first_click_label!r} → {second_click_label!r}"
+    page.locator(".modal .close-btn").first.click()
+
+
+@test("? help popover: clicking reveals an explanation of what an Attempt is")
+def test_attempt_help_popover(page: Page):
+    tid = api_create_task(page, f"help-{uuid.uuid4().hex[:6]}", status="draft")
+    try:
+        page.reload(); wait_for_app(page)
+        find_card_by_title(page, "help-").first.click()
+        page.wait_for_selector(".attempts-heading")
+        page.locator(".attempts-heading .help-btn").click()
+        page.wait_for_selector(".help-popover", timeout=2000)
+        text = page.locator(".help-popover").first.inner_text().lower()
+        assert "attempt" in text or "执行" in text, f"help popover missing Attempt explanation: {text!r}"
+        page.locator(".modal .close-btn").first.click()
+    finally:
+        api_delete_task(page, tid)
+
+
 @test("card classes: Verify cards get .needs-input; Execute cards with a running attempt get .running")
 def test_card_animation_classes(page: Page):
     # Any pre-existing card in Verify should carry .needs-input.
@@ -617,6 +726,11 @@ def main():
         test_attempt_list_toggle(page)
         test_sound_preview_buttons(page)
         test_card_animation_classes(page)
+        test_tag_system_prompt(page)
+        test_schedule_roundtrip(page)
+        test_schedule_picker_ui(page)
+        test_input_hints(page)
+        test_attempt_help_popover(page)
 
         # Final: check we had no unexpected page errors during the whole run.
         if js_errors:

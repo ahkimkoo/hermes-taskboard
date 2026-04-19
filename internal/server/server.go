@@ -82,6 +82,9 @@ func (s *Server) Handler() http.Handler {
 	// --- attempts ---
 	mux.HandleFunc("/api/attempts/", s.routeAttempts)
 
+	// --- task-nested routes (schedules under /api/tasks/{id}/schedules) are
+	//     handled inside routeTasks. See handlers.go.
+
 	// --- servers (hermes) ---
 	mux.HandleFunc("/api/servers", s.withMethod(map[string]http.HandlerFunc{
 		"GET":  s.hListServers,
@@ -95,6 +98,9 @@ func (s *Server) Handler() http.Handler {
 		"POST": s.hUpsertTag,
 	}))
 	mux.HandleFunc("/api/tags/", s.hDeleteTag)
+
+	// --- schedules ---
+	mux.HandleFunc("/api/schedules/", s.routeSchedules)
 
 	// --- settings / config / preferences ---
 	mux.HandleFunc("/api/settings", s.withMethod(map[string]http.HandlerFunc{

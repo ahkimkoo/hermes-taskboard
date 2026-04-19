@@ -16,6 +16,7 @@ import (
 	"github.com/ahkimkoo/hermes-taskboard/internal/auth"
 	"github.com/ahkimkoo/hermes-taskboard/internal/board"
 	"github.com/ahkimkoo/hermes-taskboard/internal/config"
+	cronpkg "github.com/ahkimkoo/hermes-taskboard/internal/cron"
 	"github.com/ahkimkoo/hermes-taskboard/internal/hermes"
 	"github.com/ahkimkoo/hermes-taskboard/internal/reaper"
 	"github.com/ahkimkoo/hermes-taskboard/internal/scheduler"
@@ -87,6 +88,13 @@ func main() {
 	defer cancel()
 
 	go sched.Start(ctx)
+
+	cronW := &cronpkg.Worker{
+		Store:  st,
+		Runner: runner,
+		Logger: logger.With("component", "cron"),
+	}
+	cronW.Start(ctx)
 
 	rpr := &reaper.Reaper{
 		DB:         db,

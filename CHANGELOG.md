@@ -5,6 +5,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## 2026-04-19
 
+### Major round 7 — SSE fix, UX polish, tag prompts, scheduled tasks
+
+**Autorefresh bug (was silent)**
+Discovered and fixed an old SSE wiring bug: `writeSSE` on the backend always emitted `event: <name>` frames, but the frontend's `EventSource` only listened on `onmessage` (which doesn't fire on named events). Result: every board-level event — task.moved, attempt.created, attempt.state_changed, preferences_updated — was being silently dropped, and the board only refreshed when the user reloaded. Fix: strip the `event:` header and merge the event name into the JSON payload so everything arrives via `onmessage`. After the fix, the Verify → Execute transition (triggered automatically when the user sends a follow-up in Verify) now moves the card across columns in real time, and every other state change propagates without a reload.
+
+**Card animations**
+The Verify / needs-input animation is no longer a chase — it's now a slow gold ↔ warm-white *breathing* border (3.5 s ease-in-out), which reads as "paused, waiting" rather than "urgent running". Execute-column Running cards keep their electric green+red chase, so the two states are clearly distinct at a glance.
+
+**Event stream: chat-style autoscroll**
+EventStream now tracks whether the user is pinned to the bottom. While pinned, new output (streaming tokens, tool calls) auto-scrolls into view. If the user scrolls up to read history, the stream stops dragging them down and surfaces a "↓ new messages" pill at the bottom of the pane; clicking it (or scrolling back to the bottom) re-arms auto-scroll.
+
+**Chat input**
+Send is now **Ctrl/⌘ + Enter** instead of plain Enter, with a small hint ("Ctrl/⌘ + Enter to send") underneath the input — plain Enter can now be used to break lines without accidentally submitting. **Stop** is a two-click confirm: first click arms "Confirm stop?", second click actually cancels; auto-resets after 4 s if ignored.
+
+**? help popover on Attempts heading**
+A small `?` button next to "Attempts" pops a one-paragraph explanation that "Attempt = one execution; a task can be re-run but usually once is enough; send a message to continue an existing Attempt".
+
+**Tag System Prompts**
+New `tags.system_prompt` column (idempotent migration). Settings → **Tags** tab lets users maintain tags directly, including an optional `System Prompt` textarea. When a task is dispatched, every tag's system prompt is concatenated onto the base persona passed to Hermes's `/v1/responses` call. Use case from the requirement: a `notify-qq` tag with prompt "When this task finishes, post a short summary to QQ" — any task tagged this way automatically inherits that instruction. Multiple tags stack in order.
+
+**Scheduled tasks (cron + interval)**
+New `task_schedules` table + `internal/cron` worker (separate goroutine, ticks every 5 s):
+- **Interval** kind: standard `time.ParseDuration` spec — `15m`, `2h`, `1h30m` — at least 10 s. Fires again N after the previous fire.
+- **Cron** kind: standard 5-field `min hour dom month dow` (robfig/cron/v3).
+- Any number of schedules per task, each independently enabled/disabled.
+- On fire, creates a fresh Attempt via the normal Runner (so concurrency gates + tag prompts all apply).
+- `POST /api/tasks/{id}/schedules` to create, `PATCH /api/schedules/{id}` to toggle enabled, `DELETE /api/schedules/{id}` to remove.
+- New `SchedulePicker` component renders inside the task modal showing kind, spec, next fire, on/off toggle.
+
+**Tests**
+5 new Playwright cases (`test_tag_system_prompt`, `test_schedule_roundtrip`, `test_schedule_picker_ui`, `test_input_hints`, `test_attempt_help_popover`). Suite is **29/29** green.
+
 ### Polish (round 6) — animated card borders
 - **Running tasks (Execute column)** now carry an **electric green+red "chase" border**: two narrow arcs of green→red gradient rotate around the card's perimeter at 3 s/revolution, with transparent gaps between them so the chase reads clearly.
 - **Verify / needs-input tasks** get the **same chase, but in orange+red** — signalling the card wants your attention without shouting as loud as an alert.

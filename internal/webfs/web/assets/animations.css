@@ -20,20 +20,12 @@
   to { --glow-angle: 360deg; }
 }
 
-/* Shared skeleton — both variants differ only in the two accent colors. */
-.card.running,
-.card.needs-input {
+/* Running — green + red electric current (chase around the border). */
+.card.running {
   border: 2px solid transparent;
   background-clip: padding-box, border-box;
   background-origin: padding-box, border-box;
   animation: glow-chase 3s linear infinite;
-  /* Slight outer shadow in the active colour makes the chase feel brighter. */
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
-  position: relative;
-}
-
-/* Running — green + red electric current. */
-.card.running {
   background:
     linear-gradient(var(--bg-elev-2), var(--bg-elev-2)) padding-box,
     conic-gradient(
@@ -50,32 +42,37 @@
     ) border-box;
 }
 
-/* Verify / needs-input — orange + red electric current. */
+/* Verify / needs-input — deliberately contrasts with running: not a chase
+   but a slow gold ↔ warm-white "breath", signalling the card is paused and
+   waiting on the user without the urgent look of an electric chase. */
+@keyframes verify-breathe {
+  0%, 100% {
+    border-color: #d4a015;
+    box-shadow: 0 0 0 0 rgba(212, 160, 21, 0.15);
+  }
+  50% {
+    border-color: #fff3c0;
+    box-shadow: 0 0 18px 3px rgba(255, 235, 170, 0.4);
+  }
+}
 .card.needs-input {
-  background:
-    linear-gradient(var(--bg-elev-2), var(--bg-elev-2)) padding-box,
-    conic-gradient(
-      from var(--glow-angle, 0deg),
-      transparent 0deg,
-      #ffb300 30deg,
-      #ff1744 80deg,
-      transparent 110deg,
-      transparent 180deg,
-      #ffb300 210deg,
-      #ff1744 260deg,
-      transparent 290deg,
-      transparent 360deg
-    ) border-box;
+  border: 2px solid #d4a015;
+  background: var(--bg-elev-2);
+  animation: verify-breathe 3.5s ease-in-out infinite;
 }
 
-/* Respect reduced-motion: drop to a static colored border instead of animating. */
+/* Respect reduced-motion: drop animation; keep the colored border. */
 @media (prefers-reduced-motion: reduce) {
   .card.running,
   .card.needs-input {
     animation: none;
+    box-shadow: none;
   }
-  .card.running { border-color: #00e676; background: var(--bg-elev-2); }
-  .card.needs-input { border-color: #ffb300; background: var(--bg-elev-2); }
+  .card.running {
+    background: var(--bg-elev-2);
+    border-color: #00e676;
+  }
+  .card.needs-input { border-color: #d4a015; }
 }
 
 /* Backwards-compat alias: older code referenced `.card.executing`. Map it to

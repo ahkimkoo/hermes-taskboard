@@ -65,8 +65,32 @@ type Task struct {
 }
 
 type Tag struct {
-	Name  string `json:"name"`
-	Color string `json:"color"`
+	Name         string `json:"name"`
+	Color        string `json:"color"`
+	SystemPrompt string `json:"system_prompt"`
+}
+
+// ScheduleKind distinguishes the two supported scheduling shapes.
+//
+//	interval — fire every N (after the previous fire completes; we just store
+//	           the spec as a time.ParseDuration string like "15m", "2h").
+//	cron     — standard 5-field cron (min hour dom month dow) in local time.
+type ScheduleKind string
+
+const (
+	ScheduleInterval ScheduleKind = "interval"
+	ScheduleCron     ScheduleKind = "cron"
+)
+
+type Schedule struct {
+	ID        string       `json:"id"`
+	TaskID    string       `json:"task_id"`
+	Kind      ScheduleKind `json:"kind"`
+	Spec      string       `json:"spec"`
+	Note      string       `json:"note,omitempty"`
+	Enabled   bool         `json:"enabled"`
+	LastRunAt *time.Time   `json:"last_run_at,omitempty"`
+	NextRunAt *time.Time   `json:"next_run_at,omitempty"`
 }
 
 // Attempt mirrors the DB row.

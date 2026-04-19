@@ -26,6 +26,7 @@ import { EventStream } from './event-stream.js';
 import { renderMarkdown as markdown } from './markdown.js';
 import { TagInput } from './tag-input.js';
 import { DependencyPicker } from './dependency-picker.js';
+import { SchedulePicker } from './schedule-picker.js';
 
 registerPWA();
 
@@ -294,7 +295,7 @@ const NewTaskModal = {
 };
 
 const TaskModal = {
-  components: { DescriptionEditor, EventStream, TagInput, DependencyPicker },
+  components: { DescriptionEditor, EventStream, TagInput, DependencyPicker, SchedulePicker },
   props: ['taskId'],
   emits: ['close', 'refresh'],
   data() {
@@ -312,7 +313,16 @@ const TaskModal = {
       listOpen: false,          // attempt list collapse state
       confirmNewAttempt: false, // confirmation modal guard
       confirmDelete: false,
+      confirmStop: false,       // inline 2-click confirm for Stop
+      showAttemptHelp: false,
     };
+  },
+  watch: {
+    confirmStop(v) {
+      // Auto-reset the "Confirm stop?" state after a short window so users
+      // who change their mind don't hit it accidentally on a later click.
+      if (v) setTimeout(() => { this.confirmStop = false; }, 4000);
+    },
   },
   watch: { taskId: { immediate: true, handler: 'load' } },
   computed: {
@@ -406,14 +416,20 @@ const TaskModal = {
             <div v-if="task.description" class="task-desc" v-html="renderedDescription"></div>
             <p v-else class="task-desc-empty">{{ $t('task.no_description') }}</p>
 
+            <schedule-picker :task-id="taskId"></schedule-picker>
+
             <h3 class="attempts-heading">
               {{ $t('attempt.heading') }}
+              <button class="help-btn" type="button" :title="$t('attempt.help_title')" @click="showAttemptHelp = !showAttemptHelp">?</button>
               <span class="attempts-count">{{ attempts.length }}</span>
               <button v-if="attempts.length > 0"
                       class="ghost small attempt-toggle" @click="listOpen = !listOpen">
                 {{ listOpen ? $t('attempt.collapse') : $t('attempt.expand') }}
               </button>
             </h3>
+            <div v-if="showAttemptHelp" class="help-popover">
+              {{ $t('attempt.help') }}
+            </div>
 
             <div class="attempt-panel" :class="{ stacked: !listOpen }">
               <div class="attempt-list" v-show="listOpen">
@@ -436,10 +452,20 @@ const TaskModal = {
               </div>
               <div class="attempt-content">
                 <event-stream :attempt-id="activeAttemptId"></event-stream>
-                <div class="input-bar" v-if="activeAttemptId">
-                  <input type="text" v-model="input" :placeholder="$t('placeholder.send_message')" @keyup.enter="sendMsg">
-                  <button class="primary" @click="sendMsg">{{ $t('action.send') }}</button>
-                  <button class="danger small" @click="cancelAttempt">{{ $t('action.stop') }}</button>
+                <div v-if="activeAttemptId" class="input-area">
+                  <div class="input-bar">
+                    <input type="text" v-model="input"
+                           :placeholder="$t('placeholder.send_message')"
+                           @keydown="onInputKeydown">
+                    <button class="primary" @click="sendMsg">{{ $t('action.send') }}</button>
+                    <button v-if="!confirmStop" class="danger small" @click="confirmStop = true">
+                      {{ $t('action.stop') }}
+                    </button>
+                    <button v-else class="danger small" @click="cancelAttempt">
+                      {{ $t('action.confirm_stop') }}
+                    </button>
+                  </div>
+                  <div class="input-hint">{{ $t('attempt.send_hint') }}</div>
                 </div>
               </div>
             </div>
@@ -556,6 +582,14 @@ const TaskModal = {
         }
       }
     },
+    onInputKeydown(e) {
+      // Ctrl+Enter or ⌘+Enter sends; plain Enter inserts a newline so long
+      // multi-line messages are easy to compose without accidental submission.
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        this.sendMsg();
+      }
+    },
     async sendMsg() {
       if (!this.input.trim() || !this.activeAttemptId) return;
       const text = this.input;
@@ -565,6 +599,7 @@ const TaskModal = {
     },
     async cancelAttempt() {
       if (!this.activeAttemptId) return;
+      this.confirmStop = false;
       try { await api('/api/attempts/' + this.activeAttemptId + '/cancel', { method: 'POST' }); }
       catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
@@ -581,6 +616,7 @@ const SettingsModal = {
       editServer: null,
       newPw: '', oldPw: '', enableForm: { username: '', password: '' },
       oss: {}, ossNewSecret: '',
+      tags: [], tagEdit: null,
     };
   },
   computed: {
@@ -594,6 +630,7 @@ const SettingsModal = {
       enabled: false, endpoint: '', bucket: '', access_key_id: '',
       path_prefix: '', public_base: '',
     }, this.settings.oss || {});
+    this.reloadTags();
   },
   template: `
     <div class="modal-overlay" @click.self="$emit('close')">
@@ -613,6 +650,7 @@ const SettingsModal = {
               <button :class="{active: tab==='access'}" @click="tab='access'">{{ $t('settings.nav.access') }}</button>
               <button :class="{active: tab==='preferences'}" @click="tab='preferences'">{{ $t('settings.nav.preferences') }}</button>
               <button :class="{active: tab==='integrations'}" @click="tab='integrations'">{{ $t('settings.nav.integrations') }}</button>
+              <button :class="{active: tab==='tags'}" @click="tab='tags'">{{ $t('settings.nav.tags') }}</button>
               <button :class="{active: tab==='archive'}" @click="tab='archive'">{{ $t('settings.nav.archive') }}</button>
             </div>
             <div class="settings-content">
@@ -756,6 +794,55 @@ const SettingsModal = {
                 <button class="primary" @click="saveOSS">{{ $t('action.save') }}</button>
               </div>
 
+              <!-- Tags -->
+              <div v-if="tab==='tags'" class="settings-section">
+                <h3>{{ $t('settings.nav.tags') }}</h3>
+                <p class="helper">{{ $t('settings.tags_helper') }}</p>
+                <table class="tbl">
+                  <thead><tr>
+                    <th>{{ $t('th.name') }}</th>
+                    <th>{{ $t('tag.system_prompt_col') }}</th>
+                    <th></th>
+                  </tr></thead>
+                  <tbody>
+                    <tr v-for="t in tags" :key="t.name">
+                      <td><span class="tag-chip">{{ t.name }}</span></td>
+                      <td class="sys-prompt-cell">
+                        <span v-if="t.system_prompt" class="sys-prompt-preview">{{ t.system_prompt }}</span>
+                        <span v-else class="muted">—</span>
+                      </td>
+                      <td class="tag-actions">
+                        <button @click="tagEditInit(t)">{{ $t('action.edit') }}</button>
+                        <button class="danger small" @click="delTag(t.name)">✕</button>
+                      </td>
+                    </tr>
+                    <tr v-if="!tags.length"><td colspan="3" class="empty">{{ $t('settings.tags_empty') }}</td></tr>
+                  </tbody>
+                </table>
+                <button class="primary" @click="tagEditInit(null)" style="margin-top:10px">+ {{ $t('action.new_tag') }}</button>
+
+                <div v-if="tagEdit" class="server-edit">
+                  <h4>{{ tagEdit.__edit ? $t('action.edit_tag') : $t('action.new_tag') }}</h4>
+                  <div class="form-row">
+                    <label>{{ $t('th.name') }} <span class="required">*</span></label>
+                    <input type="text" v-model="tagEdit.name" :disabled="tagEdit.__edit" placeholder="backend">
+                  </div>
+                  <div class="form-row">
+                    <label>
+                      {{ $t('tag.system_prompt_col') }}
+                      <span class="optional">({{ $t('field.optional') }})</span>
+                    </label>
+                    <textarea v-model="tagEdit.system_prompt" rows="6"
+                              :placeholder="$t('tag.system_prompt_placeholder')"></textarea>
+                    <div class="desc-hint">{{ $t('tag.system_prompt_hint') }}</div>
+                  </div>
+                  <div class="edit-actions">
+                    <button @click="tagEdit = null">{{ $t('action.cancel') }}</button>
+                    <button class="primary" @click="saveTag">{{ $t('action.save') }}</button>
+                  </div>
+                </div>
+              </div>
+
               <!-- Archive -->
               <div v-if="tab==='archive'" class="settings-section">
                 <h3>{{ $t('settings.nav.archive') }}</h3>
@@ -769,6 +856,32 @@ const SettingsModal = {
     </div>
   `,
   methods: {
+    async reloadTags() {
+      try { const r = await api('/api/tags'); this.tags = r.tags || []; }
+      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+    tagEditInit(tag) {
+      if (tag) this.tagEdit = { ...tag, __edit: true };
+      else this.tagEdit = { name: '', color: '', system_prompt: '' };
+    },
+    async saveTag() {
+      if (!this.tagEdit.name.trim()) { toast(t('tag.name_required'), 'error'); return; }
+      try {
+        await api('/api/tags', { method: 'POST', body: {
+          name: this.tagEdit.name.trim(),
+          color: this.tagEdit.color || '',
+          system_prompt: this.tagEdit.system_prompt || '',
+        }});
+        this.tagEdit = null;
+        await this.reloadTags();
+        toast(t('toast.saved'));
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+    async delTag(name) {
+      if (!confirm(t('confirm.delete_tag', { name }))) return;
+      try { await api('/api/tags/' + encodeURIComponent(name), { method: 'DELETE' }); await this.reloadTags(); }
+      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
     previewSound(kind) {
       // Apply the current draft volume + blanket-enable so previews work even
       // when the specific event's checkbox is off; restore the real prefs

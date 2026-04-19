@@ -544,7 +544,8 @@ func (s *Store) CountActive(ctx context.Context, serverID, model string) (global
 // ----- tags -----
 
 func (s *Store) ListTags(ctx context.Context) ([]Tag, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT name, COALESCE(color,'') FROM tags ORDER BY name`)
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT name, COALESCE(color,''), COALESCE(system_prompt,'') FROM tags ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -552,7 +553,7 @@ func (s *Store) ListTags(ctx context.Context) ([]Tag, error) {
 	var out []Tag
 	for rows.Next() {
 		var t Tag
-		if err := rows.Scan(&t.Name, &t.Color); err != nil {
+		if err := rows.Scan(&t.Name, &t.Color, &t.SystemPrompt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -560,10 +561,34 @@ func (s *Store) ListTags(ctx context.Context) ([]Tag, error) {
 	return out, rows.Err()
 }
 
+// TagsByNames returns each requested tag (if present) in the same order.
+// Missing tags are skipped silently.
+func (s *Store) TagsByNames(ctx context.Context, names []string) ([]Tag, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	out := make([]Tag, 0, len(names))
+	for _, n := range names {
+		var t Tag
+		err := s.DB.QueryRowContext(ctx,
+			`SELECT name, COALESCE(color,''), COALESCE(system_prompt,'') FROM tags WHERE name=?`, n,
+		).Scan(&t.Name, &t.Color, &t.SystemPrompt)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 func (s *Store) UpsertTag(ctx context.Context, t Tag) error {
 	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO tags(name,color) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET color=excluded.color`,
-		t.Name, t.Color)
+		`INSERT INTO tags(name, color, system_prompt) VALUES(?,?,?)
+		 ON CONFLICT(name) DO UPDATE SET color=excluded.color, system_prompt=excluded.system_prompt`,
+		t.Name, t.Color, t.SystemPrompt)
 	return err
 }
 
@@ -638,7 +663,10 @@ func writeTags(ctx context.Context, tx *sql.Tx, taskID string, tags []string) er
 		if tag == "" {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO tags(name) VALUES(?)`, tag); err != nil {
+		// INSERT OR IGNORE preserves any existing system_prompt — it only
+		// adds a row for a brand-new tag.
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO tags(name, color, system_prompt) VALUES(?,'','')`, tag); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO task_tags(task_id,tag) VALUES(?,?)`, taskID, tag); err != nil {
@@ -717,4 +745,135 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+// ---------------- task_schedules ----------------
+
+func (s *Store) ListSchedulesForTask(ctx context.Context, taskID string) ([]Schedule, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id, task_id, kind, spec, COALESCE(note,''), enabled, last_run_at, next_run_at
+		 FROM task_schedules WHERE task_id=? ORDER BY id`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Schedule
+	for rows.Next() {
+		s, err := scanSchedule(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CreateSchedule(ctx context.Context, sch *Schedule) error {
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO task_schedules(id, task_id, kind, spec, note, enabled, last_run_at, next_run_at)
+		 VALUES(?,?,?,?,?,?,?,?)`,
+		sch.ID, sch.TaskID, string(sch.Kind), sch.Spec, sch.Note,
+		boolInt(sch.Enabled),
+		msOrNil(sch.LastRunAt), msOrNil(sch.NextRunAt),
+	)
+	return err
+}
+
+func (s *Store) UpdateSchedule(ctx context.Context, sch *Schedule) error {
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE task_schedules SET kind=?, spec=?, note=?, enabled=?, last_run_at=?, next_run_at=? WHERE id=?`,
+		string(sch.Kind), sch.Spec, sch.Note, boolInt(sch.Enabled),
+		msOrNil(sch.LastRunAt), msOrNil(sch.NextRunAt),
+		sch.ID,
+	)
+	return err
+}
+
+// SetScheduleEnabled flips the enabled flag and clears next_run_at when
+// disabling (so the worker stops picking it up until re-enabled).
+func (s *Store) SetScheduleEnabled(ctx context.Context, id string, enabled bool) error {
+	var q string
+	if enabled {
+		q = `UPDATE task_schedules SET enabled=1 WHERE id=?`
+	} else {
+		q = `UPDATE task_schedules SET enabled=0, next_run_at=NULL WHERE id=?`
+	}
+	_, err := s.DB.ExecContext(ctx, q, id)
+	return err
+}
+
+// GetSchedule returns the schedule row with the given id.
+func (s *Store) GetSchedule(ctx context.Context, id string) (*Schedule, error) {
+	row := s.DB.QueryRowContext(ctx,
+		`SELECT id, task_id, kind, spec, COALESCE(note,''), enabled, last_run_at, next_run_at
+		 FROM task_schedules WHERE id=?`, id)
+	sch, err := scanSchedule(row.Scan)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &sch, nil
+}
+
+func (s *Store) DeleteSchedule(ctx context.Context, id string) error {
+	_, err := s.DB.ExecContext(ctx, `DELETE FROM task_schedules WHERE id=?`, id)
+	return err
+}
+
+// ListDueSchedules returns enabled schedules whose next_run_at ≤ `at`.
+func (s *Store) ListDueSchedules(ctx context.Context, at time.Time) ([]Schedule, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id, task_id, kind, spec, COALESCE(note,''), enabled, last_run_at, next_run_at
+		 FROM task_schedules
+		 WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at <= ?`,
+		at.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Schedule
+	for rows.Next() {
+		sch, err := scanSchedule(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sch)
+	}
+	return out, rows.Err()
+}
+
+func scanSchedule(scan scanner) (Schedule, error) {
+	var (
+		s          Schedule
+		last, next sql.NullInt64
+		enabled    int
+	)
+	if err := scan(&s.ID, &s.TaskID, (*string)(&s.Kind), &s.Spec, &s.Note, &enabled, &last, &next); err != nil {
+		return s, err
+	}
+	s.Enabled = enabled != 0
+	if last.Valid {
+		t := time.UnixMilli(last.Int64)
+		s.LastRunAt = &t
+	}
+	if next.Valid {
+		t := time.UnixMilli(next.Int64)
+		s.NextRunAt = &t
+	}
+	return s, nil
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+func msOrNil(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.UnixMilli()
 }

@@ -275,7 +275,7 @@ func (r *Runner) runOnce(ctx context.Context, attemptID, input string, first boo
 		Stream:       true,
 	}
 	if first {
-		req.SystemPrompt = "You are Hermes, acting as an autonomous task agent within the Hermes Task Board. Execute the task end-to-end and describe your reasoning as you go."
+		req.SystemPrompt = r.buildSystemPrompt(ctx, att.TaskID)
 	}
 	// Record user-side message as a system event for transcript continuity.
 	r.logSystemEvent(attemptID, "user_message", map[string]any{"input": input})
@@ -355,6 +355,35 @@ func (r *Runner) logSystemEvent(attemptID, event string, extra map[string]any) {
 	}
 	seq, _ := r.FS.AppendEvent(attemptID, evt)
 	r.Hub.Publish("attempt:"+attemptID, sse.Event{Seq: seq, Event: "event", Data: evt})
+}
+
+// buildSystemPrompt composes the first-turn system prompt:
+//   - the board's base persona,
+//   - plus any `system_prompt` attached to the task's tags.
+//
+// Tag prompts let users express cross-cutting instructions once (e.g. "when
+// finished, notify via QQ") and have them automatically injected into every
+// task tagged that way. Multiple tags concatenate in the order they appear.
+func (r *Runner) buildSystemPrompt(ctx context.Context, taskID string) string {
+	base := "You are Hermes, acting as an autonomous task agent within the Hermes Task Board. Execute the task end-to-end and describe your reasoning as you go."
+	task, err := r.Store.GetTask(ctx, taskID)
+	if err != nil || task == nil || len(task.Tags) == 0 {
+		return base
+	}
+	tags, err := r.Store.TagsByNames(ctx, task.Tags)
+	if err != nil {
+		return base
+	}
+	var extras []string
+	for _, t := range tags {
+		if s := strings.TrimSpace(t.SystemPrompt); s != "" {
+			extras = append(extras, s)
+		}
+	}
+	if len(extras) == 0 {
+		return base
+	}
+	return base + "\n\n" + strings.Join(extras, "\n\n")
 }
 
 func (r *Runner) broadcastStateChange(attemptID string, state store.AttemptState) {

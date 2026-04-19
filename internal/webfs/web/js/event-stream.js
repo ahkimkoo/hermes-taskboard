@@ -14,45 +14,58 @@ import { renderMarkdown } from './markdown.js';
 
 export const EventStream = {
   props: ['attemptId'],
-  data() { return { events: [], messages: [], unsub: null }; },
+  data() {
+    return {
+      events: [], messages: [], unsub: null,
+      // Chat-style autoscroll: stick to bottom by default; if the user
+      // scrolls up we stop forcing them back down and show a "new ↓" button.
+      stickToBottom: true,
+      hasNewBelow: false,
+    };
+  },
   watch: { attemptId: { immediate: true, handler: 'reload' } },
   template: `
-    <div class="event-stream v2" ref="scroller">
-      <template v-for="(m, i) in messages" :key="m.key || i">
-        <div v-if="m.kind==='system'" class="es-system">{{ m.label }}</div>
+    <div class="event-stream-wrap">
+      <div class="event-stream v2" ref="scroller" @scroll="onScroll">
+        <template v-for="(m, i) in messages" :key="m.key || i">
+          <div v-if="m.kind==='system'" class="es-system">{{ m.label }}</div>
 
-        <div v-else-if="m.kind==='user'" class="es-message user">
-          <div class="es-avatar">👤</div>
-          <div class="es-bubble" v-html="render(m.text)"></div>
-        </div>
-
-        <div v-else-if="m.kind==='assistant'" class="es-message assistant">
-          <div class="es-avatar">🤖</div>
-          <div class="es-bubble" v-html="render(m.text)"></div>
-        </div>
-
-        <div v-else-if="m.kind==='tool'" class="es-tool">
-          <div class="es-tool-head" @click="m.open = !m.open">
-            <span class="es-tool-icon">🔧</span>
-            <span class="es-tool-name">{{ m.name }}</span>
-            <span class="es-tool-status" :class="m.status">{{ m.status }}</span>
-            <span class="es-chevron">{{ m.open ? '▼' : '▶' }}</span>
+          <div v-else-if="m.kind==='user'" class="es-message user">
+            <div class="es-avatar">👤</div>
+            <div class="es-bubble" v-html="render(m.text)"></div>
           </div>
-          <div v-if="m.open" class="es-tool-body">
-            <div v-if="m.args" class="es-tool-args">
-              <div class="es-section-title">{{ $t('event.args') }}</div>
-              <pre>{{ formatJSON(m.args) }}</pre>
+
+          <div v-else-if="m.kind==='assistant'" class="es-message assistant">
+            <div class="es-avatar">🤖</div>
+            <div class="es-bubble" v-html="render(m.text)"></div>
+          </div>
+
+          <div v-else-if="m.kind==='tool'" class="es-tool">
+            <div class="es-tool-head" @click="m.open = !m.open">
+              <span class="es-tool-icon">🔧</span>
+              <span class="es-tool-name">{{ m.name }}</span>
+              <span class="es-tool-status" :class="m.status">{{ m.status }}</span>
+              <span class="es-chevron">{{ m.open ? '▼' : '▶' }}</span>
             </div>
-            <div v-if="m.output" class="es-tool-output">
-              <div class="es-section-title">{{ $t('event.output') }}</div>
-              <pre>{{ m.output }}</pre>
+            <div v-if="m.open" class="es-tool-body">
+              <div v-if="m.args" class="es-tool-args">
+                <div class="es-section-title">{{ $t('event.args') }}</div>
+                <pre>{{ formatJSON(m.args) }}</pre>
+              </div>
+              <div v-if="m.output" class="es-tool-output">
+                <div class="es-section-title">{{ $t('event.output') }}</div>
+                <pre>{{ m.output }}</pre>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div v-else-if="m.kind==='error'" class="es-system error">✗ {{ m.msg }}</div>
-      </template>
-      <div v-if="!messages.length" class="empty">—</div>
+          <div v-else-if="m.kind==='error'" class="es-system error">✗ {{ m.msg }}</div>
+        </template>
+        <div v-if="!messages.length" class="empty">—</div>
+      </div>
+      <button v-if="hasNewBelow" class="jump-to-bottom" @click="jumpToBottom">
+        ↓ {{ $t('event.new_below') }}
+      </button>
     </div>
   `,
   methods: {
@@ -77,13 +90,29 @@ export const EventStream = {
       this.unsub = sseSubscribe('/api/stream/attempt/' + this.attemptId + '?since_seq=' + since, (evt) => {
         this.events.push(evt);
         this.rebuild();
-        this.$nextTick(() => this.scrollBottom());
+        this.$nextTick(() => this.maybeAutoScroll());
       });
       this.$nextTick(() => this.scrollBottom());
     },
     scrollBottom() {
       const s = this.$refs.scroller;
       if (s) s.scrollTop = s.scrollHeight;
+      this.stickToBottom = true;
+      this.hasNewBelow = false;
+    },
+    jumpToBottom() { this.scrollBottom(); },
+    maybeAutoScroll() {
+      if (this.stickToBottom) this.scrollBottom();
+      else this.hasNewBelow = true;
+    },
+    onScroll() {
+      const s = this.$refs.scroller;
+      if (!s) return;
+      // Treat "within 40 px of the bottom" as still-at-bottom. This gives the
+      // user some room to scroll a little without the page snapping them back.
+      const atBottom = (s.scrollHeight - s.scrollTop - s.clientHeight) < 40;
+      this.stickToBottom = atBottom;
+      if (atBottom) this.hasNewBelow = false;
     },
     rebuild() {
       // Walk raw events, building semantic messages. Maintain a per-tool-id map.

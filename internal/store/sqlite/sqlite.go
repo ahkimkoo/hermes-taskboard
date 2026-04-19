@@ -34,8 +34,9 @@ CREATE TABLE IF NOT EXISTS task_deps (
 );
 
 CREATE TABLE IF NOT EXISTS tags (
-  name  TEXT PRIMARY KEY,
-  color TEXT
+  name          TEXT PRIMARY KEY,
+  color         TEXT,
+  system_prompt TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS task_tags (
@@ -112,6 +113,33 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, `ALTER TABLE task_deps ADD COLUMN required_state TEXT NOT NULL DEFAULT 'done'`); err != nil {
 			return fmt.Errorf("add task_deps.required_state: %w", err)
 		}
+	}
+	// tags.system_prompt — inject the tag's prompt when a task carrying it is dispatched.
+	hasSys, err := columnExists(ctx, db, "tags", "system_prompt")
+	if err != nil {
+		return err
+	}
+	if !hasSys {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE tags ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add tags.system_prompt: %w", err)
+		}
+	}
+	// task_schedules — added in round 7.
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS task_schedules (
+		  id          TEXT PRIMARY KEY,
+		  task_id     TEXT NOT NULL,
+		  kind        TEXT NOT NULL,     -- 'interval' | 'cron'
+		  spec        TEXT NOT NULL,     -- "15m" / "0 9 * * *"
+		  note        TEXT NOT NULL DEFAULT '',
+		  enabled     INTEGER NOT NULL DEFAULT 1,
+		  last_run_at INTEGER,
+		  next_run_at INTEGER
+		)`); err != nil {
+		return fmt.Errorf("create task_schedules: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_schedules_next ON task_schedules(enabled, next_run_at)`); err != nil {
+		return fmt.Errorf("create idx_schedules_next: %w", err)
 	}
 	return nil
 }

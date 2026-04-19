@@ -229,8 +229,45 @@ body.dragging-active * { cursor: grabbing !important; }
 .es-tool-body pre { background: var(--code-bg); padding: 8px 10px; border-radius: 6px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 
 /* ---------- Input bar ---------- */
-.input-bar { display: flex; gap: 8px; margin-top: 8px; }
+.input-area { display: flex; flex-direction: column; margin-top: 8px; }
+.input-bar { display: flex; gap: 8px; }
 .input-bar input { flex: 1; }
+.input-hint { font-size: 11px; color: var(--text-muted); padding: 4px 2px 0; }
+
+/* ? help button inline with headings. */
+.help-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  width: 20px; height: 20px;
+  padding: 0; line-height: 18px;
+  font-size: 12px; font-weight: 700;
+  border-radius: 50%;
+  cursor: pointer;
+  margin: 0 4px;
+}
+.help-btn:hover { color: var(--accent); border-color: var(--accent); }
+.help-popover {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin: 6px 0 10px;
+}
+
+/* Chat-style jump-to-bottom pill. */
+.event-stream-wrap { position: relative; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.jump-to-bottom {
+  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  background: var(--accent); color: #111;
+  border: none; border-radius: 999px;
+  padding: 4px 12px; font-size: 12px; font-weight: 600;
+  box-shadow: var(--shadow); cursor: pointer;
+}
+.jump-to-bottom:hover { background: var(--accent-2); }
 
 /* ---------- Login ---------- */
 .login-shell { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
@@ -293,6 +330,30 @@ body.dragging-active * { cursor: grabbing !important; }
 .sound-row { flex-direction: row; align-items: center; gap: 10px; }
 .sound-row label { flex: 1; margin-bottom: 0; font-weight: 500; color: var(--text); }
 .preview-btn { white-space: nowrap; }
+
+/* ---------- Tags settings ---------- */
+.sys-prompt-cell { max-width: 420px; }
+.sys-prompt-preview {
+  display: inline-block; max-width: 400px; font-size: 12.5px;
+  color: var(--text-dim); line-height: 1.4; white-space: pre-wrap;
+  overflow: hidden; text-overflow: ellipsis;
+  max-height: 4.2em;
+}
+.tag-actions { white-space: nowrap; display: flex; gap: 4px; }
+.muted.small { font-size: 11px; }
+
+/* ---------- Schedule picker ---------- */
+.schedule-picker { margin-top: 20px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.schedule-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.schedule-tbl { margin-bottom: 8px; }
+.schedule-tbl tr.disabled code { opacity: 0.5; text-decoration: line-through; }
+.schedule-add { background: var(--bg-elev-2); padding: 10px; border-radius: 6px; margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.schedule-add .form-inline { gap: 8px; }
+.schedule-add .form-inline > select { flex: 0 0 160px; }
+.schedule-add .form-inline > input { flex: 1; }
+.schedule-add input[type="text"] { width: 100%; }
+.schedule-hint { line-height: 1.4; }
+.toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; margin: 0; }
 
 /* ---------- Toasts ---------- */
 .toasts { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }
