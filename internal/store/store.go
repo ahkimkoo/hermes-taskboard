@@ -822,6 +822,29 @@ func (s *Store) DeleteSchedule(ctx context.Context, id string) error {
 	return err
 }
 
+// ListEnabledNullNextSchedules returns enabled schedules whose next_run_at
+// is NULL — used on boot to rehydrate rows that lost their schedule time
+// (e.g. just migrated from interval → cron, or a corrupted row).
+func (s *Store) ListEnabledNullNextSchedules(ctx context.Context) ([]Schedule, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id, task_id, kind, spec, COALESCE(note,''), enabled, last_run_at, next_run_at
+		 FROM task_schedules
+		 WHERE enabled=1 AND next_run_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Schedule
+	for rows.Next() {
+		sch, err := scanSchedule(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sch)
+	}
+	return out, rows.Err()
+}
+
 // ListDueSchedules returns enabled schedules whose next_run_at ≤ `at`.
 func (s *Store) ListDueSchedules(ctx context.Context, at time.Time) ([]Schedule, error) {
 	rows, err := s.DB.QueryContext(ctx,

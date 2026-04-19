@@ -3,13 +3,9 @@
 // fresh Attempt on the owning task (bypassing the Plan-column requirement
 // used by the auto-trigger scheduler).
 //
-// Two schedule kinds are supported:
-//   interval — time.ParseDuration-compatible string ("15m", "2h30m"). After
-//              a run finishes, next_run_at = now + duration.
-//   cron     — 5-field cron ("min hour dom month dow") parsed by robfig/cron.
-//
-// Multiple schedules per task are allowed; each lives in its own row and ticks
-// independently.
+// Schedules use standard 5-field cron ("min hour dom month dow") parsed by
+// robfig/cron. Multiple schedules per task are allowed; each lives in its own
+// row and ticks independently.
 package cron
 
 import (
@@ -40,31 +36,16 @@ func Compute(s *store.Schedule, from time.Time) error {
 		s.NextRunAt = nil
 		return nil
 	}
-	switch s.Kind {
-	case store.ScheduleInterval:
-		d, err := time.ParseDuration(strings.TrimSpace(s.Spec))
-		if err != nil {
-			return fmt.Errorf("invalid interval %q: %w", s.Spec, err)
-		}
-		if d < 10*time.Second {
-			return fmt.Errorf("interval must be ≥10s, got %s", d)
-		}
-		next := from.Add(d)
-		s.NextRunAt = &next
-	case store.ScheduleCron:
-		schedule, err := rfcron.ParseStandard(strings.TrimSpace(s.Spec))
-		if err != nil {
-			return fmt.Errorf("invalid cron %q: %w", s.Spec, err)
-		}
-		next := schedule.Next(from)
-		s.NextRunAt = &next
-	default:
-		return fmt.Errorf("unknown schedule kind %q", s.Kind)
+	schedule, err := rfcron.ParseStandard(strings.TrimSpace(s.Spec))
+	if err != nil {
+		return fmt.Errorf("invalid cron %q: %w", s.Spec, err)
 	}
+	next := schedule.Next(from)
+	s.NextRunAt = &next
 	return nil
 }
 
-// Validate checks whether a spec parses and passes minimum-interval rules.
+// Validate checks whether a spec parses as a 5-field cron expression.
 func Validate(kind store.ScheduleKind, spec string) error {
 	stub := store.Schedule{Kind: kind, Spec: spec, Enabled: true}
 	return Compute(&stub, time.Now())
@@ -76,7 +57,31 @@ func (w *Worker) Start(ctx context.Context) {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
+	w.rehydrate(ctx)
 	go w.loop(ctx, interval)
+}
+
+// rehydrate recomputes next_run_at for any enabled schedule that lost it
+// (NULL in DB) — e.g. rows freshly migrated from interval → cron. Without
+// this, ListDueSchedules would skip them forever.
+func (w *Worker) rehydrate(ctx context.Context) {
+	rows, err := w.Store.ListEnabledNullNextSchedules(ctx)
+	if err != nil {
+		w.Logger.Warn("rehydrate list", "err", err)
+		return
+	}
+	now := time.Now()
+	for i := range rows {
+		s := rows[i]
+		if err := Compute(&s, now); err != nil {
+			w.Logger.Warn("rehydrate compute", "id", s.ID, "spec", s.Spec, "err", err)
+			s.Enabled = false
+			s.NextRunAt = nil
+		}
+		if err := w.Store.UpdateSchedule(ctx, &s); err != nil {
+			w.Logger.Warn("rehydrate update", "id", s.ID, "err", err)
+		}
+	}
 }
 
 func (w *Worker) loop(ctx context.Context, interval time.Duration) {

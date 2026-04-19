@@ -124,13 +124,15 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("add tags.system_prompt: %w", err)
 		}
 	}
-	// task_schedules — added in round 7.
+	// task_schedules — added in round 7. `kind` column kept for forward
+	// compat but only 'cron' is accepted now; 'interval' rows are rewritten
+	// below.
 	if _, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS task_schedules (
 		  id          TEXT PRIMARY KEY,
 		  task_id     TEXT NOT NULL,
-		  kind        TEXT NOT NULL,     -- 'interval' | 'cron'
-		  spec        TEXT NOT NULL,     -- "15m" / "0 9 * * *"
+		  kind        TEXT NOT NULL,     -- always 'cron' (legacy: 'interval')
+		  spec        TEXT NOT NULL,     -- 5-field cron "0 9 * * *"
 		  note        TEXT NOT NULL DEFAULT '',
 		  enabled     INTEGER NOT NULL DEFAULT 1,
 		  last_run_at INTEGER,
@@ -141,7 +143,66 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_schedules_next ON task_schedules(enabled, next_run_at)`); err != nil {
 		return fmt.Errorf("create idx_schedules_next: %w", err)
 	}
+	if err := migrateIntervalSchedules(ctx, db); err != nil {
+		return err
+	}
 	return nil
+}
+
+// migrateIntervalSchedules rewrites any legacy kind='interval' rows to
+// kind='cron' using a best-effort duration → cron approximation. Clears
+// next_run_at so the worker recomputes from the new spec on the next tick.
+func migrateIntervalSchedules(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `SELECT id, spec FROM task_schedules WHERE kind='interval'`)
+	if err != nil {
+		return fmt.Errorf("list interval schedules: %w", err)
+	}
+	type row struct{ id, spec string }
+	var legacy []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.spec); err != nil {
+			rows.Close()
+			return err
+		}
+		legacy = append(legacy, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, r := range legacy {
+		cronSpec := intervalToCron(r.spec)
+		if _, err := db.ExecContext(ctx,
+			`UPDATE task_schedules SET kind='cron', spec=?, next_run_at=NULL WHERE id=?`,
+			cronSpec, r.id); err != nil {
+			return fmt.Errorf("migrate interval schedule %s: %w", r.id, err)
+		}
+	}
+	return nil
+}
+
+// intervalToCron approximates a Go duration spec (e.g. "15m", "1h30m") as a
+// standard 5-field cron. Sub-minute intervals clamp to one minute; non-hour
+// multiples over an hour round down to whole hours; anything past a day
+// collapses to daily at midnight.
+func intervalToCron(spec string) string {
+	d, err := time.ParseDuration(spec)
+	if err != nil || d <= 0 {
+		return "*/5 * * * *"
+	}
+	total := int(d.Minutes())
+	if total < 1 {
+		total = 1
+	}
+	if total <= 59 {
+		return fmt.Sprintf("*/%d * * * *", total)
+	}
+	hours := total / 60
+	if hours >= 24 {
+		return "0 0 * * *"
+	}
+	return fmt.Sprintf("0 */%d * * *", hours)
 }
 
 func columnExists(ctx context.Context, db *sql.DB, table, col string) (bool, error) {

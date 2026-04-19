@@ -70,16 +70,13 @@ type Tag struct {
 	SystemPrompt string `json:"system_prompt"`
 }
 
-// ScheduleKind distinguishes the two supported scheduling shapes.
-//
-//	interval — fire every N (after the previous fire completes; we just store
-//	           the spec as a time.ParseDuration string like "15m", "2h").
-//	cron     — standard 5-field cron (min hour dom month dow) in local time.
+// ScheduleKind is retained for DB column symmetry but only one value is
+// accepted now: "cron" (standard 5-field min hour dom month dow, local time).
+// Legacy "interval" rows are rewritten to cron at migration time.
 type ScheduleKind string
 
 const (
-	ScheduleInterval ScheduleKind = "interval"
-	ScheduleCron     ScheduleKind = "cron"
+	ScheduleCron ScheduleKind = "cron"
 )
 
 type Schedule struct {

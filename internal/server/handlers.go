@@ -1041,8 +1041,8 @@ func (s *Server) hAuthChange(w http.ResponseWriter, r *http.Request) {
 // ---------------- schedules ----------------
 
 type scheduleReq struct {
-	Kind    string `json:"kind"`    // "interval" | "cron"
-	Spec    string `json:"spec"`    // "15m" or cron string
+	Kind    string `json:"kind"`    // accepted: "cron" (empty defaults to "cron")
+	Spec    string `json:"spec"`    // 5-field cron expression
 	Note    string `json:"note,omitempty"`
 	Enabled *bool  `json:"enabled,omitempty"`
 }
@@ -1063,8 +1063,11 @@ func (s *Server) hCreateSchedule(w http.ResponseWriter, r *http.Request, taskID 
 		return
 	}
 	kind := store.ScheduleKind(strings.ToLower(strings.TrimSpace(req.Kind)))
-	if kind != store.ScheduleInterval && kind != store.ScheduleCron {
-		writeErr(w, 400, errors.New("kind must be 'interval' or 'cron'"))
+	if kind == "" {
+		kind = store.ScheduleCron
+	}
+	if kind != store.ScheduleCron {
+		writeErr(w, 400, errors.New("only kind='cron' is supported"))
 		return
 	}
 	sch := store.Schedule{
