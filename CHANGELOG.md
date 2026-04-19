@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## 2026-04-19
 
+### Release (round 7.2 → tagged v0.1.0) — schedule picker UX, orphan reaper, drag/click fix
+
+**Schedule picker now speaks plain language, backend is cron-only.**
+Previously the per-task schedule picker exposed two kinds (`interval` and `cron`) and required users to type raw specs like `15m` or `0 9 * * 1-5`. Since cron already expresses intervals (`*/15 * * * *`), the second kind was redundant *and* unfriendly. Redesigned the picker to be preset-driven: "every N minutes / hours" (N is a free-form number), "daily at HH:MM", "weekly on picked weekdays at HH:MM", "monthly on day D at HH:MM", plus an Advanced escape hatch for raw cron. Saved schedules render back as human prose ("每 15 分钟", "Weekly Mon, Wed, Fri at 09:00") with the raw cron underneath for inspection. The picker shows a live preview of the cron it will save, so users know exactly what's going to disk.
+
+Backend rewritten to accept only `kind='cron'` (API rejects anything else). One-shot DB migration on startup converts any legacy `interval` rows (`time.ParseDuration` string) to a best-effort cron approximation: `N` minutes up to 59 → `*/N * * * *`; full-hour multiples up to 23 → `0 */H * * *`; anything past a day collapses to daily at midnight. Migrated rows have their `next_run_at` cleared and the worker rehydrates them on boot via a new `ListEnabledNullNextSchedules` sweep, so no schedule is silently missed after the upgrade.
+
+**Orphan Attempt reaper at boot**
+Before this release, if the taskboard process crashed or was killed while an Attempt was mid-stream, the Attempt's DB row would stay `running` forever — no process owned it, no code flipped it. The UI would spin, the concurrency slot would leak, and nothing ever reaped it. Fix: new `Runner.ReapOrphans()` called from `main.go` *before* the scheduler/cron worker boot. It sweeps `state IN ('queued','running')` Attempts, writes a system event `error: "process restart — attempt reaped as failed (no active runner)"` with `prior_state`, flips state to `failed`, broadcasts a state-change over SSE, and calls `Board.MaybeAdvanceAfterAttempt`. `needs_input` Attempts are left alone — they legitimately wait for user input and `SendMessage` already restarts their loop when input arrives.
+
+**Drag no longer opens the card modal**
+The card's click handler used `this.$el.style.display === 'none'` as a "drag in progress" guard, but `drag.js`'s `end()` restores `display = ''` *before* the browser fires the synthetic click, so the guard always missed the click fired at drag end → the task modal popped open every time you moved a card. Replaced with a robust `_dragStarted` flag: reset to `false` at the start of each `pointerdown`, set to `true` the moment `drag.start()` is invoked (on movement > 5 px), consumed in `onClick` if set. Works regardless of DOM timing.
+
+**v0.1.0 tag cuts the first public release.** See `docs/release-notes/v0.1.0.md` for the full shipping summary.
+
 ### Hotfix (round 7.1) — user's own messages were invisible in the event stream
 The SSE fix from earlier today (wrapping every payload with an `event` key to bypass the addEventListener/onmessage mismatch) was clobbering the inner `event` field that the AttemptRunner set on each NDJSON line — so `user_message`, `run_start`, `run_end` etc. all arrived on the wire as `event: "event"` and the UI couldn't discriminate. Result: typing a follow-up message showed the assistant's reply but the user's own bubble was silently dropped.
 Fix: only merge the outer wrapper name when the payload doesn't already carry one, preserving the runner's inner event names verbatim. Added `test_sse_preserves_event_name` so this specific failure mode can't slip back in. Suite is 30/30 green.
