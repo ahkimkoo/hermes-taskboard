@@ -43,6 +43,36 @@ func New(cfg *config.Store, s *store.Store, fs *fsstore.FS, pool *hermes.Pool, h
 	return &Runner{Cfg: cfg, Store: s, FS: fs, Pool: pool, Hub: hub, Board: b, active: map[string]*runCtx{}}
 }
 
+// ReapOrphans flips any attempt stuck in `queued` or `running` to `failed`.
+// Call once at process startup, before the scheduler / cron worker fire, so
+// that ghost attempts from a prior crash or kill don't hold concurrency slots
+// and the UI doesn't show a spinner forever. `needs_input` attempts are left
+// alone — they're legitimately waiting for the user, and SendMessage will
+// restart their loop when input arrives.
+func (r *Runner) ReapOrphans(ctx context.Context) (int, error) {
+	active, err := r.Store.ListActiveAttempts(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var reaped int
+	for _, a := range active {
+		if a.State != store.AttemptRunning && a.State != store.AttemptQueued {
+			continue
+		}
+		r.logSystemEvent(a.ID, "error", map[string]any{
+			"msg":         "process restart — attempt reaped as failed (no active runner)",
+			"prior_state": string(a.State),
+		})
+		if err := r.Store.UpdateAttemptState(ctx, a.ID, store.AttemptFailed); err != nil {
+			continue
+		}
+		r.broadcastStateChange(a.ID, store.AttemptFailed)
+		_ = r.Board.MaybeAdvanceAfterAttempt(ctx, a.TaskID)
+		reaped++
+	}
+	return reaped, nil
+}
+
 // Start creates a new Attempt with initial system+user prompt (task title+description) and
 // drives it. Returns the attempt id.
 func (r *Runner) Start(ctx context.Context, taskID, serverID, model string) (*store.Attempt, error) {

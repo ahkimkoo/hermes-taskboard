@@ -82,6 +82,16 @@ func main() {
 	authSvc := auth.New(cfgStore)
 	sched := scheduler.New(cfgStore, st, runner, logger)
 
+	// Reap attempts that were "running" / "queued" when the previous process
+	// died — their goroutines are gone, so the DB label is a lie. Must run
+	// before the scheduler/cron start, otherwise concurrency gates count
+	// ghosts and the UI keeps spinning.
+	if n, err := runner.ReapOrphans(context.Background()); err != nil {
+		logger.Warn("reap orphan attempts", "err", err)
+	} else if n > 0 {
+		logger.Info("reaped orphan attempts", "count", n)
+	}
+
 	srv := server.New(cfgStore, st, fs, pool, hub, boardSvc, runner, authSvc, logger, webfs.FS, *dataDir)
 
 	ctx, cancel := context.WithCancel(context.Background())
