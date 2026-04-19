@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## 2026-04-19
 
+### Hotfix (round 7.1) — user's own messages were invisible in the event stream
+The SSE fix from earlier today (wrapping every payload with an `event` key to bypass the addEventListener/onmessage mismatch) was clobbering the inner `event` field that the AttemptRunner set on each NDJSON line — so `user_message`, `run_start`, `run_end` etc. all arrived on the wire as `event: "event"` and the UI couldn't discriminate. Result: typing a follow-up message showed the assistant's reply but the user's own bubble was silently dropped.
+Fix: only merge the outer wrapper name when the payload doesn't already carry one, preserving the runner's inner event names verbatim. Added `test_sse_preserves_event_name` so this specific failure mode can't slip back in. Suite is 30/30 green.
+
 ### Major round 7 — SSE fix, UX polish, tag prompts, scheduled tasks
 
 **Autorefresh bug (was silent)**

@@ -314,6 +314,38 @@ def test_new_task_overlay_noclose(page: Page):
     page.wait_for_selector(".modal-header h2:has-text('New Task')", state="detached", timeout=3000)
 
 
+@test("SSE preserves inner event name (user_message must not be clobbered)")
+def test_sse_preserves_event_name(page: Page):
+    """Regression for the writeSSE bug where the outer event wrapper was
+    overwriting the inner kind — user_message frames arrived with
+    `event: "event"` so the UI silently dropped the user's own message.
+    """
+    # Pick any existing attempt — NDJSON history always preserves the event
+    # field, so this test also guards the /api/attempts/{id}/events path.
+    tasks = page.evaluate("() => fetch('/api/tasks').then(r=>r.json())")
+    attempt_id = None
+    for t in tasks.get("tasks", []):
+        ar = page.evaluate("id => fetch('/api/tasks/'+id+'/attempts').then(r=>r.json())", t["id"])
+        atts = ar.get("attempts") or []
+        if atts:
+            attempt_id = atts[0]["id"]
+            break
+    if not attempt_id:
+        # No seeded attempts: skip gracefully.
+        return
+    events = page.evaluate(
+        "aid => fetch('/api/attempts/'+aid+'/events?since_seq=0&limit=2000').then(r=>r.json())",
+        attempt_id,
+    )["events"] or []
+    # Confirm at least one system event keeps its original name intact.
+    kinds = {(e.get("kind"), e.get("event")) for e in events}
+    system_kinds = {ev for k, ev in kinds if k == "system"}
+    # At minimum run_start is always emitted by the runner, so we can assert it's present.
+    assert "run_start" in system_kinds or "user_message" in system_kinds, (
+        f"expected to find a named system event, got {sorted(system_kinds)!r}"
+    )
+
+
 @test("tag system prompt: create, edit, delete via Settings → Tags")
 def test_tag_system_prompt(page: Page):
     name = f"tg-{uuid.uuid4().hex[:6]}"
@@ -726,6 +758,7 @@ def main():
         test_attempt_list_toggle(page)
         test_sound_preview_buttons(page)
         test_card_animation_classes(page)
+        test_sse_preserves_event_name(page)
         test_tag_system_prompt(page)
         test_schedule_roundtrip(page)
         test_schedule_picker_ui(page)

@@ -555,6 +555,10 @@ func (s *Server) streamTopic(w http.ResponseWriter, r *http.Request, topic strin
 // starving our generic board subscriber. Instead we inline the event name into
 // the JSON payload (key "event") so the frontend's onmessage handler can
 // discriminate from a single stream.
+//
+// IMPORTANT: attempt-stream frames already carry their own `event` discriminator
+// inside data (e.g. "user_message", "run_start", emitted by AttemptRunner).
+// We must not overwrite that — only fill in `event` when data didn't set it.
 func writeSSE(w http.ResponseWriter, seq uint64, event string, data map[string]any) {
 	if seq > 0 {
 		fmt.Fprintf(w, "id: %d\n", seq)
@@ -564,7 +568,9 @@ func writeSSE(w http.ResponseWriter, seq uint64, event string, data map[string]a
 		payload[k] = v
 	}
 	if event != "" {
-		payload["event"] = event
+		if _, alreadySet := payload["event"]; !alreadySet {
+			payload["event"] = event
+		}
 	}
 	b, _ := json.Marshal(payload)
 	fmt.Fprintf(w, "data: %s\n\n", b)
