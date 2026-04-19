@@ -153,13 +153,16 @@ const Card = {
   },
   methods: {
     onPointerDown(e) {
-      // Delay so simple clicks (no movement) still open the modal.
+      // Start each interaction with a clean slate — stale flag from a prior
+      // drag that never produced a click gets wiped here.
+      this._dragStarted = false;
       this._downX = e.clientX; this._downY = e.clientY;
       const startThreshold = 5;
       const onMove = (ev) => {
         if (Math.abs(ev.clientX - this._downX) > startThreshold || Math.abs(ev.clientY - this._downY) > startThreshold) {
           window.removeEventListener('pointermove', onMove);
           window.removeEventListener('pointerup', onUp);
+          this._dragStarted = true;
           this.drag.start(e, this.task.id, this.$el);
         }
       };
@@ -171,8 +174,10 @@ const Card = {
       window.addEventListener('pointerup', onUp);
     },
     onClick(e) {
-      // Only open if this wasn't a drag (dragging sets display:none on source).
-      if (this.$el.style.display === 'none') return;
+      // Swallow the synthetic click that browsers fire after a drag ends on
+      // the same element — the DOM display style is unreliable here because
+      // drag.js already restored it by the time this handler runs.
+      if (this._dragStarted) { this._dragStarted = false; return; }
       if (e.target.closest('button, input, textarea')) return;
       this.$emit('open', this.task.id);
     },
