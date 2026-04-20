@@ -134,19 +134,22 @@ const Card = {
   computed: {
     cardClasses() {
       // Decide which "electric chase" border to render, if any:
-      //   needs-input — any attempt is waiting for user input, OR the task
-      //                 itself is sitting in Verify awaiting review.
-      //                 Orange+red chase.
-      //   running     — task has at least one actively-executing attempt
-      //                 (but no attempt is blocked on user input).
+      //   running     — task has at least one actively-executing attempt.
+      //                 Takes priority over verify, because a verify card
+      //                 that just got "Run again" has live work on it and
+      //                 shouldn't keep the "awaiting review" orange glow.
       //                 Green+red chase.
+      //   needs-input — an attempt is blocked on user input, OR the task is
+      //                 sitting in Verify awaiting review (and nothing is
+      //                 actively running).
+      //                 Orange+red chase.
       //   (none)      — static card, no animation.
       const t = this.task;
-      const needsInput = (t.needs_input_attempts || 0) > 0 || t.status === 'verify';
       const running = (t.active_attempts || 0) > 0;
+      const needsInput = (t.needs_input_attempts || 0) > 0 || (!running && t.status === 'verify');
       const c = [];
-      if (needsInput) c.push('needs-input');
-      else if (running) c.push('running');
+      if (running) c.push('running');
+      else if (needsInput) c.push('needs-input');
       return c;
     },
     depCount() { return (this.task.dependencies || []).length; },
@@ -188,6 +191,14 @@ const Column = {
   components: { Card },
   props: ['status', 'tasks', 'headerAction'],
   emits: ['open-task'],
+  computed: {
+    emptyIcon() {
+      // Pick a lightweight glyph that hints at the column's semantics.
+      return ({
+        draft: '✎', plan: '☷', execute: '▶', verify: '✓', archive: '☐',
+      })[this.status] || '•';
+    },
+  },
   template: `
     <div class="column" :data-status="status">
       <div class="column-header">
@@ -202,7 +213,11 @@ const Column = {
       </div>
       <div class="column-drop-zone">
         <card v-for="task in tasks" :key="task.id" :task="task" @open="id => $emit('open-task', id)"/>
-        <div v-if="!tasks.length" class="empty">{{ $t('empty.no_tasks') }}</div>
+        <div v-if="!tasks.length" class="empty">
+          <div class="empty-icon" aria-hidden="true">{{ emptyIcon }}</div>
+          <div class="empty-title">{{ $t('empty.no_tasks') }}</div>
+          <div class="empty-hint">{{ $t('empty.hint.' + status) }}</div>
+        </div>
       </div>
     </div>
   `,
@@ -320,6 +335,16 @@ const TaskModal = {
       confirmDelete: false,
       confirmStop: false,       // inline 2-click confirm for Stop
       showAttemptHelp: false,
+      // Auto-fullscreen on phones (< 768px) so the card modal fills the
+      // viewport by default — on a phone the small-window mode has nothing
+      // useful to show behind it and just wastes space. Desktop keeps the
+      // windowed default so multiple cards can be cross-referenced.
+      fullscreen: typeof window !== 'undefined' && window.innerWidth < 768,
+      atModalBottom: true,   // hides the jump-to-bottom icon when true
+      // Tracks which activeAttemptId we've already asked the server to
+      // reconnect to Hermes for. Reset whenever the selection changes so
+      // picking a different attempt gets its own catch-up attempt.
+      reconnectAskedFor: null,
     };
   },
   watch: {
@@ -328,8 +353,8 @@ const TaskModal = {
       // who change their mind don't hit it accidentally on a later click.
       if (v) setTimeout(() => { this.confirmStop = false; }, 4000);
     },
+    taskId: { immediate: true, handler: 'load' },
   },
-  watch: { taskId: { immediate: true, handler: 'load' } },
   computed: {
     modelsForSelected() {
       const id = this.form.preferred_server;
@@ -351,16 +376,46 @@ const TaskModal = {
     },
   },
   template: `
-    <div class="modal-overlay">
-      <div class="modal">
+    <div class="modal-overlay" :class="{ fullscreen: fullscreen }">
+      <div class="modal" :class="{ fullscreen: fullscreen }">
         <div class="modal-header">
           <h2>{{ task ? task.title : '…' }}</h2>
           <div class="modal-header-actions">
-            <button v-if="task && !editing" @click="editing = true">✎ {{ $t('action.edit') }}</button>
+            <button v-if="task && !editing" class="modal-edit-btn" @click="editing = true">
+              <span class="modal-edit-icon">✎</span>
+              <span class="modal-edit-label">{{ $t('action.edit') }}</span>
+            </button>
+            <button v-if="!$root.isMobile" class="ghost fullscreen-toggle" :class="{ active: fullscreen }"
+                    :title="$t(fullscreen ? 'action.exit_fullscreen' : 'action.fullscreen')"
+                    aria-label="Toggle fullscreen"
+                    @click="fullscreen = !fullscreen">
+              <svg v-if="!fullscreen" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                      d="M4 8V4h4M16 8V4h-4M4 12v4h4M16 12v4h-4"/>
+              </svg>
+              <svg v-else viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                      d="M8 4v4H4M12 4v4h4M8 16v-4H4M12 16v-4h4"/>
+              </svg>
+            </button>
             <button class="ghost close-btn" @click="$emit('close')">✕</button>
           </div>
         </div>
-        <div class="modal-body" v-if="task">
+        <!-- "Jump to bottom" floating icon. Long conversations bury the
+             chat input under a scroll; this lets the user skip straight
+             to it from anywhere in the modal. Auto-hides once the
+             modal-body is already at its bottom. -->
+        <button v-if="task" class="modal-scroll-bottom-btn"
+                :class="{ hidden: atModalBottom }"
+                :title="$t('action.scroll_to_bottom')"
+                @click="scrollModalBottom"
+                aria-label="Jump to bottom">
+          <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+            <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                  d="M5 8l5 5 5-5"/>
+          </svg>
+        </button>
+        <div class="modal-body" ref="modalBody" v-if="task" @scroll="onModalBodyScroll">
           <!-- Edit form -->
           <div v-if="editing">
             <div class="form-row">
@@ -418,10 +473,46 @@ const TaskModal = {
 
           <!-- Read view -->
           <div v-else>
+            <dl class="task-meta-grid">
+              <div>
+                <dt>{{ $t('field.priority') }}</dt>
+                <dd><span class="priority-badge" :class="'p' + task.priority">P{{ task.priority }}</span></dd>
+              </div>
+              <div>
+                <dt>{{ $t('field.trigger') }}</dt>
+                <dd>{{ $t('field.trigger.' + task.trigger_mode) }}</dd>
+              </div>
+              <div>
+                <dt>{{ $t('field.server') }}</dt>
+                <dd>{{ task.preferred_server || $t('field.default') }}</dd>
+              </div>
+              <div>
+                <dt>{{ $t('field.model') }}</dt>
+                <dd>{{ task.preferred_model || $t('field.default') }}</dd>
+              </div>
+              <div v-if="task.tags && task.tags.length" class="task-meta-wide">
+                <dt>{{ $t('field.tags_short') }}</dt>
+                <dd class="task-meta-tags"><span v-for="tag in task.tags" :key="tag" class="tag-chip">{{ tag }}</span></dd>
+              </div>
+              <div v-if="task.dependencies && task.dependencies.length">
+                <dt>{{ $t('field.dependencies') }}</dt>
+                <dd>⛓ {{ task.dependencies.length }}</dd>
+              </div>
+              <div>
+                <dt>{{ $t('field.created') }}</dt>
+                <dd>{{ formatTime(task.created_at) }}</dd>
+              </div>
+            </dl>
+
             <div v-if="task.description" class="task-desc" v-html="renderedDescription"></div>
             <p v-else class="task-desc-empty">{{ $t('task.no_description') }}</p>
 
-            <schedule-picker :task-id="taskId"></schedule-picker>
+            <!-- Schedule feature is infrequently used. Keep it collapsed
+                 behind a small heading so it doesn't dominate the modal. -->
+            <details class="schedule-details">
+              <summary>⏱ {{ $t('schedule.heading') }}</summary>
+              <schedule-picker :task-id="taskId"></schedule-picker>
+            </details>
 
             <h3 class="attempts-heading">
               {{ $t('attempt.heading') }}
@@ -430,6 +521,16 @@ const TaskModal = {
               <button v-if="attempts.length > 0"
                       class="ghost small attempt-toggle" @click="listOpen = !listOpen">
                 {{ listOpen ? $t('attempt.collapse') : $t('attempt.expand') }}
+              </button>
+              <!-- When there are zero attempts the old "Start" button lived
+                   inside the attempt list, which is collapsed by default.
+                   Surfacing the action on the heading row makes sure manual-
+                   trigger tasks are actually startable without the user
+                   having to discover the list toggle first. -->
+              <button v-if="canStartFirst && attempts.length === 0"
+                      class="primary small start-now-btn"
+                      @click="confirmNewAttempt = true">
+                ▶ {{ $t('action.start_now') }}
               </button>
             </h3>
             <div v-if="showAttemptHelp" class="help-popover">
@@ -446,27 +547,28 @@ const TaskModal = {
                   <div class="time">{{ formatTime(a.started_at) }}</div>
                   <div class="shortid">{{ a.id.slice(0,8) }}</div>
                 </div>
-                <button v-if="!canStartFirst || attempts.length > 0" class="secondary small new-attempt-btn"
+                <button v-if="attempts.length > 0" class="secondary small new-attempt-btn"
                         @click="confirmNewAttempt = true">
                   + {{ $t('action.new_attempt') }}
-                </button>
-                <button v-if="canStartFirst && attempts.length === 0" class="primary start-btn"
-                        @click="confirmNewAttempt = true">
-                  ▶ {{ $t('action.start') }}
                 </button>
               </div>
               <div class="attempt-content">
                 <event-stream :attempt-id="activeAttemptId"></event-stream>
                 <div v-if="activeAttemptId" class="input-area">
                   <div class="input-bar">
-                    <input type="text" v-model="input"
-                           :placeholder="$t('placeholder.send_message')"
-                           @keydown="onInputKeydown">
+                    <textarea ref="messageInput"
+                              class="message-input"
+                              v-model="input"
+                              rows="1"
+                              enterkeyhint="enter"
+                              :placeholder="$t('placeholder.send_message')"
+                              @keydown="onInputKeydown"
+                              @input="autoGrowInput"></textarea>
                     <button class="primary" @click="sendMsg">{{ $t('action.send') }}</button>
-                    <button v-if="!confirmStop" class="danger small" @click="confirmStop = true">
+                    <button v-if="!confirmStop" class="danger" @click="confirmStop = true">
                       {{ $t('action.stop') }}
                     </button>
-                    <button v-else class="danger small" @click="cancelAttempt">
+                    <button v-else class="danger" @click="cancelAttempt">
                       {{ $t('action.confirm_stop') }}
                     </button>
                   </div>
@@ -540,6 +642,13 @@ const TaskModal = {
         // Collapse the list when there's only one attempt; expand it when
         // there are several so users see them at a glance.
         this.listOpen = this.attempts.length > 1;
+        // Seed the jump-to-bottom visibility after the body has laid out.
+        // Two ticks: one for Vue to render, one for the event stream to
+        // inflate the scroll height.
+        this.$nextTick(() => {
+          this.onModalBodyScroll();
+          setTimeout(() => this.onModalBodyScroll(), 300);
+        });
       } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
     async save() {
@@ -599,8 +708,49 @@ const TaskModal = {
       if (!this.input.trim() || !this.activeAttemptId) return;
       const text = this.input;
       this.input = '';
+      this.$nextTick(() => this.autoGrowInput());  // collapse the textarea back to 1 row
       try { await api('/api/attempts/' + this.activeAttemptId + '/messages', { method: 'POST', body: { text } }); }
       catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+    scrollModalBottom() {
+      const body = this.$refs.modalBody;
+      if (!body) return;
+      try { body.scrollTo({ top: body.scrollHeight, behavior: 'smooth' }); }
+      catch { body.scrollTop = body.scrollHeight; }
+    },
+    onModalBodyScroll() {
+      // Hide the jump-to-bottom icon once the user is within 60 px of the
+      // actual bottom. Small tolerance avoids the icon flickering on and
+      // off during a smooth-scroll animation.
+      const body = this.$refs.modalBody;
+      if (!body) return;
+      const atBottom = (body.scrollHeight - body.scrollTop - body.clientHeight) < 60;
+      this.atModalBottom = atBottom;
+      // When the user scrolls far enough to see the send / input area we
+      // treat that as "I want the latest" — ask the backend to reopen the
+      // Hermes run stream for this attempt. Idempotent: already-live
+      // streams short-circuit server-side as "already_live", and we throttle
+      // to at most one request per selected attempt.
+      if (atBottom && this.activeAttemptId &&
+          this.reconnectAskedFor !== this.activeAttemptId) {
+        this.reconnectAskedFor = this.activeAttemptId;
+        this.tryReconnectAttempt(this.activeAttemptId);
+      }
+    },
+    async tryReconnectAttempt(attemptID) {
+      try {
+        await api('/api/attempts/' + attemptID + '/reconnect', { method: 'POST' });
+      } catch { /* best-effort; any error is visible in event log */ }
+    },
+    autoGrowInput() {
+      // Resize the message textarea to fit its content, capped at ~6 rows so
+      // a very long paste doesn't shove the event stream off-screen. Users
+      // get a scrollbar inside the textarea past the cap.
+      const el = this.$refs.messageInput;
+      if (!el) return;
+      el.style.height = 'auto';
+      const max = 150;                      // roughly 6 lines at 1.4 line-height
+      el.style.height = Math.min(el.scrollHeight, max) + 'px';
     },
     async cancelAttempt() {
       if (!this.activeAttemptId) return;
@@ -1058,17 +1208,17 @@ const App = {
     <div v-if="isLogin"><login></login></div>
     <div v-else>
       <div class="topbar">
-        <h1><span class="logo">⧉</span> {{ $t('app.title') }}</h1>
+        <h1><span class="logo">⧉</span><span class="topbar-title">{{ $t('app.title') }}</span></h1>
         <div class="spacer"></div>
-        <input type="search" v-model="search" :placeholder="$t('placeholder.search')">
+        <input type="search" v-model="search" :placeholder="$t('placeholder.search')" class="topbar-search">
         <button class="icon" :title="$t('action.toggle_theme')" @click="toggleTheme">
           {{ themeIsLight ? '☀' : '☾' }}
         </button>
         <button class="icon" :title="$t('action.toggle_lang')" @click="toggleLang">
-          🌐 {{ langLabel }}
+          🌐 <span class="topbar-btn-label">{{ langLabel }}</span>
         </button>
-        <button @click="openSettings">⚙ {{ $t('action.settings') }}</button>
-        <button v-if="state.auth.enabled && state.auth.logged_in" @click="logout">{{ $t('action.logout') }}</button>
+        <button class="icon" :title="$t('action.settings')" @click="openSettings">⚙ <span class="topbar-btn-label">{{ $t('action.settings') }}</span></button>
+        <button v-if="state.auth.enabled && state.auth.logged_in" class="topbar-btn-label-only" @click="logout">{{ $t('action.logout') }}</button>
       </div>
 
       <div class="board-tabs" v-if="isMobile">
@@ -1089,6 +1239,14 @@ const App = {
         </column>
       </div>
 
+      <!-- Mobile floating action button: the per-column "+ 新建任务" sits
+           inside the Draft column header, which is invisible unless the
+           user happens to be on that tab. FAB is always-visible and has
+           a large touch target. Hidden on tablet+. -->
+      <button v-if="isMobile" class="new-task-fab primary"
+              :title="$t('action.new_task')"
+              @click="state.showNewTask = true">＋</button>
+
       <task-modal v-if="state.openTaskId"
                   :task-id="state.openTaskId"
                   @close="state.openTaskId = null"
@@ -1102,6 +1260,19 @@ const App = {
       <div class="toasts">
         <div v-for="tt in state.toasts" :key="tt.id" class="toast" :class="tt.kind">{{ tt.msg }}</div>
       </div>
+
+      <!-- Small GitHub badge at the bottom-left so the repo is discoverable
+           without a navbar link. Subtle by default, accent on hover. Kept
+           left so it never clashes with the mobile new-task FAB on the
+           right. -->
+      <a class="repo-link" href="https://github.com/ahkimkoo/hermes-taskboard"
+         target="_blank" rel="noopener"
+         title="GitHub — ahkimkoo/hermes-taskboard"
+         aria-label="GitHub repository">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path fill="currentColor" d="M12 .5C5.73.5.5 5.73.5 12c0 5.07 3.29 9.37 7.86 10.89.57.11.78-.25.78-.55 0-.27-.01-.99-.02-1.95-3.2.69-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.77 2.71 1.26 3.37.96.1-.74.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.05 11.05 0 0 1 5.79 0c2.21-1.49 3.18-1.18 3.18-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.26 5.69.41.35.77 1.04.77 2.1 0 1.52-.01 2.75-.01 3.12 0 .3.21.66.79.55A11.51 11.51 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z"/>
+        </svg>
+      </a>
     </div>
   `,
   mounted() {

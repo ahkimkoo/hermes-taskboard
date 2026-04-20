@@ -51,7 +51,15 @@ button, input, textarea, select {
   background: var(--bg-elev-2); color: var(--text);
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;
 }
-button { cursor: pointer; transition: background 0.15s, opacity 0.15s; }
+/* Draw the focus ring INSIDE the element via negative outline-offset so it
+   survives any ancestor `overflow: hidden` / `overflow-y: auto` container
+   (e.g. .attempt-content, .attempt-list) — previously the left 2 px of the
+   default outside-the-box ring was getting clipped on the chat input. */
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+button { cursor: pointer; transition: background 0.15s, opacity 0.15s; white-space: nowrap; }
 button:hover { background: var(--border); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary { background: var(--accent); color: #ffffff; font-weight: 600; border-color: var(--accent-2); }
@@ -84,6 +92,40 @@ button.icon { padding: 6px 8px; }
 
 /* column-drop-zone lets us drop even on an empty column */
 .column-drop-zone { flex: 1; min-height: 40px; border-radius: 6px; }
+
+/* Empty-column placeholder. Dashed outline so it reads as "drop zone",
+   slightly faded glyph + two-line copy so each column explains itself
+   instead of showing a generic one-liner. */
+.column-drop-zone > .empty {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: 6px;
+  padding: 26px 14px;
+  margin-top: 4px;
+  border: 1.5px dashed color-mix(in srgb, var(--border) 65%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-elev-2) 55%, transparent);
+  transition: background 0.15s, border-color 0.15s;
+}
+.column-drop-zone > .empty:hover {
+  background: color-mix(in srgb, var(--bg-elev-2) 80%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+.column-drop-zone > .empty .empty-icon {
+  font-size: 22px; line-height: 1;
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+.column-drop-zone > .empty .empty-title {
+  font-size: 13px; font-weight: 600; color: var(--text-dim);
+}
+.column-drop-zone > .empty .empty-hint {
+  font-size: 11.5px; color: var(--text-muted); line-height: 1.5; max-width: 22em;
+}
+body.dragging-active .column-drop-zone > .empty {
+  /* Intensify the drop-zone affordance while the user is dragging. */
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
 
 /* ---------- Card ---------- */
 .card {
@@ -127,9 +169,59 @@ body.dragging-active * { cursor: grabbing !important; }
 
 /* ---------- Modal ---------- */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 20px; }
+.modal-overlay.fullscreen { padding: 0; }
 .modal-overlay.inner { z-index: 120; background: rgba(0,0,0,0.6); }
-.modal { background: var(--bg-elev); border-radius: 12px; max-width: 900px; width: 100%; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow); }
+.modal { position: relative; background: var(--bg-elev); border-radius: 12px; max-width: 900px; width: 100%; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow); }
+.modal.fullscreen { max-width: none; max-height: none; width: 100%; height: 100%; border-radius: 0; }
 .modal.confirm { max-width: 420px; }
+/* Fullscreen toggle (desktop-only). Uses an inline SVG so rendering is
+   independent of the system font — the old Unicode glyph (U+26F6) was
+   invisible on machines whose default UI font doesn't include it. */
+.fullscreen-toggle {
+  color: var(--text-dim);
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  padding: 4px 8px;
+  min-width: 32px; min-height: 28px;
+  transition: color 0.15s, background 0.15s;
+}
+.fullscreen-toggle svg { display: block; }
+.fullscreen-toggle:hover { color: var(--accent); background: var(--bg-elev-2); }
+.fullscreen-toggle.active { color: var(--accent); }
+
+/* Jump-to-bottom floating icon sits on the top-right of the modal body,
+   anchored to the modal container so it stays put as the body scrolls.
+   Auto-hides when already at the bottom via the .hidden class. */
+.modal-scroll-bottom-btn {
+  position: absolute;
+  top: 60px; right: 18px;
+  width: 36px; height: 36px; border-radius: 50%;
+  padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--bg-elev-2) 90%, var(--accent) 10%);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  box-shadow: 0 4px 12px rgba(0,0,0,0.28), 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  cursor: pointer;
+  z-index: 5;
+  opacity: 0.92;
+  transition: opacity 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease,
+              background 0.18s ease, color 0.18s ease;
+}
+.modal-scroll-bottom-btn:hover,
+.modal-scroll-bottom-btn:focus-visible {
+  opacity: 1;
+  transform: translateY(-1px);
+  background: var(--accent);
+  color: #ffffff;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.35),
+              0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.modal-scroll-bottom-btn:active { transform: translateY(0); }
+.modal-scroll-bottom-btn svg { display: block; }
+.modal-scroll-bottom-btn.hidden {
+  opacity: 0; transform: translateY(6px) scale(0.85);
+  pointer-events: none;
+}
 .modal-header { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
 .modal-header h2 { margin: 0; font-size: 16px; }
 .modal-header-actions { display: flex; gap: 6px; }
@@ -148,13 +240,76 @@ body.dragging-active * { cursor: grabbing !important; }
 .hint { color: var(--text-dim); font-size: 12px; margin-top: 10px; }
 .muted { color: var(--text-dim); font-size: 13px; }
 
-/* ---------- Task description renderer ---------- */
-.task-desc { font-size: 14px; line-height: 1.6; }
+/* ---------- Task meta grid (read view) ---------- */
+.task-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px 18px;
+  padding: 10px 12px;
+  margin: 0 0 14px;
+  background: var(--bg-elev-2);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.task-meta-grid > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.task-meta-grid > div.task-meta-wide { grid-column: 1 / -1; }
+.task-meta-grid dt { color: var(--text-muted); font-weight: 500; flex: 0 0 auto; white-space: nowrap; }
+.task-meta-grid dd { margin: 0; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.task-meta-grid .priority-badge { font-weight: 700; }
+.task-meta-tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+
+/* ---------- Collapsible schedule section ---------- */
+.schedule-details { margin-top: 14px; border: 1px solid var(--border); border-radius: 8px; }
+.schedule-details > summary {
+  list-style: none; cursor: pointer; padding: 8px 12px;
+  font-size: 13px; color: var(--text-dim);
+  display: flex; align-items: center; gap: 6px;
+  transition: background 0.12s;
+}
+.schedule-details > summary::-webkit-details-marker { display: none; }
+.schedule-details > summary::before {
+  content: '▸'; font-size: 10px; color: var(--text-muted); transition: transform 0.12s;
+  display: inline-block; width: 10px;
+}
+.schedule-details[open] > summary::before { transform: rotate(90deg); }
+.schedule-details > summary:hover { background: var(--bg-elev-2); }
+.schedule-details[open] > summary { border-bottom: 1px solid var(--border); }
+.schedule-details .schedule-picker { margin-top: 0; padding: 12px; border: none; border-radius: 0; }
+
+/* ---------- Task description renderer ----------
+   Wraps the rendered markdown in a subtle card so the description area
+   stands apart from the meta grid / schedule / attempt sections above and
+   below it — previously it was flush with the modal background and blended
+   into surrounding text. Accent-coloured left rule draws the eye; padding
+   gives headings and lists proper breathing room. */
+.task-desc {
+  font-size: 14px; line-height: 1.65;
+  background: var(--bg-elev-2);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 14px 16px;
+  margin: 0 0 14px;
+}
+.task-desc > :first-child { margin-top: 0; }
+.task-desc > :last-child { margin-bottom: 0; }
+.task-desc h1, .task-desc h2, .task-desc h3 { margin: 0.6em 0 0.3em; line-height: 1.3; }
+.task-desc h1 { font-size: 1.25em; }
+.task-desc h2 { font-size: 1.15em; }
+.task-desc h3 { font-size: 1.05em; }
+.task-desc p { margin: 0.4em 0; }
+.task-desc ul, .task-desc ol { margin: 0.4em 0; padding-left: 1.5em; }
+.task-desc li { margin: 0.15em 0; }
 .task-desc img { max-width: 100%; border-radius: 6px; margin: 6px 0; }
-.task-desc pre { background: var(--code-bg); padding: 10px; border-radius: 6px; overflow-x: auto; }
-.task-desc code { background: var(--code-bg); padding: 1px 4px; border-radius: 3px; font-size: 0.92em; }
+.task-desc pre { background: var(--code-bg); padding: 10px 12px; border-radius: 6px; overflow-x: auto; margin: 0.5em 0; font-size: 12.5px; }
+.task-desc code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+.task-desc pre code { background: transparent; padding: 0; }
 .task-desc blockquote { border-left: 3px solid var(--border); padding: 2px 12px; color: var(--text-dim); margin: 6px 0; }
-.task-desc-empty { color: var(--text-muted); font-style: italic; }
+.task-desc a { color: var(--accent); }
+.task-desc-empty {
+  color: var(--text-muted); font-style: italic;
+  padding: 14px 16px; margin: 0 0 14px;
+  background: var(--bg-elev-2); border-left: 3px solid var(--border); border-radius: 6px;
+}
 
 /* ---------- Description editor ---------- */
 .desc-editor { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev-2); }
@@ -177,10 +332,14 @@ body.dragging-active * { cursor: grabbing !important; }
 
 .attempt-panel { display: grid; grid-template-columns: 240px 1fr; gap: 12px; margin-top: 8px; min-height: 380px; }
 .attempt-panel.stacked { grid-template-columns: 1fr; }
-.attempt-list { overflow-y: auto; border-right: 1px solid var(--border); padding-right: 8px; display: flex; flex-direction: column; gap: 6px; }
-.attempt-panel.stacked .attempt-list { border-right: none; flex-direction: row; flex-wrap: wrap; padding-right: 0; }
-.attempt-item { padding: 8px 10px; border-radius: 6px; background: var(--bg-elev-2); cursor: pointer; font-size: 12px; transition: outline 0.12s; }
-.attempt-item.active { outline: 2px solid var(--accent); }
+.attempt-list { overflow-y: auto; border-right: 1px solid var(--border); padding: 0 8px; display: flex; flex-direction: column; gap: 6px; }
+.attempt-panel.stacked .attempt-list { border-right: none; flex-direction: row; flex-wrap: wrap; padding: 0; }
+/* Use an inset border (reserved via a transparent 2px ring) instead of
+   `outline` so the active highlight doesn't paint outside the scroll
+   container — overflow-y:auto implicitly clips overflow-x, which was
+   chewing off the left 2px of the green accent ring. */
+.attempt-item { padding: 8px 10px; border: 2px solid transparent; border-radius: 6px; background: var(--bg-elev-2); cursor: pointer; font-size: 12px; transition: border-color 0.12s; }
+.attempt-item.active { border-color: var(--accent); }
 .attempt-item .state { font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; }
 .attempt-item .state.running { color: var(--accent); }
 .attempt-item .state.needs_input { color: var(--warning); }
@@ -206,7 +365,35 @@ body.dragging-active * { cursor: grabbing !important; }
 .es-system { text-align: center; color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin: 4px 0; }
 .es-system.error { color: var(--danger); text-transform: none; }
 
-.es-message { display: flex; gap: 8px; align-items: flex-start; }
+.es-message { display: flex; gap: 8px; align-items: flex-start; position: relative; }
+.es-bubble-wrap { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 2px; }
+.es-tool { position: relative; }
+/* Small timestamp shown on every message / tool / system divider.
+   Tabular-nums so columns line up between adjacent messages. */
+.es-time {
+  font-size: 10.5px; color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+  user-select: text;
+}
+.es-bubble-wrap > .es-time { padding: 0 4px; }
+.es-tool-head .es-time { margin-left: 6px; }
+.es-system > .es-time { margin-left: 8px; }
+/* Copy icon sits top-right of every assistant / user / tool card. Hidden
+   until the card is hovered so it doesn't visually compete with content;
+   flash green ✓ for ~1.5s after a successful copy. */
+.es-copy-btn {
+  position: absolute; top: 4px; right: 4px;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 4px;
+  padding: 2px 7px; font-size: 12px; cursor: pointer;
+  color: var(--text-dim); opacity: 0; transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+  line-height: 1.2;
+}
+.es-message:hover .es-copy-btn,
+.es-tool:hover .es-copy-btn,
+.es-copy-btn:focus-visible { opacity: 1; }
+.es-copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+.es-copy-btn.copied { opacity: 1; color: var(--accent); border-color: var(--accent); }
 .es-avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--bg-elev-2); display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 14px; }
 .es-message.user .es-avatar { background: color-mix(in srgb, var(--p4) 25%, var(--bg-elev-2)); }
 .es-message.assistant .es-avatar { background: color-mix(in srgb, var(--accent) 25%, var(--bg-elev-2)); }
@@ -230,8 +417,20 @@ body.dragging-active * { cursor: grabbing !important; }
 
 /* ---------- Input bar ---------- */
 .input-area { display: flex; flex-direction: column; margin-top: 8px; }
-.input-bar { display: flex; gap: 8px; }
+.input-bar { display: flex; gap: 8px; align-items: flex-end; }
 .input-bar input { flex: 1; }
+/* Chat input is a textarea now so Enter inserts a newline (send is
+   Ctrl/⌘ + Enter, see onInputKeydown). Starts at 1 row, auto-grows up to
+   ~6 rows via JS (autoGrowInput); extra lines scroll inside. */
+.message-input {
+  flex: 1; min-width: 0;
+  resize: none;
+  line-height: 1.4;
+  min-height: 36px;
+  max-height: 150px;
+  overflow-y: auto;
+  font-family: inherit;
+}
 .input-hint { font-size: 11px; color: var(--text-muted); padding: 4px 2px 0; }
 
 /* ? help button inline with headings. */
@@ -257,6 +456,37 @@ body.dragging-active * { cursor: grabbing !important; }
   line-height: 1.5;
   margin: 6px 0 10px;
 }
+
+/* "Load earlier" link sits at the top of the event stream; visible only
+   when the server has older events than the current fetched tail. */
+.load-more-row { display: flex; justify-content: center; margin: 2px 0 6px; }
+.load-more {
+  background: transparent; border: 1px dashed var(--border);
+  color: var(--text-dim);
+  font-size: 12px; padding: 4px 14px; border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.load-more:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.load-more:disabled { cursor: default; opacity: 0.65; }
+
+/* Manual "refresh this conversation" pill at the very bottom of the
+   event stream. Same visual family as the load-more link so the top
+   and bottom affordances feel like a pair. */
+.stream-footer { display: flex; justify-content: center; margin: 6px 0 2px; }
+.refresh-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: transparent; border: 1px dashed var(--border);
+  color: var(--text-dim);
+  font-size: 12px; padding: 4px 12px; border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.refresh-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.refresh-btn:disabled { cursor: default; opacity: 0.75; }
+.refresh-btn svg { display: block; transition: transform 0.2s; }
+.refresh-btn.spinning svg { animation: refresh-spin 0.8s linear infinite; }
+@keyframes refresh-spin { to { transform: rotate(360deg); } }
 
 /* Chat-style jump-to-bottom pill. */
 .event-stream-wrap { position: relative; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -362,6 +592,30 @@ body.dragging-active * { cursor: grabbing !important; }
 .schedule-hint { line-height: 1.4; }
 .schedule-hint code { background: var(--bg-elev-1); padding: 1px 5px; border-radius: 3px; margin-left: 4px; }
 .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; margin: 0; }
+
+/* ---------- GitHub repo link ---------- */
+.repo-link {
+  position: fixed;
+  left: 12px;
+  bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-elev-2) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  opacity: 0.55;
+  z-index: 40;
+  transition: opacity 0.15s, color 0.15s, transform 0.15s;
+}
+.repo-link:hover,
+.repo-link:focus-visible {
+  opacity: 1;
+  color: var(--text);
+  transform: scale(1.08);
+  text-decoration: none;
+}
+.repo-link svg { display: block; }
 
 /* ---------- Toasts ---------- */
 .toasts { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }
