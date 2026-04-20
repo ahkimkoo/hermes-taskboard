@@ -500,7 +500,25 @@ func (c *Config) FindServer(id string) *HermesServer {
 	return nil
 }
 
-// DefaultModel returns the server's default model name (or first or empty).
+// HermesDefaultAgent is the profile name Hermes Agent itself ships as the
+// built-in default (see docs/requirements.md and the upstream API-server
+// reference). We use it as the last-resort fallback when a server entry has
+// no Models configured, so a task targeting such a server still dispatches
+// instead of silently sitting in Plan forever.
+const HermesDefaultAgent = "hermes-agent"
+
+// DefaultModel returns the server's default model name. Priority:
+//
+//  1. the model explicitly marked IsDefault
+//  2. the first model listed
+//  3. HermesDefaultAgent — the built-in Hermes default profile
+//
+// (3) exists because an operator can accidentally save a server with no
+// models (e.g. by clearing the UI prefill), and that used to leave every
+// auto-triggered task stuck in Plan with `no model resolvable`. Falling
+// back to the documented Hermes default turns that silent-skip failure
+// mode into a visible dispatch that either succeeds or fails loudly at
+// the Hermes side.
 func (h *HermesServer) DefaultModel() string {
 	if h == nil {
 		return ""
@@ -513,7 +531,7 @@ func (h *HermesServer) DefaultModel() string {
 	if len(h.Models) > 0 {
 		return h.Models[0].Name
 	}
-	return ""
+	return HermesDefaultAgent
 }
 
 // ResolveServerModel returns the effective server and model for a task.
