@@ -1,5 +1,5 @@
 // Minimal service worker: cache app shell; API / SSE are never cached.
-const CACHE = 'hermes-taskboard-v1';
+const CACHE = 'hermes-taskboard-v2';
 const SHELL = [
   '/',
   '/index.html',
@@ -15,6 +15,9 @@ const SHELL = [
   '/js/sse.js',
   '/favicon.svg',
   '/manifest.webmanifest',
+  '/assets/icons/icon-192.png',
+  '/assets/icons/icon-512.png',
+  '/assets/icons/apple-touch-icon.png',
   '/locales/en.json',
   '/locales/zh-CN.json',
 ];

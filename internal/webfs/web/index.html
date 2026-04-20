@@ -8,6 +8,16 @@
   <link rel="apple-touch-icon" href="/assets/icons/apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#1e1e2a">
+  <!-- iOS standalone-launch hints. Without apple-mobile-web-app-capable,
+       "Add to Home Screen" on iOS produces a plain Safari shortcut instead
+       of a standalone-windowed PWA. Android uses the manifest for this,
+       iOS still reads these legacy meta tags. -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Taskboard">
+  <meta name="application-name" content="Taskboard">
+  <meta name="format-detection" content="telephone=no">
   <link rel="stylesheet" href="/assets/app.css">
   <link rel="stylesheet" href="/assets/animations.css">
   <link rel="stylesheet" href="/assets/responsive.css">
