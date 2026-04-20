@@ -22,3 +22,8 @@ vendor/
 .env
 .env.*
 !.env.example
+
+# Local tooling / bridge dirs (not part of the project source)
+.claude/
+.cc-connect/
+config.example.yaml
