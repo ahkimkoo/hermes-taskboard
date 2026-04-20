@@ -82,14 +82,18 @@ func main() {
 	authSvc := auth.New(cfgStore)
 	sched := scheduler.New(cfgStore, st, runner, logger)
 
-	// Reap attempts that were "running" / "queued" when the previous process
-	// died — their goroutines are gone, so the DB label is a lie. Must run
-	// before the scheduler/cron start, otherwise concurrency gates count
-	// ghosts and the UI keeps spinning.
-	if n, err := runner.ReapOrphans(context.Background()); err != nil {
-		logger.Warn("reap orphan attempts", "err", err)
-	} else if n > 0 {
-		logger.Info("reaped orphan attempts", "count", n)
+	// Hermes keeps the agent conversation and run alive independently of
+	// taskboard. On restart we just lost our SSE subscription, so for each
+	// in-flight attempt we reopen /v1/runs/{runID}/events and let the
+	// event-handling pipeline carry it the rest of the way. Attempts whose
+	// Hermes run is genuinely gone (no run_id recorded, or stream rejects
+	// the request) fall back to `failed` with a specific reason.
+	// Runs before the scheduler / cron start so nothing new is dispatched
+	// while we're still rehydrating.
+	if resumed, failed, err := runner.ResumeOrphans(context.Background()); err != nil {
+		logger.Warn("resume orphan attempts", "err", err)
+	} else if resumed+failed > 0 {
+		logger.Info("resumed orphan attempts", "resumed", resumed, "failed", failed)
 	}
 
 	srv := server.New(cfgStore, st, fs, pool, hub, boardSvc, runner, authSvc, logger, webfs.FS, *dataDir)

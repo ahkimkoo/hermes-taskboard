@@ -43,34 +43,157 @@ func New(cfg *config.Store, s *store.Store, fs *fsstore.FS, pool *hermes.Pool, h
 	return &Runner{Cfg: cfg, Store: s, FS: fs, Pool: pool, Hub: hub, Board: b, active: map[string]*runCtx{}}
 }
 
-// ReapOrphans flips any attempt stuck in `queued` or `running` to `failed`.
-// Call once at process startup, before the scheduler / cron worker fire, so
-// that ghost attempts from a prior crash or kill don't hold concurrency slots
-// and the UI doesn't show a spinner forever. `needs_input` attempts are left
-// alone — they're legitimately waiting for the user, and SendMessage will
-// restart their loop when input arrives.
-func (r *Runner) ReapOrphans(ctx context.Context) (int, error) {
+// ResumeOrphans reattaches to Hermes runs that were in-flight when the
+// previous process died. Hermes keeps the conversation and run alive
+// independently of taskboard — we just lost the SSE subscription. For each
+// active attempt we reopen `/v1/runs/{runID}/events` and let the existing
+// handleEvent pipeline carry it to completion as if nothing happened.
+//
+// Flow per orphan:
+//
+//   meta.session.current_run_id present → try to reconnect.
+//   - stream succeeds and delivers response.completed → attempt goes
+//     Completed via the same idle-settle path as a normal run.
+//   - stream errors immediately (run expired / unknown) → mark Failed with a
+//     clear reason.
+//   - no run_id recorded at all (rare: crash between meta write and Hermes
+//     call) → mark Failed with "no run to resume".
+//
+// Call once at startup, before the scheduler / cron worker fire.
+func (r *Runner) ResumeOrphans(ctx context.Context) (resumed, failed int, err error) {
 	active, err := r.Store.ListActiveAttempts(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	var reaped int
 	for _, a := range active {
 		if a.State != store.AttemptRunning && a.State != store.AttemptQueued {
 			continue
 		}
-		r.logSystemEvent(a.ID, "error", map[string]any{
-			"msg":         "process restart — attempt reaped as failed (no active runner)",
-			"prior_state": string(a.State),
-		})
-		if err := r.Store.UpdateAttemptState(ctx, a.ID, store.AttemptFailed); err != nil {
+		meta, _ := r.FS.LoadAttemptMeta(a.ID)
+		var runID string
+		if meta != nil {
+			runID = meta.Session.CurrentRunID
+		}
+		if runID == "" {
+			r.logSystemEvent(a.ID, "error", map[string]any{
+				"msg":         "process restart — no run_id recorded, cannot resume",
+				"prior_state": string(a.State),
+			})
+			_ = r.Store.UpdateAttemptState(ctx, a.ID, store.AttemptFailed)
+			r.broadcastStateChange(a.ID, store.AttemptFailed)
+			_ = r.Board.MaybeAdvanceAfterAttempt(ctx, a.TaskID)
+			failed++
 			continue
 		}
-		r.broadcastStateChange(a.ID, store.AttemptFailed)
-		_ = r.Board.MaybeAdvanceAfterAttempt(ctx, a.TaskID)
-		reaped++
+		if err := r.resumeAttempt(a.ID, a.ServerID, runID); err != nil {
+			r.logSystemEvent(a.ID, "error", map[string]any{
+				"msg":         "resume failed: " + err.Error(),
+				"run_id":      runID,
+				"prior_state": string(a.State),
+			})
+			_ = r.Store.UpdateAttemptState(ctx, a.ID, store.AttemptFailed)
+			r.broadcastStateChange(a.ID, store.AttemptFailed)
+			_ = r.Board.MaybeAdvanceAfterAttempt(ctx, a.TaskID)
+			failed++
+			continue
+		}
+		r.logSystemEvent(a.ID, "resumed", map[string]any{"run_id": runID})
+		resumed++
 	}
-	return reaped, nil
+	return resumed, failed, nil
+}
+
+// TryReconnect opens a fresh SSE subscription to the Hermes run recorded
+// in this attempt's meta, unless a live runCtx already owns it. It's the
+// backend for the "catch me up" flow the UI invokes when the user scrolls
+// to the input area on a card: we want fresh events for stale / terminal
+// attempts but must not duplicate an active stream.
+//
+// Returned statuses:
+//   - "already_live" — r.active[attemptID] exists; nothing to do.
+//   - "no_run_id"    — meta has no CurrentRunID, nothing to reconnect to.
+//   - "reconnected"  — a fresh stream was opened; events will flow via SSE.
+func (r *Runner) TryReconnect(ctx context.Context, attemptID string) (string, error) {
+	r.mu.Lock()
+	_, live := r.active[attemptID]
+	r.mu.Unlock()
+	if live {
+		return "already_live", nil
+	}
+	att, err := r.Store.GetAttempt(ctx, attemptID)
+	if err != nil {
+		return "", err
+	}
+	meta, _ := r.FS.LoadAttemptMeta(attemptID)
+	var runID string
+	if meta != nil {
+		runID = meta.Session.CurrentRunID
+	}
+	if runID == "" {
+		return "no_run_id", nil
+	}
+	if err := r.resumeAttempt(attemptID, att.ServerID, runID); err != nil {
+		return "", err
+	}
+	r.logSystemEvent(attemptID, "resumed", map[string]any{"run_id": runID, "trigger": "user_scroll"})
+	return "reconnected", nil
+}
+
+// resumeAttempt spawns a goroutine that tails `/v1/runs/{runID}/events`
+// from Hermes and funnels events through the same handleEvent pipeline the
+// live flow uses. A fresh runCtx is registered in r.active so SendMessage /
+// Cancel can interact with the attempt exactly like a fresh one.
+func (r *Runner) resumeAttempt(attemptID, serverID, runID string) error {
+	client, err := r.Pool.Get(serverID)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	if _, exists := r.active[attemptID]; exists {
+		r.mu.Unlock()
+		return errors.New("already active")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	rc := &runCtx{cancel: cancel, queue: make(chan string, 32)}
+	r.active[attemptID] = rc
+	r.mu.Unlock()
+	go r.resumeLoop(ctx, attemptID, runID, client, rc)
+	return nil
+}
+
+func (r *Runner) resumeLoop(ctx context.Context, attemptID, runID string, client *hermes.Client, rc *runCtx) {
+	defer func() {
+		r.mu.Lock()
+		delete(r.active, attemptID)
+		r.mu.Unlock()
+	}()
+	events := make(chan hermes.Event, 64)
+	streamErr := make(chan error, 1)
+	go func() {
+		streamErr <- client.StreamRunEvents(ctx, runID, events)
+		close(events)
+	}()
+	for e := range events {
+		r.handleEvent(attemptID, e)
+	}
+	err := <-streamErr
+	r.logSystemEvent(attemptID, "run_end", map[string]any{"run_id": runID, "err": errStr(err), "resumed": true})
+	// Settle the attempt state the same way loop() does: if nothing queued
+	// and state is still running/queued, treat as completed.
+	cctx := context.Background()
+	att, gerr := r.Store.GetAttempt(cctx, attemptID)
+	if gerr != nil || att == nil {
+		return
+	}
+	if att.State == store.AttemptRunning || att.State == store.AttemptQueued {
+		final := store.AttemptCompleted
+		if err != nil && !errors.Is(err, context.Canceled) {
+			final = store.AttemptFailed
+		}
+		_ = r.Store.UpdateAttemptState(cctx, attemptID, final)
+		r.broadcastStateChange(attemptID, final)
+		_ = r.Board.MaybeAdvanceAfterAttempt(cctx, att.TaskID)
+	}
 }
 
 // Start creates a new Attempt with initial system+user prompt (task title+description) and
@@ -147,8 +270,10 @@ func (r *Runner) Start(ctx context.Context, taskID, serverID, model string) (*st
 	}
 	initialInput := fmt.Sprintf("# Task\n%s\n\n%s", task.Title, desc)
 
-	// Move card into Execute (auto) if it isn't already.
-	if task.Status == store.StatusPlan || task.Status == store.StatusDraft {
+	// Move card into Execute (auto) if it isn't already. Verify is included
+	// so that "Run again" on a reviewed task pulls the card back out of the
+	// Verify column — any task with a live Attempt belongs under Execute.
+	if task.Status == store.StatusPlan || task.Status == store.StatusDraft || task.Status == store.StatusVerify {
 		if err := r.Board.Transition(ctx, taskID, store.StatusExecute, board.KindAuto, "attempt_started"); err != nil {
 			// best-effort
 		}
@@ -159,6 +284,10 @@ func (r *Runner) Start(ctx context.Context, taskID, serverID, model string) (*st
 		"server_id":  sv.ID,
 		"model":      effModel,
 	}})
+	// Record the initial task prompt as a user_message right away so the
+	// event stream always shows what was sent first (rather than waiting
+	// for runOnce to log it after dispatch).
+	r.logSystemEvent(attemptID, "user_message", map[string]any{"input": initialInput})
 	r.startLoop(attemptID, initialInput)
 	return att, nil
 }
@@ -169,6 +298,13 @@ func (r *Runner) SendMessage(ctx context.Context, attemptID, text string) error 
 	if err != nil {
 		return err
 	}
+	// Record the user's bubble immediately — regardless of whether we start a
+	// new run, append to an active queue, or reopen from a terminal state.
+	// If we defer the log to dispatch time (runOnce), a user typing while an
+	// earlier run is still streaming would see their message vanish for
+	// seconds-to-minutes until the current turn finishes.
+	r.logSystemEvent(attemptID, "user_message", map[string]any{"input": text})
+
 	if att.State == store.AttemptCompleted || att.State == store.AttemptFailed || att.State == store.AttemptCancelled {
 		// Sending to a terminal attempt is Verify → Execute auto-transition.
 		if err := r.Store.UpdateAttemptState(ctx, attemptID, store.AttemptQueued); err != nil {
@@ -304,11 +440,26 @@ func (r *Runner) runOnce(ctx context.Context, attemptID, input string, first boo
 		Input:        input,
 		Stream:       true,
 	}
-	if first {
-		req.SystemPrompt = r.buildSystemPrompt(ctx, att.TaskID)
+	// Always re-send the combined system prompt on every turn — the docs say
+	// `instructions` on /v1/responses is the equivalent of a role=system
+	// message in /v1/chat/completions, and chat-completions re-delivers the
+	// system message on every request because the whole messages[] array is
+	// resent. Mirror that here so follow-up user messages can't drop the
+	// task's tag prompts (e.g. the "notify on finish" instruction).
+	req.SystemPrompt = r.buildSystemPrompt(ctx, att.TaskID)
+	if req.SystemPrompt != "" {
+		// Audit the exact `instructions` payload we're about to send so
+		// operators can confirm post-hoc that tag System Prompts were
+		// delivered — previously invisible without sniffing outgoing HTTP.
+		r.logSystemEvent(attemptID, "system_prompt_sent", map[string]any{
+			"instructions": req.SystemPrompt,
+			"length":       len(req.SystemPrompt),
+			"first_turn":   first,
+		})
 	}
-	// Record user-side message as a system event for transcript continuity.
-	r.logSystemEvent(attemptID, "user_message", map[string]any{"input": input})
+	// Note: user_message events are emitted at acceptance time in Start() /
+	// SendMessage() so the user's bubble is visible the moment they click
+	// send. Logging again here would duplicate.
 	res, err := client.CreateResponse(ctx, req)
 	if err != nil {
 		return err
@@ -362,13 +513,38 @@ func (r *Runner) handleEvent(attemptID string, e hermes.Event) {
 	evt := map[string]any{"kind": "hermes", "data": e.Data, "ts": time.Now().Unix()}
 	seq, _ := r.FS.AppendEvent(attemptID, evt)
 	r.Hub.Publish("attempt:"+attemptID, sse.Event{Seq: seq, Event: "event", Data: evt})
+
+	typ, _ := e.Data["type"].(string)
+
+	// Capture the run / response id from the first SSE event of a stream.
+	// When we POST /v1/responses with stream=true the HTTP body IS the SSE
+	// stream, so client.CreateResponse returns an empty RunID/ResponseID
+	// — the only place the id appears is in the response.created event
+	// that arrives first on the wire. Record it here so ResumeOrphans has
+	// something to reconnect with after a taskboard restart.
+	if typ == "response.created" {
+		if resp, ok := e.Data["response"].(map[string]any); ok {
+			if rid, ok := resp["id"].(string); ok && rid != "" {
+				if meta, _ := r.FS.LoadAttemptMeta(attemptID); meta != nil {
+					meta.Session.CurrentRunID = rid
+					meta.Session.LatestResponseID = rid
+					// Dedupe so repeat receipts don't balloon the Runs slice.
+					if len(meta.Session.Runs) == 0 || meta.Session.Runs[len(meta.Session.Runs)-1] != rid {
+						meta.Session.Runs = append(meta.Session.Runs, rid)
+					}
+					_ = r.FS.SaveAttemptMeta(meta)
+				}
+			}
+		}
+	}
+
 	// Detect needs_input via conservative heuristic: tool_call with approval_required.
-	if typ, _ := e.Data["type"].(string); typ == "input_required" || typ == "approval_required" {
+	if typ == "input_required" || typ == "approval_required" {
 		_ = r.Store.UpdateAttemptState(context.Background(), attemptID, store.AttemptNeedsInput)
 		r.broadcastStateChange(attemptID, store.AttemptNeedsInput)
 	}
 	// Capture final assistant message summary.
-	if typ, _ := e.Data["type"].(string); typ == "response.completed" {
+	if typ == "response.completed" {
 		if out, ok := e.Data["output_text"].(string); ok {
 			if meta, _ := r.FS.LoadAttemptMeta(attemptID); meta != nil {
 				meta.Summary = out

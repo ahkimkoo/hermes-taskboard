@@ -24,7 +24,12 @@ import (
 //   archive → delete   (explicit delete)
 
 var validTransitions = map[store.TaskStatus]map[store.TaskStatus]bool{
-	store.StatusDraft:   {store.StatusPlan: true, store.StatusArchive: true},
+	// Draft → Execute is permitted because the task-modal "立即执行 /
+	// Start now" button skips the Plan column entirely when the user is
+	// ready to run immediately. Without it, Runner.Start silently
+	// dropped the column move (best-effort), leaving the card stranded
+	// in Draft while an attempt was already streaming.
+	store.StatusDraft:   {store.StatusPlan: true, store.StatusExecute: true, store.StatusArchive: true},
 	store.StatusPlan:    {store.StatusExecute: true, store.StatusDraft: true, store.StatusArchive: true},
 	store.StatusExecute: {store.StatusVerify: true, store.StatusArchive: true},
 	store.StatusVerify:  {store.StatusDone: true, store.StatusExecute: true, store.StatusArchive: true},

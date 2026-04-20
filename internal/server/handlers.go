@@ -381,9 +381,29 @@ func (s *Server) routeAttempts(w http.ResponseWriter, r *http.Request) {
 		s.hAttemptCancel(w, r, id)
 	case parts[1] == "events":
 		s.hAttemptEvents(w, r, id)
+	case parts[1] == "reconnect":
+		s.hAttemptReconnect(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// hAttemptReconnect is invoked by the UI when the user scrolls the task
+// modal to the bottom. It asks the Runner to open a fresh SSE subscription
+// to Hermes for any recorded run — useful for stale / terminal attempts
+// we might have transitioned to failed prematurely. If the attempt is
+// already owned by a live runCtx this is a no-op (returns `already_live`).
+func (s *Server) hAttemptReconnect(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != "POST" {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	status, err := s.Runner.TryReconnect(r.Context(), id)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"status": status})
 }
 
 func (s *Server) hGetAttempt(w http.ResponseWriter, r *http.Request, id string) {
@@ -461,6 +481,33 @@ func (s *Server) hAttemptEvents(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	q := r.URL.Query()
+	// `tail=N` returns the last N events (ascending). When combined with
+	// `before_seq=S`, returns the last N events whose seq is strictly below
+	// S — that's the "load earlier" pagination the UI uses to page back
+	// through a long event log without shipping the whole thing on open.
+	if t := q.Get("tail"); t != "" {
+		n, _ := strconv.Atoi(t)
+		if n <= 0 {
+			n = 500
+		}
+		if bs := q.Get("before_seq"); bs != "" {
+			before, _ := strconv.ParseUint(bs, 10, 64)
+			events, err := s.FS.ReadEventsBefore(id, before, n)
+			if err != nil {
+				writeErr(w, 500, err)
+				return
+			}
+			writeJSON(w, 200, map[string]any{"events": events})
+			return
+		}
+		events, err := s.FS.ReadEventsTail(id, n)
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"events": events})
+		return
+	}
 	since, _ := strconv.ParseUint(q.Get("since_seq"), 10, 64)
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	events, err := s.FS.ReadEventsRange(id, since, limit)
@@ -1292,7 +1339,12 @@ func setContentType(w http.ResponseWriter, path string) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	case strings.HasSuffix(path, ".css"):
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	case strings.HasSuffix(path, ".json") || strings.HasSuffix(path, ".webmanifest"):
+	case strings.HasSuffix(path, ".webmanifest"):
+		// Strict MIME type from the W3C manifest spec. Some browser
+		// installability checks are picky and reject a manifest served
+		// as plain application/json.
+		w.Header().Set("Content-Type", "application/manifest+json")
+	case strings.HasSuffix(path, ".json"):
 		w.Header().Set("Content-Type", "application/json")
 	case strings.HasSuffix(path, ".svg"):
 		w.Header().Set("Content-Type", "image/svg+xml")
