@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.6
 # Multi-stage: build a static binary in golang, then drop into a minimal image.
 
-FROM golang:1.23-alpine AS build
+FROM golang:1.25-alpine AS build
 WORKDIR /src
 RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum ./
