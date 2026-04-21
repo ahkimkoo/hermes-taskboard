@@ -88,6 +88,35 @@ export function createDragController(opts) {
     state.clone.style.left = (event.clientX - state.offsetX) + 'px';
     state.clone.style.top = (event.clientY - state.offsetY) + 'px';
 
+    // Cross-column drop on mobile: every other column is display:none
+    // (single-tab view), so elementFromPoint only ever hits the current
+    // column. To let users drop into a different column we treat the
+    // .board-tabs buttons themselves as drop targets — finger over a
+    // tab = card goes to that tab's column when released.
+    const hit = document.elementFromPoint(event.clientX, event.clientY);
+    const tabBtn = hit && hit.closest && hit.closest('.board-tabs button');
+    if (tabBtn) {
+      // Clear previous tab highlights and mark this one.
+      const allTabs = document.querySelectorAll('.board-tabs button');
+      for (const b of allTabs) b.classList.remove('drop-target');
+      tabBtn.classList.add('drop-target');
+      // Map tab → column by index (the v-for renders them in lockstep).
+      const tabs = [...allTabs];
+      const cols = [...document.querySelectorAll('.column[data-status]')];
+      const col = cols[tabs.indexOf(tabBtn)];
+      if (col) {
+        state.lastDropZone = col;
+        // Tuck the placeholder inside the hidden column. It won't show
+        // visually, but end() reads col.data-status from lastDropZone.
+        const zone = col.querySelector('.column-drop-zone') || col;
+        if (state.placeholder.parentNode !== zone) zone.appendChild(state.placeholder);
+      }
+      return;
+    }
+    // Not over a tab — clear any tab highlight from a previous frame.
+    const lit = document.querySelector('.board-tabs button.drop-target');
+    if (lit) lit.classList.remove('drop-target');
+
     // Find the column under the cursor.
     const col = columnAt(event.clientX, event.clientY);
     if (!col) return;
@@ -114,10 +143,22 @@ export function createDragController(opts) {
     if (!state) return;
     const st = state;
     cleanup();
+    // Wipe any tab-drop highlight left from the last move().
+    const lit = document.querySelector('.board-tabs button.drop-target');
+    if (lit) lit.classList.remove('drop-target');
 
     const col = st.lastDropZone;
     if (!col) return;
     const toStatus = col.getAttribute('data-status');
+    // Cross-tab drop on mobile: switch the visible tab to the destination
+    // column so the user immediately sees the card after the drop.
+    const visibleCol = document.querySelector('.column:not(.hidden-mobile)[data-status]');
+    if (visibleCol && visibleCol !== col) {
+      const tabs = [...document.querySelectorAll('.board-tabs button')];
+      const cols = [...document.querySelectorAll('.column[data-status]')];
+      const idx = cols.indexOf(col);
+      if (idx >= 0 && tabs[idx]) tabs[idx].click();
+    }
 
     // Compute beforeId / afterId from placeholder neighbors.
     const placeholder = st.placeholder;

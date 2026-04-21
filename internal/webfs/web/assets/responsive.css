@@ -43,6 +43,14 @@
     color: var(--accent);
     border-bottom: 2px solid var(--accent);
   }
+  /* While dragging a card, hovering the floating clone over a tab marks
+     that tab as the drop target (handled in drag.js). On release the
+     card is moved into that column. */
+  .board-tabs button.drop-target {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+    color: var(--accent);
+    border-bottom: 2px solid var(--accent);
+  }
 
   /* Generous horizontal padding so users have a finger-wide gutter on each
      side of the cards to swipe-scroll the column. The cards themselves
@@ -148,6 +156,10 @@
     font-size: 26px; line-height: 1; padding: 0;
     box-shadow: 0 4px 14px rgba(0,0,0,0.35);
     z-index: 50;
+  }
+  /* Push the help (?) button above the new-task FAB on mobile. */
+  .help-fab {
+    bottom: calc(84px + env(safe-area-inset-bottom, 0px));
   }
 }
 
