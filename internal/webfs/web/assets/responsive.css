@@ -44,27 +44,56 @@
     border-bottom: 2px solid var(--accent);
   }
 
-  .column { max-width: none; border-radius: 0; margin: 0; padding: 10px 12px; }
+  /* Generous horizontal padding so users have a finger-wide gutter on each
+     side of the cards to swipe-scroll the column. The cards themselves
+     have touch-action:none (long-press drag), so any touch landing
+     inside a card is owned by the drag handler and won't pan the page. */
+  .column { max-width: none; border-radius: 0; margin: 0; padding: 10px 18px; }
   .column.hidden-mobile { display: none; }
   /* Draft-column "+" button sits in its own header; hide on mobile in favour
      of the global FAB (visible regardless of which tab is active). */
   .column .column-action { display: none; }
 
   /* ---- Cards ---- */
-  /* touch-action: none lets our pointer-based drag intercept the first move
-     without the browser starting a native scroll. Columns stay scrollable by
-     touching the gap between cards / the column header. */
-  .card { padding: 12px; touch-action: none; }
+  /* Card has touch-action:none in app.css so a finger that lands on it
+     starts dragging on the first move (no scroll fight). To still let
+     users scroll the column, the column has 18 px horizontal padding and
+     each card has 14 px bottom margin — those gutters are scrollable
+     (touch-action: auto inherited). */
+  .card { padding: 12px; margin-bottom: 14px; -webkit-touch-callout: none; user-select: none; }
   .card-title { font-size: 15px; }
 
   /* ---- Modal ---- */
-  /* Let the modal fill the viewport completely — the overlay's default 20px
-     padding wastes screen real estate on a phone, and the border radius just
-     makes the modal look like it's floating in a dark frame. */
-  .modal-overlay { padding: 0; }
-  .modal {
-    max-height: 100vh; height: 100vh; max-width: none; width: 100%;
-    border-radius: 0;
+  /* Default a phone-opened task modal to full-bleed (the data() init sets
+     `fullscreen: true` on mobile). Toggling off the fullscreen button
+     restores some breathing room — overlay regains a small padding and
+     the modal stops claiming 100% of the viewport.
+     .modal.confirm stays as the 420 px small dialog regardless. */
+  .modal-overlay { padding: 12px; }
+  .modal-overlay.fullscreen { padding: 0; }
+  .modal:not(.confirm) {
+    max-height: 90vh; max-width: 100%; width: 100%;
+  }
+  .modal:not(.confirm).fullscreen {
+    max-height: 100vh; height: 100vh; border-radius: 0;
+  }
+  /* Pad the modal header by the iOS safe-area-inset-top so the close /
+     edit / fullscreen icons don't get half-hidden under the status bar /
+     notch when the page is opened from the home-screen as a standalone
+     PWA. Falls back to 12 px on browsers without env(). */
+  .modal:not(.confirm).fullscreen .modal-header {
+    padding-top: max(12px, env(safe-area-inset-top, 12px));
+  }
+  .modal.confirm { max-width: min(420px, calc(100vw - 32px)); }
+  /* Beef up the action buttons inside confirmation dialogs so the Cancel
+     one isn't a near-invisible thin pill against the modal surface. */
+  .modal.confirm .modal-footer { padding: 12px 16px; gap: 10px; }
+  .modal.confirm .modal-footer button {
+    min-height: 40px; padding: 8px 18px; font-size: 14px;
+    border: 1px solid var(--border);
+  }
+  .modal.confirm .modal-footer button:not(.primary):not(.danger) {
+    background: var(--bg-elev-2); color: var(--text);
   }
   .modal-header { padding: 10px 12px; gap: 4px; align-items: flex-start; }
   .modal-header h2 {

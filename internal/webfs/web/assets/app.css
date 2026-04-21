@@ -133,12 +133,31 @@ body.dragging-active .column-drop-zone > .empty {
   padding: 10px 10px 8px; border-radius: 8px; margin-bottom: 8px;
   cursor: grab;
   border: 2px solid transparent;
-  transition: transform 0.12s, box-shadow 0.12s;
+  transition: transform 0.12s, box-shadow 0.12s, border-color 0.15s;
+  /* touch-action: none — the only setting under which mobile browsers
+     stop firing pointercancel within ~150 ms of touchstart on a card.
+     pan-y was supposed to allow vertical scroll while letting JS handle
+     everything else, but Chrome/iOS still steal the touch eagerly even
+     with no actual scroll candidate. Accepted trade-off (Trello-style):
+     scrolling the column requires touching the gap between cards or
+     the column area below them. */
   touch-action: none;
   user-select: none;
+  -webkit-touch-callout: none;
 }
 .card:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
 .card:active { cursor: grabbing; }
+/* Armed state: long-press finished, card is "picked up" and ready to drag.
+   touch-action: none on the armed element (paired with setPointerCapture in
+   onPointerDown's timer) tells the browser to stop trying to pan the page
+   on subsequent moves so our drag controller actually receives them. */
+.card.drag-armed {
+  border-color: var(--accent);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.35), 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+  transform: scale(1.03);
+  cursor: grabbing;
+  touch-action: none;
+}
 .card-title { font-weight: 600; font-size: 14px; margin-bottom: 6px; line-height: 1.35; color: var(--text); }
 .card-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--text-dim); }
 .priority-badge { display: inline-block; min-width: 20px; height: 18px; padding: 0 4px; border-radius: 3px; text-align: center; color: white; font-weight: 700; font-size: 10.5px; line-height: 18px; }
@@ -593,11 +612,17 @@ body.dragging-active * { cursor: grabbing !important; }
 .schedule-hint code { background: var(--bg-elev-1); padding: 1px 5px; border-radius: 3px; margin-left: 4px; }
 .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; margin: 0; }
 
-/* ---------- GitHub repo link ---------- */
-.repo-link {
+/* ---------- GitHub repo link + frontend version chip ---------- */
+.repo-corner {
   position: fixed;
   left: 12px;
   bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 40;
+}
+.repo-link {
   width: 28px; height: 28px;
   display: inline-flex; align-items: center; justify-content: center;
   border-radius: 50%;
@@ -605,7 +630,6 @@ body.dragging-active * { cursor: grabbing !important; }
   background: color-mix(in srgb, var(--bg-elev-2) 88%, transparent);
   border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   opacity: 0.55;
-  z-index: 40;
   transition: opacity 0.15s, color 0.15s, transform 0.15s;
 }
 .repo-link:hover,
@@ -616,6 +640,22 @@ body.dragging-active * { cursor: grabbing !important; }
   text-decoration: none;
 }
 .repo-link svg { display: block; }
+.repo-version {
+  font-size: 10.5px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-elev-2) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  padding: 2px 6px;
+  border-radius: 999px;
+  opacity: 0.55;
+  user-select: text;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.repo-corner:hover .repo-version,
+.repo-version:hover { opacity: 1; }
 
 /* ---------- Toasts ---------- */
 .toasts { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }

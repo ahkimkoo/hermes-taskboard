@@ -27,6 +27,7 @@
   "action.start_now": "立即执行",
   "action.copy_md": "复制为 Markdown",
   "action.scroll_to_bottom": "跳到底部",
+  "app.version_title": "前端版本号",
   "toast.copy_failed": "复制失败,请手动选择文本。",
   "action.close": "关闭",
   "action.edit": "编辑",

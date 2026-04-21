@@ -27,6 +27,7 @@
   "action.start_now": "Start now",
   "action.copy_md": "Copy as Markdown",
   "action.scroll_to_bottom": "Jump to bottom",
+  "app.version_title": "Frontend version",
   "toast.copy_failed": "Copy failed — select the text manually.",
   "action.close": "Close",
   "action.edit": "Edit",

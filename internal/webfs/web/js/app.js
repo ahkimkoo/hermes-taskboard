@@ -20,6 +20,7 @@ import { subscribe as sseSubscribe } from './sse.js';
 import { initI18n, t, currentLang, setLanguage } from './i18n.js';
 import { play as playSound, setPrefs as setSoundPrefs } from './sound.js';
 import { registerPWA } from './pwa.js';
+import { APP_VERSION } from './version.js';
 import { createDragController } from './drag.js';
 import { DescriptionEditor } from './description-editor.js';
 import { EventStream } from './event-stream.js';
@@ -112,6 +113,7 @@ async function saveTheme(theme) {
 
 // ---------------- Components ----------------
 
+
 const Card = {
   props: ['task'],
   emits: ['open'],
@@ -156,25 +158,33 @@ const Card = {
   },
   methods: {
     onPointerDown(e) {
-      // Start each interaction with a clean slate — stale flag from a prior
-      // drag that never produced a click gets wiped here.
+      // Simple immediate-movement drag. Touching a card and moving more
+      // than 5 px starts the drag — same on desktop and mobile. The
+      // card has touch-action:none in CSS so the browser doesn't steal
+      // the touch for scrolling. Page scroll on mobile happens via the
+      // 18 px gutter padding on each side of the column and the gap
+      // between cards (which both have touch-action:auto).
       this._dragStarted = false;
       this._downX = e.clientX; this._downY = e.clientY;
-      const startThreshold = 5;
-      const onMove = (ev) => {
-        if (Math.abs(ev.clientX - this._downX) > startThreshold || Math.abs(ev.clientY - this._downY) > startThreshold) {
-          window.removeEventListener('pointermove', onMove);
-          window.removeEventListener('pointerup', onUp);
-          this._dragStarted = true;
-          this.drag.start(e, this.task.id, this.$el);
-        }
-      };
-      const onUp = () => {
+      const threshold = 5;
+      const cleanup = () => {
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onCancel);
       };
+      const onMove = (ev) => {
+        const dx = Math.abs(ev.clientX - this._downX);
+        const dy = Math.abs(ev.clientY - this._downY);
+        if (dx <= threshold && dy <= threshold) return;
+        cleanup();
+        this._dragStarted = true;
+        this.drag.start(e, this.task.id, this.$el);
+      };
+      const onUp = () => cleanup();
+      const onCancel = () => cleanup();
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onCancel);
     },
     onClick(e) {
       // Swallow the synthetic click that browsers fire after a drag ends on
@@ -385,7 +395,7 @@ const TaskModal = {
               <span class="modal-edit-icon">✎</span>
               <span class="modal-edit-label">{{ $t('action.edit') }}</span>
             </button>
-            <button v-if="!$root.isMobile" class="ghost fullscreen-toggle" :class="{ active: fullscreen }"
+            <button class="ghost fullscreen-toggle" :class="{ active: fullscreen }"
                     :title="$t(fullscreen ? 'action.exit_fullscreen' : 'action.fullscreen')"
                     aria-label="Toggle fullscreen"
                     @click="fullscreen = !fullscreen">
@@ -1203,6 +1213,7 @@ const App = {
     isMobile() { return window.innerWidth < 768; },
     themeIsLight() { return state.preferences.theme === 'light'; },
     langLabel() { return currentLang.value === 'zh-CN' ? '中' : 'EN'; },
+    appVersion() { return APP_VERSION; },
   },
   template: `
     <div v-if="isLogin"><login></login></div>
@@ -1264,15 +1275,19 @@ const App = {
       <!-- Small GitHub badge at the bottom-left so the repo is discoverable
            without a navbar link. Subtle by default, accent on hover. Kept
            left so it never clashes with the mobile new-task FAB on the
-           right. -->
-      <a class="repo-link" href="https://github.com/ahkimkoo/hermes-taskboard"
-         target="_blank" rel="noopener"
-         title="GitHub — ahkimkoo/hermes-taskboard"
-         aria-label="GitHub repository">
-        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-          <path fill="currentColor" d="M12 .5C5.73.5.5 5.73.5 12c0 5.07 3.29 9.37 7.86 10.89.57.11.78-.25.78-.55 0-.27-.01-.99-.02-1.95-3.2.69-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.77 2.71 1.26 3.37.96.1-.74.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.05 11.05 0 0 1 5.79 0c2.21-1.49 3.18-1.18 3.18-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.26 5.69.41.35.77 1.04.77 2.1 0 1.52-.01 2.75-.01 3.12 0 .3.21.66.79.55A11.51 11.51 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z"/>
-        </svg>
-      </a>
+           right. The version chip next to it lets bug reporters quickly
+           tell which build of the frontend they're running. -->
+      <div class="repo-corner">
+        <a class="repo-link" href="https://github.com/ahkimkoo/hermes-taskboard"
+           target="_blank" rel="noopener"
+           title="GitHub — ahkimkoo/hermes-taskboard"
+           aria-label="GitHub repository">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path fill="currentColor" d="M12 .5C5.73.5.5 5.73.5 12c0 5.07 3.29 9.37 7.86 10.89.57.11.78-.25.78-.55 0-.27-.01-.99-.02-1.95-3.2.69-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.77 2.71 1.26 3.37.96.1-.74.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.05 11.05 0 0 1 5.79 0c2.21-1.49 3.18-1.18 3.18-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.26 5.69.41.35.77 1.04.77 2.1 0 1.52-.01 2.75-.01 3.12 0 .3.21.66.79.55A11.51 11.51 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z"/>
+          </svg>
+        </a>
+        <span class="repo-version" :title="$t('app.version_title')">{{ appVersion }}</span>
+      </div>
     </div>
   `,
   mounted() {

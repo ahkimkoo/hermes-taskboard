@@ -32,15 +32,26 @@ export function createDragController(opts) {
     clone.style.top = rect.top + 'px';
     document.body.appendChild(clone);
 
-    // Hide the source (reserve its space via a placeholder so other cards don't jump).
+    // Reserve space via a placeholder. The source element is then moved
+    // off-screen (NOT display:none) — display:none drops the implicit
+    // pointer capture that touch placed on the source's touch target,
+    // which Chromium reports as a pointercancel and wipes the drag a
+    // single move event in. position:absolute + far-offscreen keeps the
+    // element in the render tree and the touch alive, while the
+    // placeholder fills the original slot visually.
     const placeholder = document.createElement('div');
     placeholder.className = 'card-drop-placeholder';
     placeholder.style.height = rect.height + 'px';
     sourceEl.parentNode.insertBefore(placeholder, sourceEl);
-    sourceEl.style.display = 'none';
-
-    // Capture pointer so we keep events even off the source.
-    try { sourceEl.setPointerCapture(event.pointerId); } catch {}
+    // Tuck the source out of view so the placeholder visually replaces it.
+    // position+offscreen rather than display:none so the touch's implicit
+    // capture target stays in the render tree.
+    sourceEl.dataset.dragSavedStyle = sourceEl.getAttribute('style') || '';
+    sourceEl.style.position = 'absolute';
+    sourceEl.style.left = '-99999px';
+    sourceEl.style.top = '0px';
+    sourceEl.style.pointerEvents = 'none';
+    sourceEl.style.visibility = 'hidden';
 
     state = {
       taskId,
@@ -53,15 +64,27 @@ export function createDragController(opts) {
       lastDropZone: null, // column the placeholder currently sits in
     };
 
-    window.addEventListener('pointermove', move);
+    window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', end);
     window.addEventListener('pointercancel', cancel);
+    // Hijack native touchmove with passive:false. preventDefault on a
+    // raw touchmove is the ONLY reliable way to override the touch-
+    // action: auto pan that the browser committed to at touchstart —
+    // calling preventDefault on the higher-level pointermove fires too
+    // late and Chromium responds with a pointercancel that wipes the
+    // drag a single move in.
+    window.addEventListener('touchmove', preventTouchScroll, { passive: false });
     document.body.classList.add('dragging-active');
-    event.preventDefault();
+    try { event.preventDefault(); } catch {}
+  }
+
+  function preventTouchScroll(ev) {
+    try { ev.preventDefault(); } catch {}
   }
 
   function move(event) {
     if (!state) return;
+    try { event.preventDefault(); } catch {}
     state.clone.style.left = (event.clientX - state.offsetX) + 'px';
     state.clone.style.top = (event.clientY - state.offsetY) + 'px';
 
@@ -105,7 +128,7 @@ export function createDragController(opts) {
     if (prev) afterId = prev.getAttribute('data-task-id') || '';
 
     // Restore source cell; we'll let the state change rerender the list.
-    if (st.sourceEl) st.sourceEl.style.display = '';
+    restoreSource(st.sourceEl);
     placeholder.remove();
 
     onDrop({ taskId: st.taskId, toStatus, beforeId, afterId });
@@ -113,17 +136,35 @@ export function createDragController(opts) {
 
   function cancel() {
     if (!state) return;
-    if (state.sourceEl) state.sourceEl.style.display = '';
+    restoreSource(state.sourceEl);
     if (state.placeholder && state.placeholder.parentNode) state.placeholder.remove();
     cleanup();
+  }
+
+  function restoreSource(el) {
+    if (!el) return;
+    const saved = el.dataset.dragSavedStyle;
+    if (saved !== undefined) {
+      if (saved) el.setAttribute('style', saved); else el.removeAttribute('style');
+      delete el.dataset.dragSavedStyle;
+    } else {
+      // Fallback if we never stashed a snapshot.
+      el.style.position = '';
+      el.style.left = '';
+      el.style.top = '';
+      el.style.pointerEvents = '';
+      el.style.visibility = '';
+      el.style.display = '';
+    }
   }
 
   function cleanup() {
     if (!state) return;
     state.clone.remove();
-    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointermove', move, { passive: false });
     window.removeEventListener('pointerup', end);
     window.removeEventListener('pointercancel', cancel);
+    window.removeEventListener('touchmove', preventTouchScroll, { passive: false });
     document.body.classList.remove('dragging-active');
     state = null;
   }
