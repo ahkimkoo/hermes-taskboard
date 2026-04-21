@@ -4,7 +4,7 @@
 >
 > Single Go binary · SQLite + filesystem · Vue 3 (no build step) · PWA · bilingual UI.
 
-[English](#english) · [简体中文](#简体中文)
+[English](#english) · [简体中文](#简体中文) · [Operator Manual (EN)](docs/manual.en.md) · [操作手册 (中文)](docs/manual.zh-CN.md)
 
 ![Board view](docs/screenshots/board-en.png)
 
@@ -33,6 +33,32 @@ Hermes Agent executes tools, edits files, and runs shell commands. This project 
 2. **Dispatch** each task to a Hermes conversation as one or more parallel **Attempts** (auto-triggered by the scheduler, or manually via *Start*).
 3. **Watch** Hermes think and tool-call in real time — NDJSON event log on disk, pushed to the browser over SSE.
 4. **Verify** the result, ask follow-up questions in the same session, then move the card to Done or Archive.
+
+### Features
+
+Frontend:
+
+- **6-column board** with drag-to-reorder and drag-to-transition (mobile: drag a card onto a column tab to move it cross-column).
+- **Markdown task descriptions** with image paste / drop (gated behind Aliyun OSS).
+- **Bilingual UI** — `zh-CN` / `en`, hot-swap without reload.
+- **Dark / light theme** toggle.
+- **Tag system prompts** — every tag can carry a system prompt that gets injected into the Hermes call.
+- **Scheduled runs** — friendly cron picker (every-N-minutes, daily, weekly, monthly, advanced) with a live cron preview.
+- **Live Attempt panel** — chat-style streaming of Hermes's output, collapsible tool cards, per-message timestamps, copy-as-markdown buttons, jump-to-bottom pill, load-earlier pagination, manual refresh / reconnect.
+- **Multi-line auto-growing chat input** with Ctrl/⌘+Enter to send.
+- **PWA** — proper standalone install on iOS/Android with bundled icons.
+- **In-app help (?)** — bottom-right opens a bilingual operator manual.
+- **Frontend version chip** in the bottom-left for unambiguous bug-report builds.
+
+Backend:
+
+- **Single Go binary** (`-data ./data`) plus a Docker image (`successage/hermes-taskboard`).
+- **Three-level concurrency gates** — global, per-server, per-(server, profile).
+- **Resume orphan attempts** — taskboard restart reconnects to mid-flight Hermes runs via `/v1/runs/{id}/events`; only attempts whose remote run is genuinely gone get marked failed.
+- **Tag prompt injection** — sent as `instructions` (the Hermes equivalent of a `role=system` message) on every turn.
+- **Encrypted API key storage** (AEAD with `data/db/.secret`).
+- **Filesystem reaper** — purges `data/attempt/{id}/` directories older than the configured retention.
+- **Network-first service worker + `Cache-Control: no-cache`** so deploys propagate without forcing users to clear caches.
 
 ### Screenshots
 
@@ -104,11 +130,20 @@ VERSION=v0.1.0 ./release.sh          # cross-platform archives under dist/
 
 ### Docker
 
-```bash
-# Build
-docker build -t hermes-taskboard:dev .
+A pre-built image is published to Docker Hub: **`successage/hermes-taskboard`**. Use the published image directly:
 
-# Run (persist state to a host folder)
+```bash
+docker run -d --name taskboard \
+  -p 1900:1900 \
+  -v taskboard-data:/data \
+  --add-host=host.docker.internal:host-gateway \
+  successage/hermes-taskboard:latest
+```
+
+Or build from source:
+
+```bash
+docker build -t hermes-taskboard:dev .
 docker run -d --name taskboard \
   -p 1900:1900 \
   -v "$PWD/tb-data:/data" \
@@ -117,6 +152,8 @@ docker run -d --name taskboard \
 ```
 
 In the app's **Settings → Hermes Servers**, set `base_url` to `http://host.docker.internal:8642` (Hermes runs on the host, not inside the container).
+
+> **Security note**: When taskboard and Hermes share an OS user (typical local-dev setup), the Hermes agent — through its `terminal` / `execute_code` tools — has filesystem read access to `data/db/taskboard.db`. The encrypted API keys are safe at rest, but tag system prompts and task descriptions are plain text. For production, sandbox Hermes (separate container / OS user) so it can't reach taskboard's data dir.
 
 ### Architecture
 
@@ -193,6 +230,32 @@ Hermes Agent 本身负责调用工具、编辑文件、执行 shell 命令。本
 3. **实时观察** Hermes 的思考流与工具调用 —— 落盘为 NDJSON 事件日志，通过 SSE 推送到浏览器。
 4. **验证**结果，在同一个 Session 里继续追问，确认后把卡片拖到"完成"或"归档"。
 
+### 主要功能
+
+前端：
+
+- **6 列看板**，列内拖动排序、跨列拖动迁移（手机端把卡片拖到顶部 tab 即可跨列）。
+- **任务描述支持 Markdown**，可粘贴/拖拽图片（需先在设置里配 Aliyun OSS）。
+- **中英双语**实时切换。
+- **暗 / 亮主题**切换。
+- **标签 System Prompt** —— 每个标签可以挂一段系统提示，跑挂了该标签的任务时自动注入。
+- **定时执行** —— 友好的预设模式选择器（每 N 分钟、每天、每周、每月、高级 cron），生成的 cron 实时预览。
+- **Attempt 实时面板** —— 聊天式流式显示、工具卡片可折叠、消息时间戳、复制 Markdown 按钮、跳到底部、加载更早分页、手动刷新重连。
+- **多行自适应聊天框**，Ctrl/⌘+Enter 发送。
+- **PWA** —— iOS / Android 可作为独立 App 安装，已内置图标。
+- **页内帮助（?）** —— 右下角弹出双语操作手册。
+- **左下角版本号** —— bug 报告时方便指认实际加载的前端版本。
+
+后端：
+
+- **单一 Go 二进制**（`-data ./data`），同时提供 Docker 镜像（`successage/hermes-taskboard`）。
+- **三层并发闸门** —— 全局、单个 Server、单个 (server, profile) 三级独立配额。
+- **重连孤儿 Attempt** —— taskboard 重启后自动通过 `/v1/runs/{id}/events` 重连进行中的 Hermes run；只有 Hermes 那边确实结束的才标 failed。
+- **标签 Prompt 注入** —— 每轮都通过 `instructions`（Hermes 上等价于 `role=system`）发出。
+- **API key 加密存储**（AEAD + `data/db/.secret`）。
+- **文件清扫** —— 超过保留期的 `data/attempt/{id}/` 目录自动清掉。
+- **Network-first SW + `Cache-Control: no-cache`** —— 部署后用户刷新就拿新代码，不用清缓存。
+
 ### 截图
 
 | | |
@@ -263,11 +326,20 @@ VERSION=v0.1.0 ./release.sh          # 一次性打齐所有平台到 dist/
 
 ### Docker 部署
 
-```bash
-# 构建镜像
-docker build -t hermes-taskboard:dev .
+Docker Hub 上有现成的镜像：**`successage/hermes-taskboard`**，直接拉来跑：
 
-# 运行（把数据挂到宿主机目录）
+```bash
+docker run -d --name taskboard \
+  -p 1900:1900 \
+  -v taskboard-data:/data \
+  --add-host=host.docker.internal:host-gateway \
+  successage/hermes-taskboard:latest
+```
+
+或者从源码构建：
+
+```bash
+docker build -t hermes-taskboard:dev .
 docker run -d --name taskboard \
   -p 1900:1900 \
   -v "$PWD/tb-data:/data" \
@@ -276,6 +348,8 @@ docker run -d --name taskboard \
 ```
 
 然后在设置里把 Hermes Server 的 `base_url` 填成 `http://host.docker.internal:8642` —— 因为 Hermes 跑在宿主机上，不在容器里。
+
+> **安全提示**：当 taskboard 和 Hermes 跑在同一个 OS 用户下（典型本地开发场景）时，Hermes agent 通过 `terminal` / `execute_code` 工具有读取 `data/db/taskboard.db` 的能力。API key 是加密存的，但任务描述和标签 system prompt 是明文。生产环境请把 Hermes 隔离到独立容器/独立用户,使其无法访问 taskboard 的数据目录。
 
 ### 架构概览
 

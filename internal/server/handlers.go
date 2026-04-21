@@ -1378,6 +1378,8 @@ func setContentType(w http.ResponseWriter, path string) {
 		w.Header().Set("Content-Type", "application/manifest+json")
 	case strings.HasSuffix(path, ".json"):
 		w.Header().Set("Content-Type", "application/json")
+	case strings.HasSuffix(path, ".md"):
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	case strings.HasSuffix(path, ".svg"):
 		w.Header().Set("Content-Type", "image/svg+xml")
 	case strings.HasSuffix(path, ".png"):

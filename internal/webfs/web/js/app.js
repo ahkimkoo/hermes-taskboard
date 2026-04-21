@@ -24,7 +24,7 @@ import { APP_VERSION } from './version.js';
 import { createDragController } from './drag.js';
 import { DescriptionEditor } from './description-editor.js';
 import { EventStream } from './event-stream.js';
-import { renderMarkdown as markdown } from './markdown.js';
+import { renderMarkdown as markdown, renderMarkdown } from './markdown.js';
 import { TagInput } from './tag-input.js';
 import { DependencyPicker } from './dependency-picker.js';
 import { SchedulePicker } from './schedule-picker.js';
@@ -47,6 +47,7 @@ const state = reactive({
   openTaskId: null,
   showSettings: false,
   showNewTask: false,
+  showHelp: false,
   mobileColumn: 'plan',
   route: location.pathname,
 });
@@ -1187,8 +1188,61 @@ const drag = createDragController({
   },
 });
 
+// HelpModal — fetches /docs/manual.{lang}.md and renders it via the
+// existing markdown renderer. Bilingual via currentLang. The pages live
+// in internal/webfs/web/docs and are committed alongside top-level
+// docs/manual.*.md (which are symlinks to these).
+const HelpModal = {
+  emits: ['close'],
+  data() { return { html: '', loading: true, lang: currentLang.value }; },
+  watch: {
+    lang(v) { this.load(v); },
+  },
+  computed: {
+    currentLang() { return currentLang.value; },
+    sourceUrl() { return '/docs/manual.' + currentLang.value + '.md'; },
+  },
+  template: `
+    <div class="modal-overlay" @click.self="$emit('close')">
+      <div class="modal manual">
+        <div class="modal-header">
+          <h2>{{ $t('help.title') }}</h2>
+          <div class="modal-header-actions">
+            <a class="ghost manual-source-link" :href="sourceUrl" target="_blank" rel="noopener"
+               :title="$t('help.view_source')">md ↗</a>
+            <button class="ghost close-btn" @click="$emit('close')">✕</button>
+          </div>
+        </div>
+        <div class="modal-body">
+          <div v-if="loading" class="muted small">{{ $t('help.loading') }}</div>
+          <div v-else class="manual-body" v-html="html"></div>
+        </div>
+      </div>
+    </div>
+  `,
+  methods: {
+    async load() {
+      this.loading = true;
+      try {
+        const r = await fetch('/docs/manual.' + currentLang.value + '.md', { cache: 'no-cache' });
+        const txt = await r.text();
+        this.html = renderMarkdown(txt);
+      } catch (e) {
+        this.html = '<p class="error-line">' + (e && e.message || 'fetch failed') + '</p>';
+      }
+      this.loading = false;
+    },
+  },
+  mounted() {
+    this.load();
+    // Re-render when the user toggles language while the modal is open.
+    this._unwatch = Vue.watch(currentLang, () => this.load());
+  },
+  beforeUnmount() { if (this._unwatch) this._unwatch(); },
+};
+
 const App = {
-  components: { Column, TaskModal, NewTaskModal, SettingsModal, Login },
+  components: { Column, TaskModal, NewTaskModal, SettingsModal, Login, HelpModal },
   provide: { drag },
   data() { return { state, search: '', columns: COLUMNS }; },
   computed: {
@@ -1249,6 +1303,14 @@ const App = {
           </template>
         </column>
       </div>
+
+      <!-- Help button (?). Opens the Manual modal which fetches the
+           markdown manual matching the current language. -->
+      <button class="help-fab" :title="$t('action.help')"
+              :aria-label="$t('action.help')"
+              @click="state.showHelp = true">?</button>
+
+      <help-modal v-if="state.showHelp" @close="state.showHelp = false"></help-modal>
 
       <!-- Mobile floating action button: the per-column "+ 新建任务" sits
            inside the Draft column header, which is invisible unless the
