@@ -225,6 +225,34 @@ afterS3:
 afterS5:
 
 	// -----------------------------------------------------------------------
+	// S7 MUTEX — sending `conversation` AND `previous_response_id` together.
+	//    Real-world: taskboard used to do this on every turn after the first.
+	// -----------------------------------------------------------------------
+	if pick("s7") {
+		header("S7  Sending both conversation AND previous_response_id together")
+		a := send(e, turn{Input: "Reply OK."})
+		show("  Turn A", a)
+		if a.Err != nil || a.ID == "" {
+			record("S7", "ABORT (turn A failed)")
+			goto afterS7
+		}
+		r := send(e, turn{
+			Input:              "Reply OK.",
+			PreviousResponseID: a.ID,
+			Conversation:       "tb-probe-mutex",
+		})
+		show("  Turn B (both fields)", r)
+		if r.Status == 400 {
+			record("S7", "MUTEX  (Hermes 400s — these fields are mutually exclusive, pick one)")
+		} else if r.Status == 200 {
+			record("S7", "COMPAT  (Hermes accepted both)")
+		} else {
+			record("S7", fmt.Sprintf("UNKNOWN status=%d", r.Status))
+		}
+	}
+afterS7:
+
+	// -----------------------------------------------------------------------
 	// S6 Control — verify plain `conversation` without prev doesn't chain.
 	// -----------------------------------------------------------------------
 	if pick("s6") {

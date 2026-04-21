@@ -171,11 +171,15 @@ func (c *Client) CreateResponse(ctx context.Context, req ResponseRequest) (*Resp
 		"input":        req.Input,
 		"stream":       req.Stream,
 	}
-	if req.Conversation != "" {
-		body["conversation"] = req.Conversation
-	}
+	// Hermes refuses `conversation` and `previous_response_id` together:
+	//   400 Bad Request: Cannot use both 'conversation' and 'previous_response_id'
+	// Prefer previous_response_id when we have one (it pins the exact
+	// ancestor turn); fall back to the conversation tag on the very first
+	// turn of an Attempt where there's nothing yet to chain from.
 	if req.PreviousResponseID != "" {
 		body["previous_response_id"] = req.PreviousResponseID
+	} else if req.Conversation != "" {
+		body["conversation"] = req.Conversation
 	}
 	if req.SystemPrompt != "" {
 		body["instructions"] = req.SystemPrompt
