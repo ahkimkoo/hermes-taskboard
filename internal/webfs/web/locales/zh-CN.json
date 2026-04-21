@@ -61,7 +61,7 @@
   "field.trigger": "触发方式",
   "field.trigger.auto": "自动",
   "field.trigger.manual": "手动",
-  "field.server": "Hermes Server",
+  "field.server": "服务器",
   "field.model": "模型（agent profile）",
   "field.default": "（默认）",
   "field.username": "用户名",

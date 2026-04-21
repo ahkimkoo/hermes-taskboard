@@ -495,7 +495,7 @@ const TaskModal = {
               </div>
               <div>
                 <dt>{{ $t('field.server') }}</dt>
-                <dd>{{ task.preferred_server || $t('field.default') }}</dd>
+                <dd>{{ serverDisplay(task.preferred_server) }}</dd>
               </div>
               <div>
                 <dt>{{ $t('field.model') }}</dt>
@@ -624,6 +624,11 @@ const TaskModal = {
         const d = new Date(ts);
         return new Intl.DateTimeFormat(currentLang.value, { dateStyle: 'short', timeStyle: 'medium' }).format(d);
       } catch { return ts; }
+    },
+    serverDisplay(id) {
+      if (!id) return t('field.default');
+      const sv = (this.$root.state.servers || []).find((s) => s.id === id);
+      return sv ? (sv.name || sv.id) : id;
     },
     async load() {
       if (!this.taskId) { this.task = null; return; }
