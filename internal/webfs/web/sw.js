@@ -1,5 +1,5 @@
 // Minimal service worker: cache app shell; API / SSE are never cached.
-const CACHE = 'hermes-taskboard-v2';
+const CACHE = 'hermes-taskboard-v14';
 const SHELL = [
   '/',
   '/index.html',
@@ -13,6 +13,7 @@ const SHELL = [
   '/js/pwa.js',
   '/js/api.js',
   '/js/sse.js',
+  '/js/version.js',
   '/favicon.svg',
   '/manifest.webmanifest',
   '/assets/icons/icon-192.png',
@@ -34,18 +35,21 @@ self.addEventListener('activate', (e) => {
   self.clients.claim();
 });
 
+// Network-first for app-shell assets. The alternative (cache-first) made
+// users stare at stale CSS / JS after a deploy until they cleared site
+// data, which was a constant source of "bug still there" reports. Cache
+// is now an offline fallback only.
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (url.pathname.startsWith('/api/')) return; // network-first, never cached
+  if (url.pathname.startsWith('/api/')) return; // backend, never cached
   if (e.request.method !== 'GET') return;
   e.respondWith(
-    caches.match(e.request).then((cached) => cached ||
-      fetch(e.request).then((res) => {
-        if (res.ok && (url.origin === self.location.origin)) {
-          const clone = res.clone();
-          caches.open(CACHE).then((c) => c.put(e.request, clone));
-        }
-        return res;
-      }).catch(() => caches.match('/index.html')))
+    fetch(e.request).then((res) => {
+      if (res.ok && url.origin === self.location.origin) {
+        const clone = res.clone();
+        caches.open(CACHE).then((c) => c.put(e.request, clone));
+      }
+      return res;
+    }).catch(() => caches.match(e.request).then((c) => c || caches.match('/index.html')))
   );
 });

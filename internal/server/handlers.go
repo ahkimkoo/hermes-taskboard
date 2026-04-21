@@ -1281,6 +1281,7 @@ func (s *Server) hStatic(w http.ResponseWriter, r *http.Request) {
 			if err2 == nil {
 				defer fi.Close()
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				setStaticCacheHeaders(w, "index.html")
 				copyTo(w, fi)
 				return
 			}
@@ -1290,7 +1291,38 @@ func (s *Server) hStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	setContentType(w, p)
+	setStaticCacheHeaders(w, p)
 	copyTo(w, f)
+}
+
+// setStaticCacheHeaders writes Cache-Control so the browser doesn't pin the
+// app's frontend to whatever it loaded the first time. Without this Go
+// returns no Cache-Control at all and Chrome / Safari heuristically cache
+// the JS / CSS for hours, which makes "I changed the code, why doesn't the
+// fix show up?" the dominant failure mode during development.
+//
+//   - index.html and sw.js: must always re-validate against the server so
+//     a fresh deploy is picked up on the next reload.
+//   - The rest of the app shell (JS / CSS / locales): same — the file might
+//     have changed since the cached copy, so revalidate every load. The
+//     server-side service worker bumps its CACHE name on each release, so
+//     the offline fallback eventually replaces too.
+//   - Static assets that are content-addressable by name (icons, the
+//     vendored vue.global.js): can cache forever; we keep them
+//     conservative for now and treat them like the rest until we add
+//     hashed filenames.
+func setStaticCacheHeaders(w http.ResponseWriter, pathInside string) {
+	if pathInside == "sw.js" || pathInside == "index.html" {
+		// Service worker spec already says browsers must revalidate sw.js,
+		// but explicit no-cache is belt-and-suspenders.
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		return
+	}
+	// Everything else: allow a cached copy but require revalidation each
+	// time so a redeploy always wins on next reload.
+	w.Header().Set("Cache-Control", "no-cache")
 }
 
 // ---------------- helpers ----------------
