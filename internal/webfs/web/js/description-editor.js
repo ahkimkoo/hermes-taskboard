@@ -1,24 +1,79 @@
-// A textarea-based description editor that accepts image paste / drop / pick
-// and inserts `![](url)` at the caret. Images are uploaded through
-// POST /api/uploads (backend decides local vs Aliyun OSS).
+// A textarea-based description editor that accepts file paste / drop / pick
+// and inserts the appropriate markdown at the caret. Files go through
+// POST /api/uploads which decides local vs Aliyun OSS storage.
 //
-// Why not contenteditable? Hermes consumes the description as text, and
-// round-tripping HTML ↔ markdown is a rabbit hole. A textarea keeps storage
-// simple (markdown in, markdown out) and the preview tab renders it live.
+// Supported file kinds (server enforces the same list):
+//   image  → ![](url)               (renders inline in preview)
+//   video  → [🎬 name.mp4](url)
+//   audio  → [🎵 name.mp3](url)
+//   doc    → [📄 name.pdf](url)
+//
+// Hermes consumes the description as text, so a public URL is required —
+// the editor disables uploads unless Aliyun OSS is configured.
 
 import { api } from './api.js';
 import { t } from './i18n.js';
 import { renderMarkdown } from './markdown.js';
+
+// Extensions accepted by the file picker. The browser's `accept` attribute
+// also takes MIME wildcards so we mix both to be friendly with what the
+// system file dialog suggests.
+const ACCEPT_ATTR = 'image/*,video/*,audio/*,.pdf,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx';
+const DOC_MIMES = new Set([
+  'application/pdf',
+  'text/plain',
+  'text/markdown',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+]);
+const DOC_EXTS = new Set([
+  '.pdf', '.txt', '.md',
+  '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.mp3', '.wav', '.m4a', '.mp4', '.mov', '.avi', '.webm',
+]);
+
+function fileExt(name) {
+  const i = (name || '').lastIndexOf('.');
+  return i < 0 ? '' : name.slice(i).toLowerCase();
+}
+
+function isUploadable(file) {
+  if (!file) return false;
+  const t = (file.type || '').toLowerCase();
+  if (t.startsWith('image/')) return true;
+  if (t.startsWith('video/')) return true;
+  if (t.startsWith('audio/')) return true;
+  // Strip ;charset= etc.
+  const bare = t.split(';')[0].trim();
+  if (DOC_MIMES.has(bare)) return true;
+  // Some browsers send '' or 'application/octet-stream' for documents —
+  // fall back to extension matching.
+  if (DOC_EXTS.has(fileExt(file.name))) return true;
+  return false;
+}
+
+function snippetFor(file, url) {
+  const t = (file.type || '').toLowerCase();
+  const name = (file.name || 'file').replace(/[\[\]]/g, '');
+  if (t.startsWith('image/')) return '![](' + url + ')';
+  if (t.startsWith('video/')) return '[🎬 ' + name + '](' + url + ')';
+  if (t.startsWith('audio/')) return '[🎵 ' + name + '](' + url + ')';
+  return '[📄 ' + name + '](' + url + ')';
+}
 
 export const DescriptionEditor = {
   props: {
     modelValue: { type: String, default: '' },
     placeholder: { type: String, default: '' },
     rows: { type: Number, default: 8 },
-    // Image upload is only useful when backed by a publicly-reachable URL;
-    // Hermes just forwards the markdown as a string to the underlying LLM,
-    // which can't fetch localhost. Parent should pass true only when Aliyun
-    // OSS (or equivalent CDN) is configured and has a stored secret.
+    // Upload is only useful when backed by a publicly-reachable URL;
+    // Hermes just forwards the markdown as a string to the underlying LLM
+    // which can't fetch localhost. Parent should pass true only when
+    // Aliyun OSS (or equivalent CDN) is configured.
     imageUploadEnabled: { type: Boolean, default: false },
   },
   emits: ['update:modelValue'],
@@ -26,6 +81,7 @@ export const DescriptionEditor = {
   computed: {
     preview() { return renderMarkdown(this.modelValue || ''); },
     hintKey() { return this.imageUploadEnabled ? 'editor.hint' : 'editor.hint_no_upload'; },
+    acceptAttr() { return ACCEPT_ATTR; },
   },
   template: `
     <div class="desc-editor" :class="{'drag-over': dragOver}"
@@ -35,10 +91,10 @@ export const DescriptionEditor = {
         <button type="button" :class="{active: tab==='write'}" @click="tab='write'">{{ $t('editor.write') }}</button>
         <button type="button" :class="{active: tab==='preview'}" @click="tab='preview'">{{ $t('editor.preview') }}</button>
         <span class="spacer"></span>
-        <button v-if="imageUploadEnabled" type="button" @click="pickImage" :disabled="uploading">
-          {{ uploading ? $t('editor.uploading') : $t('editor.insert_image') }}
+        <button v-if="imageUploadEnabled" type="button" @click="pickFile" :disabled="uploading">
+          {{ uploading ? $t('editor.uploading') : $t('editor.insert_file') }}
         </button>
-        <input type="file" accept="image/*" ref="filepicker" style="display:none" @change="onPickFile">
+        <input type="file" :accept="acceptAttr" ref="filepicker" style="display:none" @change="onPickFile">
       </div>
       <textarea v-if="tab==='write'"
                 :rows="rows"
@@ -54,31 +110,35 @@ export const DescriptionEditor = {
     warnNoUpload() {
       if (this.warnedNoUpload) return;
       this.warnedNoUpload = true;
-      alert(t('editor.image_disabled_alert'));
+      alert(t('editor.upload_disabled_alert'));
     },
-    pickImage() { this.$refs.filepicker.click(); },
+    pickFile() { this.$refs.filepicker.click(); },
     async onPickFile(e) {
       const f = e.target.files && e.target.files[0];
-      if (f) await this.uploadAndInsert(f);
+      if (f) {
+        if (!isUploadable(f)) { alert(t('editor.unsupported_file')); }
+        else await this.uploadAndInsert(f);
+      }
       e.target.value = '';
     },
     async onPaste(e) {
       const items = e.clipboardData && e.clipboardData.items;
       if (!items) return;
       for (const it of items) {
-        if (it.kind === 'file' && it.type.startsWith('image/')) {
-          e.preventDefault();
-          if (!this.imageUploadEnabled) { this.warnNoUpload(); return; }
-          const f = it.getAsFile();
-          if (f) await this.uploadAndInsert(f);
-          return;
-        }
+        if (it.kind !== 'file') continue;
+        const f = it.getAsFile();
+        if (!isUploadable(f)) continue;
+        e.preventDefault();
+        if (!this.imageUploadEnabled) { this.warnNoUpload(); return; }
+        if (f) await this.uploadAndInsert(f);
+        return;
       }
     },
     async onDrop(e) {
       this.dragOver = false;
       const f = e.dataTransfer.files && e.dataTransfer.files[0];
-      if (!f || !f.type.startsWith('image/')) return;
+      if (!f) return;
+      if (!isUploadable(f)) { alert(t('editor.unsupported_file')); return; }
       if (!this.imageUploadEnabled) { this.warnNoUpload(); return; }
       await this.uploadAndInsert(f);
     },
@@ -88,7 +148,7 @@ export const DescriptionEditor = {
         const fd = new FormData();
         fd.append('file', file);
         const res = await api('/api/uploads', { method: 'POST', body: fd });
-        this.insertAtCursor('![](' + res.url + ')');
+        this.insertAtCursor(snippetFor(file, res.url));
       } catch (err) {
         alert(t('toast.error', { err: err.message }));
       } finally {

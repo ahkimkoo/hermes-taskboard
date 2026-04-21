@@ -30,7 +30,14 @@ Click **+ New task** in the top-right (on mobile, the floating `+` in the bottom
 Fields:
 
 - **Title** *(required)* — short label shown on the card
-- **Description** *(optional)* — markdown, supports image paste / drop **only when Aliyun OSS is configured** (see §6.6)
+- **Description** *(optional)* — markdown, supports paste / drop / pick of:
+  - Images (`png/jpg/gif/webp/svg`) → inserted as `![](url)`, render inline in the preview
+  - Audio (`mp3/wav/m4a`) → `[🎵 filename](url)`
+  - Video (`mp4/mov/avi/webm`) → `[🎬 filename](url)`
+  - Documents (`pdf/doc/docx/xls/xlsx/ppt/pptx/txt/md`) → `[📄 filename](url)`
+  - Per-file cap **50 MB**
+
+  Uploads only work when Aliyun OSS is configured (see §6.6) — otherwise the URL wouldn't be reachable from Hermes's LLM provider.
 - **Priority** P1–P5 — purely visual (red→grey badge), not used by the scheduler
 - **Trigger mode**:
   - `auto` — once the task reaches the **Plan** column the scheduler dispatches it (default)

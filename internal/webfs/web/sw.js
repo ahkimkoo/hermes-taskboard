@@ -1,5 +1,5 @@
 // Minimal service worker: cache app shell; API / SSE are never cached.
-const CACHE = 'hermes-taskboard-v15';
+const CACHE = 'hermes-taskboard-v16';
 const SHELL = [
   '/',
   '/index.html',

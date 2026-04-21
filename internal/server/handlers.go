@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -1192,13 +1193,16 @@ func (s *Server) routeSchedules(w http.ResponseWriter, r *http.Request) {
 // ---------------- uploads ----------------
 
 // hUploadFile accepts a multipart form file named "file" and returns {url}.
-// Size limit: 10 MB. Content types allowed: image/*.
+// Size limit: 50 MB. Accepted: images (image/*), audio/video (audio/*,
+// video/*) — explicitly mp4/mov/avi/mp3/wav — and common documents (pdf,
+// txt, md, doc/docx, xls/xlsx, ppt/pptx) verified by MIME prefix and
+// filename extension fallback.
 //
 // We refuse uploads outright unless Aliyun OSS is configured: Hermes forwards
-// the task description verbatim as text to its LLM provider (verified against
-// gateway/platforms/api_server.py), so a locally-hosted URL can't be fetched
-// by the LLM. Without OSS there is literally no way for the image to reach
-// the model — we fail loud instead of silently saving bytes nobody will see.
+// the task description verbatim as text to its LLM provider, so a
+// locally-hosted URL can't be fetched by the LLM. Without OSS there's
+// literally no way for the file to reach the model — we fail loud instead
+// of silently saving bytes nobody will see.
 func (s *Server) hUploadFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "method not allowed", 405)
@@ -1208,12 +1212,12 @@ func (s *Server) hUploadFile(w http.ResponseWriter, r *http.Request) {
 	ossOK := cur.OSS.Enabled && cur.OSS.AccessKeyID != "" && (cur.OSS.AccessKeySecret != "" || cur.OSS.AccessKeySecretEnc != "")
 	if !ossOK {
 		writeJSON(w, 503, map[string]any{
-			"code":    "image_upload_disabled",
-			"message": "image uploads require a reachable image host (Aliyun OSS) in Settings → Integrations",
+			"code":    "upload_disabled",
+			"message": "uploads require a reachable file host (Aliyun OSS) in Settings → Integrations",
 		})
 		return
 	}
-	const maxUpload = 10 << 20 // 10 MB
+	const maxUpload = 50 << 20 // 50 MB
 	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
 	if err := r.ParseMultipartForm(maxUpload); err != nil {
 		writeErr(w, 400, err)
@@ -1226,8 +1230,8 @@ func (s *Server) hUploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	ct := hdr.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "image/") {
-		writeErr(w, 400, errors.New("only image/* uploads are accepted"))
+	if !uploadTypeAllowed(ct, hdr.Filename) {
+		writeErr(w, 400, errors.New("file type not allowed; accepted: image/audio/video and pdf/doc/docx/xls/xlsx/ppt/pptx/txt/md"))
 		return
 	}
 	buf := make([]byte, 0, hdr.Size)
@@ -1254,6 +1258,46 @@ func (s *Server) hUploadFile(w http.ResponseWriter, r *http.Request) {
 		kind = "oss"
 	}
 	writeJSON(w, 200, map[string]any{"url": url, "size": len(buf), "storage": kind})
+}
+
+// uploadTypeAllowed checks the upload allowlist via MIME prefix first then
+// filename extension as a fallback (browsers sometimes report empty MIME
+// for office documents picked from older OSes). Mirrors the manual.md
+// spec: images, audio, video, PDF, plain text, markdown, and the
+// MS Office formats.
+func uploadTypeAllowed(contentType, filename string) bool {
+	ct := strings.ToLower(contentType)
+	if strings.HasPrefix(ct, "image/") || strings.HasPrefix(ct, "audio/") || strings.HasPrefix(ct, "video/") {
+		return true
+	}
+	docMIMEs := map[string]bool{
+		"application/pdf":  true,
+		"text/plain":       true,
+		"text/markdown":    true,
+		"application/msword": true,
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document": true,
+		"application/vnd.ms-excel": true,
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": true,
+		"application/vnd.ms-powerpoint": true,
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation": true,
+	}
+	// Strip ;charset=… style suffix.
+	bare := ct
+	if i := strings.IndexByte(bare, ';'); i >= 0 {
+		bare = strings.TrimSpace(bare[:i])
+	}
+	if docMIMEs[bare] {
+		return true
+	}
+	// Extension fallback for poorly-typed uploads.
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+		".mp3", ".wav", ".m4a", ".mp4", ".mov", ".avi", ".webm",
+		".pdf", ".txt", ".md", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx":
+		return true
+	}
+	return false
 }
 
 // hUploadServe serves files from data/uploads/{name}.

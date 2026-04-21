@@ -142,19 +142,71 @@ func hashName(data []byte) string {
 }
 
 func extForType(ct string) string {
-	switch {
-	case strings.HasPrefix(ct, "image/png"):
-		return ".png"
-	case strings.HasPrefix(ct, "image/jpeg"):
-		return ".jpg"
-	case strings.HasPrefix(ct, "image/gif"):
-		return ".gif"
-	case strings.HasPrefix(ct, "image/webp"):
-		return ".webp"
-	case strings.HasPrefix(ct, "image/svg"):
-		return ".svg"
-	default:
-		return ".bin"
+	// Strip ;charset=… etc.
+	bare := ct
+	if i := strings.IndexByte(bare, ';'); i >= 0 {
+		bare = strings.TrimSpace(bare[:i])
 	}
+	bare = strings.ToLower(bare)
+	switch bare {
+	// Images
+	case "image/png":
+		return ".png"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/svg+xml", "image/svg":
+		return ".svg"
+	// Audio
+	case "audio/mpeg", "audio/mp3":
+		return ".mp3"
+	case "audio/wav", "audio/x-wav", "audio/wave":
+		return ".wav"
+	case "audio/mp4", "audio/m4a", "audio/x-m4a":
+		return ".m4a"
+	// Video
+	case "video/mp4":
+		return ".mp4"
+	case "video/quicktime":
+		return ".mov"
+	case "video/x-msvideo":
+		return ".avi"
+	case "video/webm":
+		return ".webm"
+	// Documents
+	case "application/pdf":
+		return ".pdf"
+	case "text/plain":
+		return ".txt"
+	case "text/markdown":
+		return ".md"
+	case "application/msword":
+		return ".doc"
+	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+		return ".docx"
+	case "application/vnd.ms-excel":
+		return ".xls"
+	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		return ".xlsx"
+	case "application/vnd.ms-powerpoint":
+		return ".ppt"
+	case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+		return ".pptx"
+	}
+	return ".bin"
+}
+
+// ExtForFilename mirrors extForType but uses the original filename's
+// extension when MIME info isn't precise enough (e.g. application/octet-
+// stream from drag-drop on some browsers).
+func ExtForFilename(name string) string {
+	dot := strings.LastIndexByte(name, '.')
+	if dot < 0 {
+		return ""
+	}
+	return strings.ToLower(name[dot:])
 }
 
