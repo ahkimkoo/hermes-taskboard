@@ -3,7 +3,75 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## 2026-04-21
+## 2026-04-21 — v0.2.0
+
+### `previous_response_id` no longer 404s after the user hits Stop
+
+Reported by a user who cancelled a run mid-stream and then typed a follow-up: `✗ hermes responses: 404 Not Found: {"error":{"message":"Previous response not found: resp_3d95fc5de65041d2adc7eefb40f9",…}}`. Root cause was a mismatch between *when* taskboard saved the response id and *when* Hermes treats it as durable. Taskboard was writing `meta.Session.LatestResponseID` on the `response.created` SSE event (the very first event of the stream), but Hermes only retains responses that reach `response.completed` — cancelled or errored responses are discarded. So after a cancel, taskboard still held an id that Hermes no longer knew about, and any follow-up turn posted `previous_response_id=<dead id>` and hit 404.
+
+Fix is in two parts:
+
+1. **Persist only completed response ids as chain anchors.** The `LatestResponseID` write moves from `response.created` → `response.completed`. `CurrentRunID` is still captured on `response.created` because ResumeOrphans needs it to reconnect to an in-flight stream after a taskboard restart — that's a different job than "anchor the next turn's chain". Also guarded the post-`CreateResponse` meta update so a streaming call's empty `res.ResponseID` can no longer silently wipe the prior turn's anchor.
+
+2. **404 self-heal on the next request.** If Hermes rejects the `previous_response_id` we sent (matched via the specific `"Previous response not found"` error body), the runner clears the local id, logs a `sys:previous_response_id_stale` event for audit, and retries the call as a cold start. The `conversation` tag still ties the new turn to the same Attempt, so the user sees no interruption. This also self-heals any meta.json left in a bad state by an older build.
+
+Verified end-to-end against the local Hermes gateway: before the fix, a cancel → follow-up reproduces the exact reported 404 with the real error body; after the fix, the same sequence succeeds. Integration test at `internal/attempt/runner_real_hermes_test.go` (gated behind `-tags integration_real_hermes` so it doesn't run in the default suite). Offline tests using a fake SSE server at `internal/attempt/runner_cancel_chain_test.go` cover the same scenarios without a live gateway.
+
+### Hermes request shape — `conversation` + `previous_response_id` are mutually exclusive
+
+Discovered via the session-continuity work above: Hermes rejects `POST /v1/responses` with HTTP 400 "Cannot use both 'conversation' and 'previous_response_id'" when both are set. Client now prefers `previous_response_id` when it has one (pins the exact ancestor) and falls back to `conversation` only on the very first turn where there's nothing to chain from.
+
+### Markdown: GFM pipe tables + thematic breaks render in event stream
+
+Assistant replies that include tables or horizontal rules were rendering as raw pipes and dashes. Added GoldMark's GFM table extension and thematic-break support to the markdown pipeline that feeds the event-stream bubbles.
+
+### Uploads: preserve the real file extension when MIME is ambiguous
+
+The upload handler was deriving the saved filename's extension from the `Content-Type` header, which some clients send as `application/octet-stream` for anything non-obvious. Result: a `.zip` arriving with `octet-stream` saved as `.bin` and the OSS preview URL refused to render. Now the original filename's extension wins when the MIME type would otherwise produce a useless generic extension.
+
+### Accept audio / video / documents in uploads, not just images
+
+The attach-file control whitelisted only images. Expanded to accept audio, video, and common document types (PDFs, Office, text, archives). Storage layout and OSS key generation unchanged.
+
+### UI: Hermes server label shows name, not id
+
+Card headers and the attempt detail pane were labelling the selected Hermes server with the internal `server_id` (`local`, `office`) instead of the human-facing `name` (`Local Hermes`, `办公电脑`). Flipped to `name`, with the id kept as a tooltip for operators who still care. The English "Server:" label now also renders as "服务器" under Chinese locale.
+
+### Resume orphan runs + manual reconnect + paginated events
+
+If taskboard crashes while an Attempt is mid-stream, Hermes keeps the run alive — we just lose the SSE subscription. New `Runner.ResumeOrphans()` (called at boot, before the scheduler fires) re-attaches to `/v1/runs/{id}/events` using the `CurrentRunID` persisted in `meta.json`. If the reconnect succeeds the attempt continues as if nothing happened; if the run expired or Hermes no longer knows it, the attempt is marked Failed with a clear system event.
+
+Frontend gets a **Reconnect** button on the attempt pane for the rare case where the client-side EventSource drops but the server is fine, plus event-stream pagination: the pane now loads the most recent events on open and lazily pulls older ones as you scroll up, so attempts that streamed thousands of lines don't lock the UI.
+
+### Mobile polish (PWA, touch, cross-column drop)
+
+Everything a phone user hit since v0.1.0 got tightened:
+- Proper PWA manifest + icon set → iOS and Android "Add to Home Screen" now installs a standalone-wi window instead of a Safari shortcut.
+- `touch-action: none` on draggable cards so iOS Safari stops hijacking drags as page pans.
+- Mobile cross-column drop lands via the tab strip rather than requiring the user to reach a column that isn't on screen.
+- Version chip + scroll gutters + mobile-tuned padding throughout.
+- EventStream gains scroll controls ("↓ new messages" pill on the bottom) + pagination affordance.
+- Service worker switches to network-first for HTML with explicit `Cache-Control` on static assets, so the shell updates without a manual cache bust.
+
+### Bilingual operator manual served in-app via help (?) button
+
+`docs/manual.en.md` + `docs/manual.zh-CN.md` ship inside the binary. The `?` button on the Attempts pane (plus a new one in the settings drawer) opens the manual in an inline panel — the locale follows the UI's current language.
+
+### Japanese translations of user-facing docs
+
+`CHANGELOG.ja-JP.md`, `docs/release-notes/v0.1.0.ja-JP.md`, `docs/requirements.ja-JP.md`, and `docs/smoke.ja-JP.sh` ship alongside the English originals. UI remains English / 简体中文 for now; Japanese docs are read-only supplements.
+
+## 2026-04-20
+
+### Fallback to Hermes's built-in `hermes-agent` when a server has no `models`
+
+Config entries for Hermes servers let users declare their own model profiles (name + concurrency cap). If the list was empty — which is the default after a fresh install because the gateway auto-advertises only one built-in model — the dispatcher had nothing to pick and attempts silently stalled in Queued. Fix: when a server's `models` list is empty, dispatch falls back to the string `hermes-agent` (the one model Hermes's `/v1/models` actually returns out-of-the-box). Users who later register additional model profiles still take precedence over the fallback.
+
+### Docker: bump build stage to `golang:1.25-alpine`, pre-own `/data` at UID 65532
+
+The `/data` volume directive in the old Dockerfile left the directory owned by root, which broke the distroless/nonroot runtime's ability to `mkdir` its subdirs on first start (no shell in distroless means a `RUN chown` at the final stage isn't possible). Fix: build stage now creates a `/skel-data` skeleton and copies it into the final image with `--chown=65532:65532`, so both named volumes and bind-mounts work without a host-side chown. Build stage also bumped to `golang:1.25-alpine` to match the toolchain the project now requires.
+
+## 2026-04-21 (earlier)
 
 ### Session continuity with Hermes — experimentally verified via `cmd/hermesprobe`
 

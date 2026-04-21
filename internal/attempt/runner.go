@@ -445,7 +445,9 @@ func (r *Runner) runOnce(ctx context.Context, attemptID, input string, first boo
 	// cold start. Without this, a user who types "continue" into an
 	// existing Attempt just opens a brand-new session with no memory of
 	// the earlier tool calls. The latest id is captured in handleEvent
-	// when the response.created SSE event fires on every prior turn.
+	// on `response.completed` — not `response.created` — because Hermes
+	// discards responses that never complete (e.g. user cancellation),
+	// and chaining from a discarded id returns 404 on the next turn.
 	if meta, _ := r.FS.LoadAttemptMeta(attemptID); meta != nil && meta.Session.LatestResponseID != "" {
 		req.PreviousResponseID = meta.Session.LatestResponseID
 	}
@@ -471,17 +473,48 @@ func (r *Runner) runOnce(ctx context.Context, attemptID, input string, first boo
 	// send. Logging again here would duplicate.
 	res, err := client.CreateResponse(ctx, req)
 	if err != nil {
-		return err
+		// If Hermes rejects a stale previous_response_id (e.g. a previous
+		// turn was cancelled before `response.completed`, or the Hermes
+		// server dropped the response), clear the id and retry as a fresh
+		// turn. We still keep `conversation` continuity via the fallback
+		// in client.CreateResponse.
+		if req.PreviousResponseID != "" && isPreviousResponseNotFound(err) {
+			r.logSystemEvent(attemptID, "previous_response_id_stale", map[string]any{
+				"previous_response_id": req.PreviousResponseID,
+				"err":                  err.Error(),
+			})
+			if meta, _ := r.FS.LoadAttemptMeta(attemptID); meta != nil {
+				meta.Session.LatestResponseID = ""
+				_ = r.FS.SaveAttemptMeta(meta)
+			}
+			req.PreviousResponseID = ""
+			res, err = client.CreateResponse(ctx, req)
+		}
+		if err != nil {
+			return err
+		}
 	}
 	runID := res.RunID
-	// Update meta with run_id.
+	// Update meta with run_id. We only persist LatestResponseID here when
+	// CreateResponse returned a concrete id (non-streaming path where the
+	// response has already completed by the time the HTTP call returns).
+	// In the streaming path res.ResponseID is empty and the real id
+	// arrives later via the response.completed SSE event — writing the
+	// empty string here would wipe the prior turn's chain anchor.
 	if meta, _ := r.FS.LoadAttemptMeta(attemptID); meta != nil {
+		dirty := false
 		if runID != "" {
 			meta.Session.CurrentRunID = runID
 			meta.Session.Runs = append(meta.Session.Runs, runID)
+			dirty = true
 		}
-		meta.Session.LatestResponseID = res.ResponseID
-		_ = r.FS.SaveAttemptMeta(meta)
+		if res.ResponseID != "" {
+			meta.Session.LatestResponseID = res.ResponseID
+			dirty = true
+		}
+		if dirty {
+			_ = r.FS.SaveAttemptMeta(meta)
+		}
 	}
 	r.logSystemEvent(attemptID, "run_start", map[string]any{
 		"run_id":               runID,
@@ -533,14 +566,17 @@ func (r *Runner) handleEvent(attemptID string, e hermes.Event) {
 	// When we POST /v1/responses with stream=true the HTTP body IS the SSE
 	// stream, so client.CreateResponse returns an empty RunID/ResponseID
 	// — the only place the id appears is in the response.created event
-	// that arrives first on the wire. Record it here so ResumeOrphans has
-	// something to reconnect with after a taskboard restart.
+	// that arrives first on the wire. Record it as CurrentRunID so
+	// ResumeOrphans has something to reconnect with after a taskboard
+	// restart. LatestResponseID is *not* written here: we only want to
+	// chain off responses Hermes will actually retain, which is decided
+	// at completion time (cancelled / aborted responses get discarded and
+	// would produce 404 on the next turn's previous_response_id).
 	if typ == "response.created" {
 		if resp, ok := e.Data["response"].(map[string]any); ok {
 			if rid, ok := resp["id"].(string); ok && rid != "" {
 				if meta, _ := r.FS.LoadAttemptMeta(attemptID); meta != nil {
 					meta.Session.CurrentRunID = rid
-					meta.Session.LatestResponseID = rid
 					// Dedupe so repeat receipts don't balloon the Runs slice.
 					if len(meta.Session.Runs) == 0 || meta.Session.Runs[len(meta.Session.Runs)-1] != rid {
 						meta.Session.Runs = append(meta.Session.Runs, rid)
@@ -556,15 +592,39 @@ func (r *Runner) handleEvent(attemptID string, e hermes.Event) {
 		_ = r.Store.UpdateAttemptState(context.Background(), attemptID, store.AttemptNeedsInput)
 		r.broadcastStateChange(attemptID, store.AttemptNeedsInput)
 	}
-	// Capture final assistant message summary.
+	// Capture final assistant message summary + pin LatestResponseID to
+	// the id of the *completed* response. Only completed responses can be
+	// used as `previous_response_id` on the next turn — Hermes drops the
+	// record for any response that was cancelled or errored mid-stream.
 	if typ == "response.completed" {
-		if out, ok := e.Data["output_text"].(string); ok {
-			if meta, _ := r.FS.LoadAttemptMeta(attemptID); meta != nil {
+		if meta, _ := r.FS.LoadAttemptMeta(attemptID); meta != nil {
+			changed := false
+			if out, ok := e.Data["output_text"].(string); ok {
 				meta.Summary = out
+				changed = true
+			}
+			if resp, ok := e.Data["response"].(map[string]any); ok {
+				if rid, ok := resp["id"].(string); ok && rid != "" {
+					meta.Session.LatestResponseID = rid
+					changed = true
+				}
+			}
+			if changed {
 				_ = r.FS.SaveAttemptMeta(meta)
 			}
 		}
 	}
+}
+
+// isPreviousResponseNotFound reports whether err is the specific Hermes
+// rejection that the previous_response_id we supplied does not exist — e.g.
+// after the user cancels mid-stream or Hermes evicts the response.
+func isPreviousResponseNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "404") && strings.Contains(s, "Previous response not found")
 }
 
 func (r *Runner) logSystemEvent(attemptID, event string, extra map[string]any) {
