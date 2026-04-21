@@ -440,6 +440,15 @@ func (r *Runner) runOnce(ctx context.Context, attemptID, input string, first boo
 		Input:        input,
 		Stream:       true,
 	}
+	// Chain off the last response this attempt got back so Hermes treats
+	// this call as a continuation of the same conversation rather than a
+	// cold start. Without this, a user who types "continue" into an
+	// existing Attempt just opens a brand-new session with no memory of
+	// the earlier tool calls. The latest id is captured in handleEvent
+	// when the response.created SSE event fires on every prior turn.
+	if meta, _ := r.FS.LoadAttemptMeta(attemptID); meta != nil && meta.Session.LatestResponseID != "" {
+		req.PreviousResponseID = meta.Session.LatestResponseID
+	}
 	// Always re-send the combined system prompt on every turn — the docs say
 	// `instructions` on /v1/responses is the equivalent of a role=system
 	// message in /v1/chat/completions, and chat-completions re-delivers the
@@ -474,7 +483,11 @@ func (r *Runner) runOnce(ctx context.Context, attemptID, input string, first boo
 		meta.Session.LatestResponseID = res.ResponseID
 		_ = r.FS.SaveAttemptMeta(meta)
 	}
-	r.logSystemEvent(attemptID, "run_start", map[string]any{"run_id": runID, "response_id": res.ResponseID})
+	r.logSystemEvent(attemptID, "run_start", map[string]any{
+		"run_id":               runID,
+		"response_id":          res.ResponseID,
+		"previous_response_id": req.PreviousResponseID,
+	})
 
 	events := make(chan hermes.Event, 64)
 	streamErr := make(chan error, 1)

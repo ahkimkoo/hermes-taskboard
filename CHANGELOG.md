@@ -3,6 +3,32 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-21
+
+### Session continuity with Hermes — experimentally verified via `cmd/hermesprobe`
+
+Taskboard sends follow-up messages on an existing Attempt by POSTing to Hermes's `/v1/responses`. Two orthogonal fields decide whether Hermes picks up prior context: `conversation` (a stable tag) and `previous_response_id` (a specific ancestor). Running the live probe at `cmd/hermesprobe/` against the `local` Hermes server pinned down exactly what each does:
+
+**S1 Linear chain `a → b → c`** (every step carries `previous_response_id=prev`) — PASS. Hermes correctly recalls all facts injected across the three turns.
+
+**S2 Skip the middle** (`a → b`, then a third turn with `previous_response_id=a` instead of `b`) — *mixed*. Hermes's text reply cites facts from both `a` and `b` even though `b` isn't in the chain. Looking at `tools=[memory memory memory …]` on every prior turn explains it: Hermes's agent profile calls the `memory` skill to persist facts model-side, so those facts survive a broken `previous_response_id` chain. The conversation-level chain is linear-by-id; the agent's memory store is not.
+
+**S3 Fork** (`a → b` and `a → c` independently, using the same `previous_response_id=a`) — PASS. Both children see the parent's context, neither sees the sibling's. No error from Hermes when a parent already has another child. This is the answer to "`a → b → c`, but `c` got lost; can we rewind and continue from `b`?" — yes, reusing any recorded ancestor id is safe; Hermes just branches. The orphaned response is effectively dropped.
+
+**S4 Invalid `previous_response_id`** — Hermes returns **HTTP 404**, refusing to silently cold-start. Good — we surface the error instead of making up a fresh session the user didn't ask for.
+
+**S6 `conversation` tag alone** (same string across two turns, no `previous_response_id`) — PASS. Hermes links the turns by the conversation tag. (An earlier hypothesis that Hermes ignored the `conversation` field came from a flawed test that generated a fresh random tag per turn.)
+
+Practical consequence for taskboard: we now send **both** fields on every `runOnce`. `Conversation: att.ID` keeps Hermes-tag-level continuity through the whole Attempt, `previous_response_id: meta.Session.LatestResponseID` pins the exact ancestor. First turn has no `previous_response_id` (cold start, intended). Each turn's `sys:run_start` event now records `previous_response_id` so the audit trail shows whether a given turn was a chained continuation or a cold start.
+
+The probe stays in-repo as `cmd/hermesprobe/`; run against any registered server with:
+
+```bash
+go run ./cmd/hermesprobe -server <id> -only s1,s2,s3,s4,s6
+```
+
+S5 (30-second gap, session survival across idle) takes a full minute and is skipped by default; add `s5` to the `-only` list to include it.
+
 ## 2026-04-19
 
 ### Release (round 7.2 → tagged v0.1.0) — schedule picker UX, orphan reaper, drag/click fix

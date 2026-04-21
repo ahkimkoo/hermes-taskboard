@@ -23,12 +23,20 @@ import (
 )
 
 // ResponseRequest is the input to CreateResponse.
+//
+// Conversation and PreviousResponseID together pin the new run to the same
+// Hermes session state. PreviousResponseID is the one OpenAI's Responses
+// API actually uses for chaining — Conversation is more of a tag. We send
+// both so Hermes has every hint we can give it to pick up where the last
+// turn left off; without PreviousResponseID a follow-up "continue" on an
+// existing Attempt lands as a cold start.
 type ResponseRequest struct {
-	Conversation string
-	Model        string
-	Input        string
-	SystemPrompt string
-	Stream       bool
+	Conversation       string
+	PreviousResponseID string
+	Model              string
+	Input              string
+	SystemPrompt       string
+	Stream             bool
 }
 
 // ResponseCreateResult is the minimal info we need from a response creation.
@@ -165,6 +173,9 @@ func (c *Client) CreateResponse(ctx context.Context, req ResponseRequest) (*Resp
 	}
 	if req.Conversation != "" {
 		body["conversation"] = req.Conversation
+	}
+	if req.PreviousResponseID != "" {
+		body["previous_response_id"] = req.PreviousResponseID
 	}
 	if req.SystemPrompt != "" {
 		body["instructions"] = req.SystemPrompt

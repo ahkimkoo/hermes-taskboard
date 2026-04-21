@@ -2,4 +2,4 @@
 // every behavioural change so the badge in the bottom-left corner gives
 // users (and bug reporters) an unambiguous identifier for what they're
 // running — independent of the Go binary's git-described build version.
-export const APP_VERSION = 'v0.6.0';
+export const APP_VERSION = 'v0.6.4';
