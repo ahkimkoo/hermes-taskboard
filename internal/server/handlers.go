@@ -1248,7 +1248,7 @@ func (s *Server) hUploadFile(w http.ResponseWriter, r *http.Request) {
 	svc := s.uploadsService()
 	ctx, cancel := contextWithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	url, err := svc.Put(ctx, buf, ct)
+	url, err := svc.Put(ctx, buf, ct, hdr.Filename)
 	if err != nil {
 		writeErr(w, 500, err)
 		return

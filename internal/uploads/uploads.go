@@ -37,9 +37,18 @@ type Service struct {
 	HTTP           *http.Client
 }
 
-// Put stores data (with file extension derived from contentType) and returns the URL.
-func (s *Service) Put(ctx context.Context, data []byte, contentType string) (string, error) {
+// Put stores data and returns its URL. The filename extension is derived
+// from contentType when it's specific enough, with the original filename
+// as a fallback — browsers hand us empty / `application/octet-stream` for
+// office and markdown files, and we'd much rather keep .md / .docx than
+// stamp .bin on the object (which breaks inline preview in OSS).
+func (s *Service) Put(ctx context.Context, data []byte, contentType, origName string) (string, error) {
 	ext := extForType(contentType)
+	if ext == ".bin" || ext == "" {
+		if e := ExtForFilename(origName); e != "" && e != ".bin" {
+			ext = e
+		}
+	}
 	name := hashName(data) + ext
 	if s.OSSEnabled {
 		return s.putOSS(ctx, name, data, contentType)
