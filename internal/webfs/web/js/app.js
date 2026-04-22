@@ -854,20 +854,31 @@ const SettingsModal = {
                 <p class="helper">{{ $t('settings.servers_helper') }}</p>
                 <table class="tbl">
                   <thead><tr>
-                    <th>ID</th><th>{{ $t('th.name') }}</th><th>{{ $t('th.base_url') }}</th>
+                    <th>ID</th><th>{{ $t('th.name') }}</th>
+                    <th>Transport</th>
+                    <th>{{ $t('th.base_url') }} / Plugin</th>
                     <th>{{ $t('th.models') }}</th><th>{{ $t('th.default') }}</th><th></th>
                   </tr></thead>
                   <tbody>
                     <tr v-for="s in servers" :key="s.id">
                       <td>{{ s.id }}</td>
                       <td>{{ s.name }}</td>
-                      <td><code>{{ s.base_url }}</code></td>
-                      <td>{{ (s.models||[]).map(m=>m.name).join(', ') }}</td>
+                      <td>
+                        <span v-if="s.transport === 'plugin'">🔌 plugin</span>
+                        <span v-else>🌐 http</span>
+                      </td>
+                      <td>
+                        <code v-if="s.transport !== 'plugin'">{{ s.base_url }}</code>
+                        <span v-else-if="s.connected" style="color:#4ade80">● connected</span>
+                        <span v-else style="color:#f87171">● offline</span>
+                      </td>
+                      <td>{{ (s.models||[]).map(m=>m.name).join(', ') || '—' }}</td>
                       <td>{{ s.is_default ? '✓' : '' }}</td>
                       <td>
-                        <button @click="editServerInit(s)">{{ $t('action.edit') }}</button>
-                        <button @click="testServer(s.id)">{{ $t('action.test_connection') }}</button>
-                        <button class="danger" @click="delServer(s.id)">✕</button>
+                        <button v-if="!s.virtual" @click="editServerInit(s)">{{ $t('action.edit') }}</button>
+                        <button v-if="s.transport !== 'plugin'" @click="testServer(s.id)">{{ $t('action.test_connection') }}</button>
+                        <button v-if="!s.virtual" class="danger" @click="delServer(s.id)">✕</button>
+                        <span v-if="s.virtual" class="helper">auto-registered</span>
                       </td>
                     </tr>
                   </tbody>
@@ -878,8 +889,24 @@ const SettingsModal = {
                   <h4>{{ editServer.__edit ? $t('action.edit_server') : $t('action.new_server') }}</h4>
                   <div class="form-row"><label>ID</label><input type="text" v-model="editServer.id" :disabled="editServer.__edit"></div>
                   <div class="form-row"><label>{{ $t('th.name') }}</label><input type="text" v-model="editServer.name"></div>
-                  <div class="form-row"><label>{{ $t('th.base_url') }}</label><input type="text" v-model="editServer.base_url"></div>
-                  <div class="form-row"><label>API Key (Hermes <code>API_SERVER_KEY</code>)</label><input type="password" v-model="editServer.api_key" :placeholder="$t('field.api_key_placeholder')"></div>
+                  <div class="form-row">
+                    <label>Transport</label>
+                    <select v-model="editServer.transport">
+                      <option value="http">🌐 HTTP — taskboard dials Hermes's /v1/responses</option>
+                      <option value="plugin">🔌 Plugin — Hermes plugin dials taskboard's /api/plugin/ws</option>
+                    </select>
+                  </div>
+                  <template v-if="(editServer.transport || 'http') === 'http'">
+                    <div class="form-row"><label>{{ $t('th.base_url') }}</label><input type="text" v-model="editServer.base_url"></div>
+                    <div class="form-row"><label>API Key (Hermes <code>API_SERVER_KEY</code>)</label><input type="password" v-model="editServer.api_key" :placeholder="$t('field.api_key_placeholder')"></div>
+                  </template>
+                  <div v-else class="helper" style="margin:8px 0 12px">
+                    Plugin transport: the Hermes host runs the
+                    <code>hermes-taskboard-bridge</code> pip package and dials
+                    into this taskboard. No URL or API key needed; identity
+                    is the plugin's <code>TASKBOARD_HERMES_ID</code> env var
+                    (or its machine hostname). The ID above must match.
+                  </div>
                   <div class="form-row"><label>{{ $t('settings.max_concurrent_server') }}</label><input type="number" v-model.number="editServer.max_concurrent"></div>
                   <div class="form-row"><label><input type="checkbox" v-model="editServer.is_default"> {{ $t('settings.default_server') }}</label></div>
 
@@ -1092,10 +1119,14 @@ const SettingsModal = {
     },
     editServerInit(s) {
       if (s) {
-        this.editServer = { ...s, api_key: '', __edit: true, models: (s.models || []).map((m) => ({ ...m })) };
+        this.editServer = {
+          ...s, api_key: '', __edit: true,
+          transport: s.transport || 'http',
+          models: (s.models || []).map((m) => ({ ...m })),
+        };
       } else {
         this.editServer = {
-          id: '', name: '', base_url: 'http://127.0.0.1:8642',
+          id: '', name: '', transport: 'http', base_url: 'http://127.0.0.1:8642',
           api_key: '', is_default: this.servers.length === 0, max_concurrent: 10,
           models: [{ name: 'hermes-agent', is_default: true, max_concurrent: 5 }],
         };
@@ -1105,8 +1136,13 @@ const SettingsModal = {
       const s = this.editServer;
       try {
         const payload = {
-          id: s.id, name: s.name, base_url: s.base_url,
-          api_key: s.api_key || '', is_default: !!s.is_default,
+          id: s.id, name: s.name,
+          transport: s.transport || 'http',
+          // Plugin transport ignores base_url/api_key on the backend, but
+          // we still send them as empty so PATCH payload shape is stable.
+          base_url: s.transport === 'plugin' ? '' : s.base_url,
+          api_key: s.transport === 'plugin' ? '' : (s.api_key || ''),
+          is_default: !!s.is_default,
           max_concurrent: s.max_concurrent || 10,
           models: (s.models || []).filter((m) => m.name),
         };

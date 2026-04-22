@@ -690,6 +690,7 @@ func (s *Server) hListServers(w http.ResponseWriter, r *http.Request) {
 type serverUpsertReq struct {
 	ID            string               `json:"id"`
 	Name          string               `json:"name"`
+	Transport     string               `json:"transport,omitempty"`
 	BaseURL       string               `json:"base_url"`
 	APIKey        string               `json:"api_key,omitempty"`
 	IsDefault     bool                 `json:"is_default"`
@@ -703,8 +704,18 @@ func (s *Server) hCreateServer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	if req.ID == "" || req.BaseURL == "" {
-		writeErr(w, 400, errors.New("id and base_url required"))
+	if req.ID == "" {
+		writeErr(w, 400, errors.New("id required"))
+		return
+	}
+	// Plugin transport doesn't speak HTTP at all — no base_url/api_key
+	// needed. HTTP (the default) still requires base_url.
+	transport := strings.ToLower(strings.TrimSpace(req.Transport))
+	if transport == "" {
+		transport = "http"
+	}
+	if transport == "http" && req.BaseURL == "" {
+		writeErr(w, 400, errors.New("base_url required for http transport"))
 		return
 	}
 	err := s.Cfg.Mutate(func(c *config.Config) error {
@@ -719,10 +730,13 @@ func (s *Server) hCreateServer(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		ns := config.HermesServer{
-			ID: req.ID, Name: req.Name, BaseURL: req.BaseURL,
-			APIKey: req.APIKey, IsDefault: req.IsDefault,
+			ID: req.ID, Name: req.Name,
+			Transport:     transport,
+			BaseURL:       req.BaseURL,
+			APIKey:        req.APIKey,
+			IsDefault:     req.IsDefault,
 			MaxConcurrent: req.MaxConcurrent,
-			Models: req.Models,
+			Models:        req.Models,
 		}
 		c.HermesServers = append(c.HermesServers, ns)
 		return nil
@@ -777,6 +791,17 @@ func (s *Server) hUpdateServer(w http.ResponseWriter, r *http.Request, id string
 			sv := &c.HermesServers[i]
 			if req.Name != "" {
 				sv.Name = req.Name
+			}
+			if req.Transport != "" {
+				sv.Transport = strings.ToLower(strings.TrimSpace(req.Transport))
+				// Switching to plugin transport makes base_url / api_key
+				// irrelevant; clear them so the persisted config doesn't
+				// carry dead fields that'd mislead a future operator.
+				if sv.Transport == "plugin" {
+					sv.BaseURL = ""
+					sv.APIKey = ""
+					sv.APIKeyEnc = ""
+				}
 			}
 			if req.BaseURL != "" {
 				sv.BaseURL = req.BaseURL
