@@ -215,9 +215,11 @@ func (r *Runner) Start(ctx context.Context, taskID, serverID, model string) (*st
 	// HTTP servers always count as reachable — we trust their per-request
 	// error to surface.
 	connected := map[string]bool{}
+	var virtualPluginIDs []string
 	if r.PluginServer != nil {
 		for _, p := range r.PluginServer.Plugins() {
 			connected[p.HermesID] = true
+			virtualPluginIDs = append(virtualPluginIDs, p.HermesID)
 		}
 	}
 	isReachable := func(id string) bool {
@@ -237,6 +239,7 @@ func (r *Runner) Start(ctx context.Context, taskID, serverID, model string) (*st
 		firstNonEmpty(serverID, task.PreferredServer),
 		firstNonEmpty(model, task.PreferredModel),
 		isReachable,
+		virtualPluginIDs,
 	)
 	if sv == nil {
 		return nil, errors.New("no hermes server configured / reachable")
@@ -463,8 +466,10 @@ func (r *Runner) runOnce(ctx context.Context, attemptID, input string, first boo
 
 	// Branch on transport. Plugin-transport Hermes hosts don't speak HTTP
 	// at all — taskboard pushes the turn over an already-connected
-	// WebSocket and consumes native agent frames.
-	if r.Pool.Transport(att.ServerID) == "plugin" {
+	// WebSocket and consumes native agent frames. Pool is the authority
+	// for configured servers; for auto-registered virtual ones we also
+	// accept "this id has a live plugin connection right now".
+	if r.isPluginTransport(att.ServerID) {
 		return r.runOncePlugin(ctx, attemptID, input, first, att)
 	}
 

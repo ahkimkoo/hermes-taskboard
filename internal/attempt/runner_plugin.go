@@ -15,8 +15,28 @@ import (
 	"github.com/ahkimkoo/hermes-taskboard/internal/store"
 )
 
+// isPluginTransport is the single source of truth for "should this
+// attempt's server use the plugin path?". We check the Pool first
+// (config-declared plugin transport) and fall back to "there's a live
+// plugin announcing this hermes_id" so auto-registered plugins work
+// without a config entry.
+func (r *Runner) isPluginTransport(serverID string) bool {
+	if r.Pool.Transport(serverID) == "plugin" {
+		return true
+	}
+	if r.PluginServer == nil {
+		return false
+	}
+	for _, p := range r.PluginServer.Plugins() {
+		if p.HermesID == serverID {
+			return true
+		}
+	}
+	return false
+}
+
 // runOncePlugin is the plugin-transport equivalent of runOnce. It assumes
-// the caller already verified r.Pool.Transport(att.ServerID) == "plugin".
+// the caller already verified the transport is plugin (via isPluginTransport).
 // The attempt's `ServerID` must match a connected plugin's hermes_id; if
 // it isn't currently connected we fail the turn cleanly with a system
 // event so the UI tells the user why.

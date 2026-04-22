@@ -581,21 +581,39 @@ func (c *Config) ResolveServerModel(preferredServer, preferredModel string) (*He
 // uniformly at random — letting tasks fan out across connected Hermes
 // hosts without a sticky default.
 //
-// If preferredServer is non-empty it is honoured even when unreachable;
-// the caller may then surface the "plugin not connected" error itself.
+// `virtualPluginIDs` are plugin hermes_id values the caller has observed
+// connected but which aren't in config.HermesServers. They're synthesised
+// as transient plugin-transport servers (max_concurrent 5, hermes-agent
+// default model) so installing the plugin on a new Hermes host is
+// plug-and-play — no config edit required.
+//
+// If preferredServer is non-empty it's honoured when it resolves to
+// either a config server or a virtual plugin id; otherwise the caller
+// must surface the "plugin not connected" error itself.
 func (c *Config) ResolveServerModelWithReachability(
 	preferredServer, preferredModel string,
 	isReachable func(serverID string) bool,
+	virtualPluginIDs []string,
 ) (*HermesServer, string) {
 	if preferredServer != "" {
-		sv := c.FindServer(preferredServer)
-		if sv != nil {
+		if sv := c.FindServer(preferredServer); sv != nil {
 			return sv, c.resolveModelFor(sv, preferredModel)
+		}
+		for _, vid := range virtualPluginIDs {
+			if vid == preferredServer {
+				sv := virtualPluginServer(vid)
+				return sv, sv.DefaultModel()
+			}
 		}
 	}
 
-	// No preferred server or preferred-but-unknown → pick from reachable.
 	reachable := c.reachableServers(isReachable)
+	// Merge virtual plugin servers (not already in config) into the pool.
+	for _, vid := range virtualPluginIDs {
+		if c.FindServer(vid) == nil && (isReachable == nil || isReachable(vid)) {
+			reachable = append(reachable, virtualPluginServer(vid))
+		}
+	}
 	if len(reachable) == 0 {
 		return c.DefaultServer(), ""
 	}
@@ -607,9 +625,22 @@ func (c *Config) ResolveServerModelWithReachability(
 			}
 		}
 	}
-	// Else uniform random among the reachable.
+	// Uniform random across reachable servers (both configured + virtual).
 	pick := reachable[randomInt(len(reachable))]
 	return pick, c.resolveModelFor(pick, preferredModel)
+}
+
+// virtualPluginServer returns an in-memory HermesServer for a plugin
+// that announced itself on WS but isn't in config. Sensible defaults
+// that can be overridden later by adding a real entry with the same id.
+func virtualPluginServer(id string) *HermesServer {
+	return &HermesServer{
+		ID:            id,
+		Name:          id, // display name defaults to the hermes_id
+		Transport:     "plugin",
+		MaxConcurrent: 5,
+		Models:        nil, // falls back to HermesDefaultAgent
+	}
 }
 
 func (c *Config) resolveModelFor(sv *HermesServer, preferredModel string) string {
