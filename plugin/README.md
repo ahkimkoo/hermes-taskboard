@@ -26,10 +26,12 @@ events, and replays them after reconnect.
 In the same venv as `hermes-agent`:
 
 ```bash
-# From the GitHub release (no PyPI publish yet):
-pip install https://github.com/ahkimkoo/hermes-taskboard/releases/download/v0.2.0/hermes_taskboard_bridge-0.1.0-py3-none-any.whl
+pip install hermes-taskboard-bridge
+```
 
-# Or from a local clone:
+Or from a local source clone (for development):
+
+```bash
 pip install -e ./plugin
 ```
 

@@ -58,11 +58,11 @@ RUN if [ -n "${HERMES_AGENT_REF}" ]; then \
             "git+${HERMES_AGENT_REPO}"; \
     fi
 
-# Our bridge package is copied into the image as a wheel (built on the host
-# with `python -m build` from plugin/) so we don't depend on PyPI for it yet.
-COPY --chown=hermes:hermes plugin/dist/hermes_taskboard_bridge-*.whl /tmp/
-RUN pip install --user --no-cache-dir /tmp/hermes_taskboard_bridge-*.whl \
-    && rm /tmp/hermes_taskboard_bridge-*.whl
+# The bridge package ships on PyPI. Override BRIDGE_VERSION to pin to an
+# older release if needed; default picks up whatever's latest.
+ARG BRIDGE_VERSION=""
+RUN pip install --user --no-cache-dir \
+      "hermes-taskboard-bridge${BRIDGE_VERSION:+==}${BRIDGE_VERSION}"
 
 # Smoke-test the patches at build time. `doctor` imports Hermes, applies
 # the runtime patches in dry-run, and fails loudly if anything moved.
