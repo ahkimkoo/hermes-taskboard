@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import random
+import socket
 import time
 import uuid
 from collections import deque
@@ -93,7 +94,21 @@ def build_adapter_class():
             self._reconnect_max: float = float(
                 extra.get("reconnect_max", os.getenv("TASKBOARD_RECONNECT_MAX", "30.0"))
             )
-            self._client_id: str = f"hermes-{uuid.uuid4().hex[:8]}"
+            # Stable identity used by taskboard to route tasks to this Hermes
+            # host. Priority: explicit env var → config.yaml extra.hermes_id →
+            # socket.gethostname(). Taskboard keys its connected-plugin table
+            # on this value; two plugins announcing the same hermes_id means
+            # the later one replaces the earlier.
+            self._hermes_id: str = (
+                os.getenv("TASKBOARD_HERMES_ID")
+                or extra.get("hermes_id")
+                or socket.gethostname()
+                or "unknown"
+            )
+            self._hostname: str = socket.gethostname() or "unknown"
+            # Per-connection random nonce — lets the server disambiguate
+            # reconnects from the same host.
+            self._client_id: str = f"{self._hermes_id}-{uuid.uuid4().hex[:8]}"
             self._conn: Optional[ClientConnection] = None
             self._dial_task: Optional[asyncio.Task] = None
             self._seq: int = 0
@@ -113,8 +128,9 @@ def build_adapter_class():
                 self._dial_loop(), name="taskboard-dial"
             )
             logger.info(
-                "[Taskboard] adapter started; dialing %s (client_id=%s)",
+                "[Taskboard] adapter started; dialing %s (hermes_id=%s client_id=%s)",
                 self._ws_url,
+                self._hermes_id,
                 self._client_id,
             )
             self._mark_connected()
@@ -278,6 +294,8 @@ def build_adapter_class():
                     "type": "hello_ack",
                     "gateway_version": os.getenv("HERMES_VERSION", "unknown"),
                     "plugin_version": "0.1.0",
+                    "hermes_id": self._hermes_id,
+                    "hostname": self._hostname,
                     "client_id": self._client_id,
                     "token": self._token,
                 },

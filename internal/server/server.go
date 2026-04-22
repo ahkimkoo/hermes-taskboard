@@ -24,17 +24,18 @@ import (
 )
 
 type Server struct {
-	Cfg     *config.Store
-	Store   *store.Store
-	FS      *fsstore.FS
-	Pool    *hermes.Pool
-	Hub     *sse.Hub
-	Board   *board.Service
-	Runner  *attempt.Runner
-	Auth    *auth.Service
-	Logger  *slog.Logger
-	Web     fs.FS
-	DataDir string
+	Cfg          *config.Store
+	Store        *store.Store
+	FS           *fsstore.FS
+	Pool         *hermes.Pool
+	Hub          *sse.Hub
+	Board        *board.Service
+	Runner       *attempt.Runner
+	Auth         *auth.Service
+	Logger       *slog.Logger
+	Web          fs.FS
+	DataDir      string
+	PluginServer *hermes.PluginServer
 
 	mu   sync.Mutex
 	http atomic.Pointer[http.Server]
@@ -49,6 +50,7 @@ func New(
 	return &Server{
 		Cfg: cfg, Store: st, FS: fs, Pool: pool, Hub: hub, Board: b, Runner: r, Auth: a,
 		Logger: logger, Web: sub, DataDir: dataDir,
+		PluginServer: hermes.NewPluginServer(logger),
 	}
 }
 
@@ -134,6 +136,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true, "ts": time.Now().Unix()})
 	})
+
+	// --- hermes plugin transport ---
+	// WebSocket endpoint plugins dial into. One connection per hermes_id;
+	// identity resolved inside the plugin (explicit env override else
+	// hostname). The GET listing is for UIs / health dashboards.
+	mux.HandleFunc("/api/plugin/ws", s.PluginServer.HandleWS)
+	mux.HandleFunc("/api/plugin/plugins", s.hListPlugins)
+	// Dev-only control plane — minimal parity with cmd/pluginprobe so the
+	// full taskboard can drive the plugin before the Runner is wired in.
+	mux.HandleFunc("/api/plugin/send", s.hPluginSend)
+	mux.HandleFunc("/api/plugin/cancel", s.hPluginCancel)
 
 	// --- static / web ---
 	mux.HandleFunc("/", s.hStatic)
