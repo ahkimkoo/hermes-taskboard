@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-taskboard-bridge"
+version = "0.1.0"
+description = "Platform bridge that lets hermes-taskboard own Hermes sessions over WebSocket, decoupled from the HTTP client lifecycle."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "hermes-taskboard" }]
+license = { text = "MIT" }
+dependencies = [
+    "websockets>=11.0",
+    "hermes-agent>=0.8",   # must be installed in same venv; we monkey-patch it at startup
+]
+
+[project.scripts]
+# Drop-in replacement for `hermes gateway run`. Apply the runtime patches
+# first, then call Hermes's start_gateway(). Use this entry point in pm2 /
+# systemd config instead of `hermes gateway run`.
+hermes-taskboard-bridge = "hermes_taskboard_bridge.entry:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hermes_taskboard_bridge = ["py.typed"]

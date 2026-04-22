@@ -27,3 +27,6 @@ vendor/
 .claude/
 .cc-connect/
 config.example.yaml
+/pluginprobe
+plugin/src/**/__pycache__/
+plugin/src/**/*.egg-info/
