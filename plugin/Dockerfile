@@ -25,7 +25,14 @@ LABEL org.opencontainers.image.title="hermes-taskboard-bridge" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.description="Hermes gateway + taskboard WebSocket bridge, patched in-memory at startup."
 
-ARG HERMES_AGENT_VERSION=""
+# hermes-agent is not published to PyPI; we install it from the upstream
+# git repo. Pin to a release tag for reproducible builds:
+#   docker build --build-arg HERMES_AGENT_REF=v0.9.0 ...
+# Leave empty to take the default branch (only do that locally while
+# testing; shipping :latest against a moving target will bite you).
+ARG HERMES_AGENT_REPO=https://github.com/NousResearch/hermes-agent.git
+ARG HERMES_AGENT_REF=""
+
 # Debian slim lacks git, build-essential, and a couple of C-ext deps Hermes
 # needs (e.g. for the feishu adapter's crypto). Install, then prune.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -41,13 +48,15 @@ USER hermes
 ENV PATH="/home/hermes/.local/bin:${PATH}"
 WORKDIR /home/hermes
 
-# Install hermes-agent + our bridge plugin. The plugin's entry point,
+# Install hermes-agent from git. The plugin's entry point,
 # `hermes-taskboard-bridge`, is what we run instead of `hermes gateway run`.
-# Pin hermes-agent to a known version when HERMES_AGENT_VERSION is set; the
-# default (empty) pulls the latest from PyPI.
-RUN pip install --user --no-cache-dir \
-      "hermes-agent${HERMES_AGENT_VERSION:+==}${HERMES_AGENT_VERSION}" \
-    || pip install --user --no-cache-dir hermes-agent
+RUN if [ -n "${HERMES_AGENT_REF}" ]; then \
+        pip install --user --no-cache-dir \
+            "git+${HERMES_AGENT_REPO}@${HERMES_AGENT_REF}"; \
+    else \
+        pip install --user --no-cache-dir \
+            "git+${HERMES_AGENT_REPO}"; \
+    fi
 
 # Our bridge package is copied into the image as a wheel (built on the host
 # with `python -m build` from plugin/) so we don't depend on PyPI for it yet.
