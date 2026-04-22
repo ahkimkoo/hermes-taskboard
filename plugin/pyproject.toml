@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-taskboard-bridge"
-version = "0.1.1"
+version = "0.1.4"
 description = "Platform bridge that lets hermes-taskboard own Hermes sessions over WebSocket, decoupled from the HTTP client lifecycle."
 readme = "README.md"
 requires-python = ">=3.10"

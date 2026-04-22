@@ -14,5 +14,5 @@ from __future__ import annotations
 
 from .runtime import apply_patches
 
-__version__ = "0.1.1"
+__version__ = "0.1.4"
 __all__ = ["apply_patches", "__version__"]

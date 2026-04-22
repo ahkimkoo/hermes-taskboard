@@ -80,11 +80,15 @@ def build_adapter_class():
     class TaskboardBridgeAdapter(BasePlatformAdapter):
         """Bridge Hermes sessions to an external taskboard WS server."""
 
-        # Tell Hermes's stream_consumer that we accept edit_message calls.
-        # That unlocks token-level streaming: the agent's partial output is
-        # sent via repeated edits to the same message_id, finalised with a
-        # send() when the turn completes.
-        SUPPORTS_MESSAGE_EDITING = True
+        # Opt out of Hermes's stream_consumer until our runner has a proper
+        # turn-finish signal to wait on. With this False, send() gets called
+        # exactly once per turn with the final assistant content — cleanly
+        # translating to one agent_done frame on our side. Enabling streaming
+        # (set True + wire a finish callback) is tracked as a follow-up;
+        # doing it half-way causes turn truncation because send() fires on
+        # the first partial chunk while the actual completion sits in later
+        # edit_message calls.
+        SUPPORTS_MESSAGE_EDITING = False
 
         def __init__(self, config: PlatformConfig):
             super().__init__(config, Platform.TASKBOARD)  # type: ignore[attr-defined]
@@ -171,6 +175,7 @@ def build_adapter_class():
             metadata: Optional[Dict[str, Any]] = None,
         ) -> SendResult:
             """Hermes calls this with assistant output. Push it to taskboard."""
+            content = _strip_stream_cursor(content)
             self._seq += 1
             event = {
                 "type": "agent_event",
@@ -219,6 +224,7 @@ def build_adapter_class():
             stream_consumer calls this as the model produces tokens when
             streaming is enabled in the Hermes streaming config + the
             model provider actually returns SSE deltas."""
+            content = _strip_stream_cursor(content)
             self._seq += 1
             frame = {
                 "type": "agent_event",
@@ -327,7 +333,7 @@ def build_adapter_class():
                 {
                     "type": "hello_ack",
                     "gateway_version": os.getenv("HERMES_VERSION", "unknown"),
-                    "plugin_version": "0.1.0",
+                    "plugin_version": _package_version(),
                     "hermes_id": self._hermes_id,
                     "hostname": self._hostname,
                     "client_id": self._client_id,
@@ -413,6 +419,37 @@ def build_adapter_class():
             buf.append(frame)
 
     return TaskboardBridgeAdapter
+
+
+def _strip_stream_cursor(text: str) -> str:
+    """Remove Hermes's streaming cursor from outbound content.
+
+    Hermes's GatewayStreamConsumer appends a cursor character (default
+    " ▉") to partial / in-flight assistant content to show "still typing"
+    in chat UIs. That cursor sometimes leaks into send() when the
+    consumer's final flush races with the agent's end-of-turn — we
+    receive `"…the answer ▉"` instead of the clean final. Strip trailing
+    cursor and trailing whitespace; leave the rest untouched.
+    """
+    if not text:
+        return text
+    # The cursor itself and a couple of close variants (space + box,
+    # just box, plus the common "full block / right-half-block" codepoints).
+    for cursor in (" ▉", "▉", " ▌", "▌", " █", "█"):
+        if text.endswith(cursor):
+            return text[: -len(cursor)].rstrip()
+    return text.rstrip(" ▉▌█")
+
+
+def _package_version() -> str:
+    """Best-effort version string; falls back to 'dev' outside an installed
+    package (e.g. when running from a source checkout without metadata)."""
+    try:
+        from importlib.metadata import version
+        return version("hermes-taskboard-bridge")
+    except Exception:
+        from . import __version__ as fallback
+        return fallback
 
 
 def _json_default(obj: Any) -> Any:
