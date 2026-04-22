@@ -35,21 +35,46 @@ Or from a local source clone (for development):
 pip install -e ./plugin
 ```
 
-Then swap the pm2 / systemd command from:
+Then hook the bridge into whatever launches Hermes:
+
+**pm2 / foreground / Docker** — replace the command:
 
     hermes gateway run
 
-to:
+with:
 
     hermes-taskboard-bridge run
-
-Example `pm2 restart` flow:
 
 ```bash
 pm2 delete hermes
 pm2 start "hermes-taskboard-bridge run" --name hermes
 pm2 save
 ```
+
+**systemd (`hermes gateway start`)** — Hermes writes a unit at
+`~/.config/systemd/user/hermes-agent.service` whose `ExecStart=` line
+calls the gateway directly. One command rewrites that line to go
+through the bridge (original line backed up to `.bak-bridge`):
+
+```bash
+hermes-taskboard-bridge install-service     # --system for /etc/...
+hermes gateway restart                       # or: systemctl --user restart hermes-agent
+```
+
+Undo anytime:
+
+```bash
+hermes-taskboard-bridge uninstall-service
+hermes gateway restart
+```
+
+After patching, the usual `hermes gateway start | stop | restart |
+status` commands keep working unchanged — systemd just now invokes
+the bridge which then invokes `start_gateway()`.
+
+**launchd (macOS)** — automated patching not implemented; see the
+manual edit notes printed by `hermes-taskboard-bridge install-service`
+on macOS.
 
 ## Configure
 
