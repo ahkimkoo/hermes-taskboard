@@ -92,29 +92,60 @@ On first visit, click **⚙ Settings → Hermes Servers → New server**, point 
 
 ### Set up Hermes for this board
 
-The Hermes gateway ships an OpenAI-compatible HTTP API on port **8642**. Full upstream reference: **[Hermes API Server docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)**.
+Taskboard talks to Hermes over one of **two transports**. Pick either (or both for different hosts).
 
-Enable it one of three ways:
+#### 🌐 HTTP — `api_server`
 
-- **Environment variables** (quick and dirty):
-  ```bash
-  API_SERVER_ENABLED=true \
-  API_SERVER_KEY=choose-a-strong-key \
-  API_SERVER_PORT=8642 \
-  API_SERVER_HOST=127.0.0.1 \
-    hermes gateway run
-  ```
-- **`~/.hermes/.env`** (persistent): put the same four lines there.
-- **`~/.hermes/config.yaml` → `platforms.api_server`** — see the [API Server docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server) for every supported field.
+Taskboard → Hermes over Hermes's OpenAI-compatible HTTP API. Full upstream reference: **[Hermes API Server docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)**.
 
-Sanity check:
+Enable it on the Hermes host:
+
+```bash
+# in ~/.hermes/.env:
+API_SERVER_ENABLED=true
+API_SERVER_KEY=choose-a-strong-key
+API_SERVER_HOST=0.0.0.0
+API_SERVER_PORT=8642
+```
+
+Then `hermes gateway restart`. Sanity check:
 
 ```bash
 curl -H "Authorization: Bearer your-strong-key" http://127.0.0.1:8642/health/detailed
-curl -H "Authorization: Bearer your-strong-key" http://127.0.0.1:8642/v1/models
 ```
 
-If you want other machines on your LAN to reach the API, set `API_SERVER_HOST=0.0.0.0` **and** use a key of at least 8 characters — Hermes refuses to bind network interfaces without one.
+In taskboard: Settings → Hermes Servers → **+ 🌐 HTTP server**, fill base URL + API key, save.
+
+**Caveat**: Hermes's api_server explicitly aborts the agent run when the SSE client disconnects. Long-running tasks die with the client connection. If that's a problem for you, use the plugin path below.
+
+#### 🔌 Plugin — `hermes-taskboard-bridge`
+
+Hermes → taskboard. A small Python package runs inside Hermes and dials into taskboard's WebSocket. Session state lives entirely in Hermes — the agent keeps running even when taskboard is offline; on reconnect the buffered events replay.
+
+On the Hermes host:
+
+```bash
+pip install hermes-taskboard-bridge            # into Hermes's venv
+
+# in ~/.hermes/.env:
+TASKBOARD_WS_URL=ws://<taskboard-host>:1900/api/plugin/ws
+TASKBOARD_HERMES_ID=<short-name>                # optional, defaults to hostname
+
+# swap the start command (pick one):
+hermes-taskboard-bridge install-service         # if Hermes is under systemd
+#   or
+pm2 start "hermes-taskboard-bridge run" --name hermes
+#   or just run it foreground instead of `hermes gateway run`
+
+hermes gateway restart   # or equivalent for your setup
+hermes-taskboard-bridge doctor   # sanity check
+```
+
+In taskboard: nothing. The plugin auto-registers under its `hermes_id` and appears in Settings → Hermes Servers as an auto-registered entry. Pre-register with **+ 🔌 Plugin server** only if you want a friendly name or custom concurrency.
+
+#### Let Hermes do the setup
+
+Both forms in Settings → Hermes Servers include a **Copy prompt to Hermes** button — it generates a ready-to-paste prompt that tells Hermes exactly what to edit and which commands to run on its own host. Paste into any running Hermes chat and it'll walk itself through the steps.
 
 ### Build from source
 
@@ -288,29 +319,60 @@ API_SERVER_ENABLED=true API_SERVER_KEY=你的强密钥 hermes gateway run
 
 ### Hermes 侧配置
 
-Hermes 自带的 gateway 提供了一个 OpenAI 兼容的 HTTP API，默认端口 **8642**。完整的上游文档：**[Hermes API Server 官方文档](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)**。
+taskboard 可以用**两种 transport** 对接 Hermes。两种都能用（不同主机走不同 transport 也可以）。
 
-开启方式三选一：
+#### 🌐 HTTP — `api_server`
 
-- **环境变量（临时使用）**：
-  ```bash
-  API_SERVER_ENABLED=true \
-  API_SERVER_KEY=一个至少 8 位的强密钥 \
-  API_SERVER_PORT=8642 \
-  API_SERVER_HOST=127.0.0.1 \
-    hermes gateway run
-  ```
-- **`~/.hermes/.env`（持久化）**：把上面四行写进去即可。
-- **`~/.hermes/config.yaml` 的 `platforms.api_server` 段**：所有可配置字段详见 [API Server 官方文档](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)。
+taskboard → Hermes，走 Hermes 自带的 OpenAI 兼容 HTTP API。上游文档：**[Hermes API Server 官方文档](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)**。
 
-验证：
+在 Hermes 主机上：
 
 ```bash
-curl -H "Authorization: Bearer 你的强密钥" http://127.0.0.1:8642/health/detailed
-curl -H "Authorization: Bearer 你的强密钥" http://127.0.0.1:8642/v1/models
+# ~/.hermes/.env 里:
+API_SERVER_ENABLED=true
+API_SERVER_KEY=一个至少 8 位的强密钥
+API_SERVER_HOST=0.0.0.0
+API_SERVER_PORT=8642
 ```
 
-如果需要局域网里其他机器也能访问，把 host 改成 `0.0.0.0`，并且 `API_SERVER_KEY` 至少 8 位 —— Hermes 会拒绝"空密钥 + 公网绑定"这种危险组合。
+然后 `hermes gateway restart`。验证：
+
+```bash
+curl -H "Authorization: Bearer 你的密钥" http://127.0.0.1:8642/health/detailed
+```
+
+taskboard 侧：设置 → Hermes Servers → **+ 🌐 HTTP server**，填 base URL + API key，保存。
+
+**注意**：Hermes 的 api_server 在 SSE 客户端断开时会**强制 interrupt agent**，长任务会随客户端连接断掉。需要长跑的活用下面的 plugin 模式。
+
+#### 🔌 Plugin — `hermes-taskboard-bridge`
+
+Hermes → taskboard。一个小 Python 包运行在 Hermes 里，主动拨到 taskboard 的 WebSocket。会话在 Hermes 里持有 —— agent 在 taskboard 断连期间继续跑，重连后缓冲事件回放。
+
+在 Hermes 主机上：
+
+```bash
+pip install hermes-taskboard-bridge            # 装进 Hermes 的 venv
+
+# ~/.hermes/.env 里:
+TASKBOARD_WS_URL=ws://<taskboard-主机>:1900/api/plugin/ws
+TASKBOARD_HERMES_ID=<简短名>                    # 可选，默认用 hostname
+
+# 换启动命令（三选一）:
+hermes-taskboard-bridge install-service         # Hermes 是 systemd 管的
+#   或
+pm2 start "hermes-taskboard-bridge run" --name hermes
+#   或前台直接用 `hermes-taskboard-bridge run` 替代 `hermes gateway run`
+
+hermes gateway restart                          # 重启
+hermes-taskboard-bridge doctor                  # 自检
+```
+
+taskboard 侧：**什么都不用做**。插件连上后按 `hermes_id` 自动登记，设置 → Hermes Servers 里会显示成 auto-registered 条目。**+ 🔌 Plugin server** 按钮只有在你想起个友好名或改并发上限时才需要。
+
+#### 让 Hermes 自己干活
+
+设置 → Hermes Servers 里两种表单都有「复制 Prompt」按钮 —— 点一下把操作指令生成好，贴到任何运行中的 Hermes 对话里，Hermes 会自己把上述步骤走完。适合你手头 Hermes 有 `terminal` 工具但你懒得打命令的情况。
 
 ### 从源码构建
 

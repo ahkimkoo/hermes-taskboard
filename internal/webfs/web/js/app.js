@@ -883,34 +883,30 @@ const SettingsModal = {
                     </tr>
                   </tbody>
                 </table>
-                <button class="primary" @click="editServerInit(null)" style="margin-top:10px">+ {{ $t('action.new_server') }}</button>
+                <div style="display:flex;gap:10px;margin-top:10px">
+                  <button class="primary" @click="editServerInit(null, 'http')">+ 🌐 HTTP server</button>
+                  <button class="primary" @click="editServerInit(null, 'plugin')">+ 🔌 Plugin server</button>
+                </div>
 
-                <div v-if="editServer" class="server-edit">
-                  <h4>{{ editServer.__edit ? $t('action.edit_server') : $t('action.new_server') }}</h4>
-                  <div class="form-row"><label>ID</label><input type="text" v-model="editServer.id" :disabled="editServer.__edit"></div>
-                  <div class="form-row"><label>{{ $t('th.name') }}</label><input type="text" v-model="editServer.name"></div>
-                  <div class="form-row">
-                    <label>Transport</label>
-                    <select v-model="editServer.transport">
-                      <option value="http">🌐 HTTP — taskboard dials Hermes's /v1/responses</option>
-                      <option value="plugin">🔌 Plugin — Hermes plugin dials taskboard's /api/plugin/ws</option>
-                    </select>
-                  </div>
-                  <template v-if="(editServer.transport || 'http') === 'http'">
-                    <div class="form-row"><label>{{ $t('th.base_url') }}</label><input type="text" v-model="editServer.base_url"></div>
-                    <div class="form-row"><label>API Key (Hermes <code>API_SERVER_KEY</code>)</label><input type="password" v-model="editServer.api_key" :placeholder="$t('field.api_key_placeholder')"></div>
-                  </template>
-                  <div v-else class="helper" style="margin:8px 0 12px">
-                    Plugin transport: the Hermes host runs the
-                    <code>hermes-taskboard-bridge</code> pip package and dials
-                    into this taskboard. No URL or API key needed; identity
-                    is the plugin's <code>TASKBOARD_HERMES_ID</code> env var
-                    (or its machine hostname). The ID above must match.
-                  </div>
+                <!-- HTTP server form ------------------------------------- -->
+                <div v-if="editServer && editServer.transport === 'http'" class="server-edit http-edit">
+                  <h4>🌐 {{ editServer.__edit ? 'Edit HTTP server' : 'New HTTP server' }}</h4>
+                  <p class="helper">
+                    <strong>Direction</strong>: taskboard → Hermes. Taskboard POSTs
+                    to <code>{base_url}/v1/responses</code> and consumes an SSE
+                    stream. The Hermes side exposes its OpenAI-compatible api_server
+                    on port 8642 (or whatever you configured).
+                    <strong>Tradeoff</strong>: simple, works through HTTP proxies;
+                    but a taskboard disconnect aborts the in-flight run.
+                  </p>
+                  <div class="form-row"><label>ID</label><input type="text" v-model="editServer.id" :disabled="editServer.__edit" placeholder="e.g. prod-laptop"></div>
+                  <div class="form-row"><label>{{ $t('th.name') }}</label><input type="text" v-model="editServer.name" placeholder="friendly label"></div>
+                  <div class="form-row"><label>{{ $t('th.base_url') }}</label><input type="text" v-model="editServer.base_url" placeholder="http://127.0.0.1:8642"></div>
+                  <div class="form-row"><label>API Key (Hermes <code>API_SERVER_KEY</code>)</label><input type="password" v-model="editServer.api_key" :placeholder="$t('field.api_key_placeholder')"></div>
                   <div class="form-row"><label>{{ $t('settings.max_concurrent_server') }}</label><input type="number" v-model.number="editServer.max_concurrent"></div>
                   <div class="form-row"><label><input type="checkbox" v-model="editServer.is_default"> {{ $t('settings.default_server') }}</label></div>
 
-                  <h4>{{ $t('settings.models_title') }}</h4>
+                  <h5 style="margin-top:16px">{{ $t('settings.models_title') }}</h5>
                   <p class="helper">{{ $t('settings.models_helper') }}</p>
                   <table class="tbl">
                     <thead><tr><th>{{ $t('th.name') }}</th><th>{{ $t('th.default') }}</th><th>{{ $t('settings.max_concurrent_profile') }}</th><th></th></tr></thead>
@@ -924,6 +920,90 @@ const SettingsModal = {
                     </tbody>
                   </table>
                   <button @click="editServer.models.push({ name: '', max_concurrent: 5 })">+ {{ $t('settings.add_profile') }}</button>
+
+                  <details class="setup-guide" open style="margin-top:16px">
+                    <summary><strong>🛠 How to set this up on the Hermes side</strong></summary>
+                    <p class="helper">On the machine running Hermes, do one of the two below.</p>
+                    <h5>A. Do it yourself (manual)</h5>
+                    <ol>
+                      <li>Generate an API key: <code>openssl rand -hex 20</code></li>
+                      <li>Add to <code>~/.hermes/.env</code>:
+                        <pre>API_SERVER_ENABLED=true
+API_SERVER_KEY=&lt;the key above&gt;
+API_SERVER_HOST=0.0.0.0
+API_SERVER_PORT=8642</pre>
+                      </li>
+                      <li>Restart Hermes: <code>hermes gateway restart</code></li>
+                      <li>Check: <code>curl http://127.0.0.1:8642/health</code> → <code>{"status":"ok"}</code></li>
+                      <li>Back here, fill <strong>Base URL</strong> = <code>http://&lt;hermes-host&gt;:8642</code> and <strong>API Key</strong> = the key you generated. Save.</li>
+                    </ol>
+                    <h5>B. Let Hermes do it (paste this into any running Hermes chat)</h5>
+                    <div class="copy-block">
+                      <button class="copy-btn" @click="copyPrompt('http')">📋 Copy prompt</button>
+                      <pre ref="promptHTTP">{{ hermesPromptHTTP() }}</pre>
+                    </div>
+                  </details>
+
+                  <div class="edit-actions">
+                    <button @click="editServer = null">{{ $t('action.cancel') }}</button>
+                    <button class="primary" @click="saveServer">{{ $t('action.save') }}</button>
+                  </div>
+                </div>
+
+                <!-- Plugin server form ------------------------------------ -->
+                <div v-if="editServer && editServer.transport === 'plugin'" class="server-edit plugin-edit">
+                  <h4>🔌 {{ editServer.__edit ? 'Edit Plugin server' : 'New Plugin server' }}</h4>
+                  <p class="helper">
+                    <strong>Direction</strong>: Hermes → taskboard. A small Python
+                    package <code>hermes-taskboard-bridge</code> runs inside Hermes
+                    and dials into <code>/api/plugin/ws</code> on this taskboard.
+                    <strong>Tradeoff</strong>: session lives inside Hermes, so
+                    taskboard disconnects don't abort the run; needs pip install
+                    + one startup-command change on the Hermes side.
+                    <br><br>
+                    <strong>Tip</strong>: you don't have to pre-register here. Just
+                    install the plugin on Hermes and it auto-appears in the servers
+                    list under its hostname. Use this form only when you want a
+                    friendly name or custom concurrency.
+                  </p>
+                  <div class="form-row">
+                    <label>ID <span style="color:#f87171">*</span></label>
+                    <input type="text" v-model="editServer.id" :disabled="editServer.__edit" placeholder="must match plugin's TASKBOARD_HERMES_ID or hostname">
+                  </div>
+                  <div class="form-row"><label>{{ $t('th.name') }}</label><input type="text" v-model="editServer.name" placeholder="friendly label"></div>
+                  <div class="form-row"><label>{{ $t('settings.max_concurrent_server') }}</label><input type="number" v-model.number="editServer.max_concurrent"></div>
+                  <div class="form-row"><label><input type="checkbox" v-model="editServer.is_default"> {{ $t('settings.default_server') }}</label></div>
+
+                  <details class="setup-guide" open style="margin-top:16px">
+                    <summary><strong>🛠 How to set this up on the Hermes side</strong></summary>
+                    <p class="helper">On the machine running Hermes, do one of the two below.</p>
+                    <h5>A. Do it yourself (manual)</h5>
+                    <ol>
+                      <li>Install the plugin into Hermes's venv:
+                        <pre>pip install hermes-taskboard-bridge</pre>
+                        (if Hermes uses a venv, run its venv's pip, e.g. <code>~/.hermes/hermes-agent/venv/bin/pip</code>)
+                      </li>
+                      <li>Add to <code>~/.hermes/.env</code>:
+                        <pre>TASKBOARD_WS_URL=ws://{{ pluginWSHost() }}/api/plugin/ws
+TASKBOARD_HERMES_ID={{ editServer.id || '<the ID you entered above>' }}</pre>
+                      </li>
+                      <li>Swap the Hermes start command so it loads the bridge:
+                        <ul>
+                          <li>pm2: <code>pm2 delete hermes && pm2 start "hermes-taskboard-bridge run" --name hermes</code></li>
+                          <li>systemd: <code>hermes-taskboard-bridge install-service && hermes gateway restart</code></li>
+                          <li>foreground: run <code>hermes-taskboard-bridge run</code> instead of <code>hermes gateway run</code></li>
+                        </ul>
+                      </li>
+                      <li>Verify: <code>hermes-taskboard-bridge doctor</code> shows all ✓</li>
+                      <li>Back here — the plugin should appear as ● connected within a few seconds. Save.</li>
+                    </ol>
+                    <h5>B. Let Hermes do it (paste this into any running Hermes chat)</h5>
+                    <div class="copy-block">
+                      <button class="copy-btn" @click="copyPrompt('plugin')">📋 Copy prompt</button>
+                      <pre ref="promptPlugin">{{ hermesPromptPlugin() }}</pre>
+                    </div>
+                  </details>
+
                   <div class="edit-actions">
                     <button @click="editServer = null">{{ $t('action.cancel') }}</button>
                     <button class="primary" @click="saveServer">{{ $t('action.save') }}</button>
@@ -1117,12 +1197,19 @@ const SettingsModal = {
       // Restore real prefs after the short tone finishes (~0.3 s).
       setTimeout(() => setSoundPrefs(draft), 500);
     },
-    editServerInit(s) {
+    editServerInit(s, newTransport) {
       if (s) {
         this.editServer = {
           ...s, api_key: '', __edit: true,
           transport: s.transport || 'http',
           models: (s.models || []).map((m) => ({ ...m })),
+        };
+      } else if (newTransport === 'plugin') {
+        this.editServer = {
+          id: '', name: '', transport: 'plugin',
+          is_default: this.servers.length === 0,
+          max_concurrent: 5,
+          models: [],
         };
       } else {
         this.editServer = {
@@ -1130,6 +1217,55 @@ const SettingsModal = {
           api_key: '', is_default: this.servers.length === 0, max_concurrent: 10,
           models: [{ name: 'hermes-agent', is_default: true, max_concurrent: 5 }],
         };
+      }
+    },
+    pluginWSHost() {
+      // Best-effort: the URL Hermes should dial. `window.location.host`
+      // is the taskboard UI's own host — if the user opens taskboard on
+      // localhost it'll suggest 127.0.0.1:1900, which is almost always
+      // what they want. Cross-host setups can swap in the taskboard's
+      // LAN IP manually.
+      try { return window.location.host; } catch { return '127.0.0.1:1900'; }
+    },
+    hermesPromptHTTP() {
+      return `Help me enable Hermes's API server so that taskboard can reach this host.
+
+1. Generate a random API key: run \`openssl rand -hex 20\` and remember the output.
+2. Open ~/.hermes/.env and add (or update) these four lines:
+     API_SERVER_ENABLED=true
+     API_SERVER_KEY=<the key from step 1>
+     API_SERVER_HOST=0.0.0.0
+     API_SERVER_PORT=8642
+3. Restart Hermes: \`hermes gateway restart\` (or \`hermes gateway start\` if it wasn't running).
+4. Verify: \`curl -s http://127.0.0.1:8642/health\` should print \`{"status":"ok","platform":"hermes-agent"}\`.
+5. Report back: (a) the base URL other hosts can reach (e.g. http://<this-host-ip>:8642), and (b) the API key you generated. I'll paste them into taskboard.`;
+    },
+    hermesPromptPlugin() {
+      const host = this.pluginWSHost();
+      const id = (this.editServer && this.editServer.id) || '<leave blank to use hostname>';
+      return `Help me connect this Hermes to taskboard via the plugin bridge.
+
+1. Install the plugin into Hermes's Python environment:
+     pip install hermes-taskboard-bridge
+   (If Hermes lives in a venv, use its pip — e.g. ~/.hermes/hermes-agent/venv/bin/pip install hermes-taskboard-bridge)
+2. Open ~/.hermes/.env and add these two lines:
+     TASKBOARD_WS_URL=ws://${host}/api/plugin/ws
+     TASKBOARD_HERMES_ID=${id}
+   (Omit the second line to use this host's machine name — works fine unless there are multiple Hermes on one box.)
+3. Swap the Hermes startup command so it loads the bridge wrapper. Pick whichever matches how Hermes is managed:
+     - systemd (\`hermes gateway start\`):    \`hermes-taskboard-bridge install-service && hermes gateway restart\`
+     - pm2:                                   \`pm2 delete hermes && pm2 start "hermes-taskboard-bridge run" --name hermes && pm2 save\`
+     - foreground shell / docker:             run \`hermes-taskboard-bridge run\` instead of \`hermes gateway run\`
+4. Verify: \`hermes-taskboard-bridge doctor\` should print all ✓ and echo the TASKBOARD_WS_URL you set.
+5. Report back whether the doctor command succeeded. Taskboard auto-registers the plugin — no further action needed on the taskboard side.`;
+    },
+    async copyPrompt(kind) {
+      const text = kind === 'plugin' ? this.hermesPromptPlugin() : this.hermesPromptHTTP();
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('Prompt copied — paste into Hermes chat.');
+      } catch (e) {
+        toast('Copy failed: ' + e.message, 'error');
       }
     },
     async saveServer() {
