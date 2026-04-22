@@ -3,6 +3,31 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-22 — v0.2.1 — Hermes plugin transport
+
+Second transport for reaching Hermes. The existing HTTP path (taskboard dials Hermes's `/v1/responses`) stays; a new **plugin transport** puts the direction in reverse: a small Python package runs inside Hermes and dials into taskboard. The hard pain the plugin path fixes — Hermes's built-in `api_server.py` calls `agent.interrupt()` and cancels the agent task the moment the SSE client disconnects (confirmed at `api_server.py:959`). Under HTTP, if taskboard drops for any reason the in-flight agent run dies with it; under the plugin, the session lives entirely inside Hermes and the WebSocket is just a control surface that can come and go.
+
+**How it works.** The plugin is `hermes-taskboard-bridge` on PyPI (no PyPI publish for hermes-agent itself, so the plugin installs alongside a local / git Hermes). At startup it runtime-patches five symbols inside Hermes — `gateway.config.Platform`, `GatewayRunner._create_adapter`, `_is_user_authorized`, `start`, and the `hermes_cli.platforms.PLATFORMS` dict — to register a new `Platform.TASKBOARD` and point it at a `TaskboardBridgeAdapter` that dials out on a WebSocket. No file on disk is modified; `doctor` dry-run verifies every patch target is present at startup or fails loudly with a clear message.
+
+Packaging: the plugin ships as a pip-installable wheel (`pip install hermes-taskboard-bridge`), a Docker sidecar image that bundles Hermes + plugin (`successage/hermes-taskboard-bridge:latest`), and source tarballs on the GitHub release. The pip package has its own `hermes-taskboard-bridge run` entry point that users drop into pm2/systemd in place of `hermes gateway run`; an `install-service` subcommand can also rewrite an existing systemd unit's `ExecStart=` line in place (backed up to `.bak-bridge`, reversible with `uninstall-service`) so the usual `hermes gateway start | stop | restart | status` commands continue to work unchanged. macOS launchd plist is not auto-patched; users get a printed manual-edit recipe.
+
+**Taskboard-side additions.**
+* New `hermes_servers[].transport: http | plugin` config field. Plugin-transport servers don't need `base_url` / `api_key`; the plugin identifies itself by a `hermes_id` (explicit `TASKBOARD_HERMES_ID` env override, else machine hostname). Plugins that announce a `hermes_id` not in config auto-register as transient `virtual: true` servers so "install the plugin on a new host, it shows up in taskboard" works with zero config edits.
+* `PluginServer` hosts the `/api/plugin/ws` endpoint and keeps per-`hermes_id` connections (one at a time; a second announcement evicts the first). Plugin connect/disconnect is broadcast on the board SSE topic as `plugin.connected` / `plugin.disconnected` so the servers list refreshes live without a page reload.
+* Runner branches on transport: `runOncePlugin` drives the session over the WS (`send_message`, `cancel`, `ack` frames) and translates inbound `agent_event` / `agent_done` / `agent_error` frames onto the same per-attempt event stream the HTTP path uses, so the frontend renders both transports identically.
+* Scheduler random assignment: when `task.preferred_server` is blank, `ResolveServerModelWithReachability` picks uniformly at random across reachable servers — HTTP servers always count, plugin servers only if their WS is currently connected — so tasks fan out across live Hermes hosts instead of stacking on a sticky default.
+* Cancel via Hermes's native path: a ctx-cancelled turn fires a `cancel` WS frame that the plugin injects as a synthetic `/stop` `MessageEvent`, triggering Hermes's busy-session interrupt. Replaces the HTTP cancel-race that forced us to add 404 self-heal in v0.2.0.
+* Server-edit UI is now transport-aware: the `base_url` / `api_key` fields collapse on plugin transport and are replaced with a note explaining the direction inversion; the list shows a 🌐/🔌 transport badge and a live `● connected` / `● offline` indicator for plugin rows.
+
+Verified end-to-end on a local Hermes install: plugin reconnects under 10 seconds after a pm2 restart, round-trip message via `POST /api/tasks/{id}/attempts` completes with the agent's reply, and taskboard can be killed mid-stream with Hermes continuing to write the assistant output to its session jsonl (62 KB delta observed over a 20-second outage window). On reconnect, the per-attempt ring buffer replays missed events.
+
+Known gap: token-level streaming to the UI is wired (`edit_message` emits `stream_update` frames) but disabled in this release — `SUPPORTS_MESSAGE_EDITING=False` on the adapter. Enabling it without a proper turn-finish signal truncated turns at the first partial chunk; re-enabling is tracked as a follow-up once we have a clean way to detect "turn complete" separately from "first `send()` call."
+
+Shipping artifacts:
+* Python plugin on PyPI: [`hermes-taskboard-bridge 0.1.4`](https://pypi.org/project/hermes-taskboard-bridge/0.1.4/)
+* Docker sidecar: `successage/hermes-taskboard-bridge:0.1.4` (+ `:latest`)
+* Research artifacts: `docs/research/hermes-plugin-feasibility.md` (architecture survey), `docs/research/plugin-prototype-plan.md` (go/no-go criteria that drove this work)
+
 ## 2026-04-21 — v0.2.0
 
 ### `previous_response_id` no longer 404s after the user hits Stop
