@@ -103,19 +103,112 @@ Click the gear icon in the top-right.
 
 ### 6.1 Hermes Servers
 
-Connections to Hermes Gateway instances.
+Taskboard reaches Hermes over one of **two transports**. You can mix them — different Hermes hosts on different transports in the same taskboard.
+
+| | 🌐 **HTTP** | 🔌 **Plugin** |
+|---|---|---|
+| Direction | taskboard → Hermes | Hermes → taskboard |
+| Hermes side | Enable `api_server` platform | Install `hermes-taskboard-bridge` pip package + change startup command |
+| taskboard side | Enter base URL + API key | Optionally pre-register by ID (else auto-register when plugin connects) |
+| Session survives if taskboard disconnects | ❌ `api_server` interrupts the run on SSE drop | ✅ Hermes owns the session; taskboard can come and go |
+| Cancel semantics | HTTP cancel (historic 404 class of bugs; now self-healed) | Hermes's native `/stop` interrupt |
+| When to pick which | Hermes on remote host behind HTTP proxy you don't control | Self-hosted Hermes on a machine where you can `pip install` |
+
+Both transports appear side-by-side in Settings → Hermes Servers. Two buttons, **+ 🌐 HTTP server** and **+ 🔌 Plugin server**, open distinct forms with inline ops guides (and a one-click "Copy prompt to Hermes" button — paste it into any Hermes chat and Hermes will do the setup itself).
+
+#### HTTP server fields
 
 - **ID / Name** — internal identifier + display label
-- **Base URL** — e.g. `http://127.0.0.1:8642` (local) or remote IP
-- **API Key** — Hermes API authentication; **encrypted at rest** with AEAD using the key in `data/db/.secret`
+- **Base URL** — e.g. `http://127.0.0.1:8642` (local) or remote IP + port
+- **API Key** — Hermes's `API_SERVER_KEY`; **encrypted at rest** with AEAD using the key in `data/db/.secret`
 - **Default server** — used when a task doesn't specify one
 - **Server max concurrent** — cap on simultaneous Attempts against this server
 - **Models (agent profiles)** — list of agent profiles the server offers
-  - **Name** — must match Hermes's agent profile name; default is `hermes-agent`
+  - **Name** — must match Hermes's agent profile; default is `hermes-agent`
   - **Default model** — server's internal default
-  - **Profile max concurrent** — secondary cap (server cap and profile cap stack)
+  - **Profile max concurrent** — secondary cap (server and profile stack)
 
-> If a server has no models configured, taskboard falls back to the literal string `"hermes-agent"` — Hermes's built-in default profile.
+> If a server has no models configured, taskboard falls back to `"hermes-agent"` — Hermes's built-in default.
+
+**Hermes-side setup (manual):**
+
+```bash
+# 1. Generate an API key
+openssl rand -hex 20
+# 2. Add to ~/.hermes/.env
+#    API_SERVER_ENABLED=true
+#    API_SERVER_KEY=<the key>
+#    API_SERVER_HOST=0.0.0.0
+#    API_SERVER_PORT=8642
+# 3. Restart
+hermes gateway restart
+# 4. Verify
+curl -s http://127.0.0.1:8642/health    # -> {"status":"ok","platform":"hermes-agent"}
+```
+
+**Hermes-side setup (tell Hermes to do it)** — paste this prompt into any running Hermes chat session:
+
+```
+Help me enable Hermes's API server so that taskboard can reach this host.
+
+1. Generate a random API key: run `openssl rand -hex 20` and remember the output.
+2. Open ~/.hermes/.env and add (or update) these four lines:
+     API_SERVER_ENABLED=true
+     API_SERVER_KEY=<the key from step 1>
+     API_SERVER_HOST=0.0.0.0
+     API_SERVER_PORT=8642
+3. Restart Hermes: `hermes gateway restart` (or `hermes gateway start` if it wasn't running).
+4. Verify: `curl -s http://127.0.0.1:8642/health` should print `{"status":"ok","platform":"hermes-agent"}`.
+5. Report back: (a) the base URL other hosts can reach (e.g. http://<this-host-ip>:8642), and (b) the API key you generated. I'll paste them into taskboard.
+```
+
+#### Plugin server fields
+
+- **ID** — must match what the plugin announces: either `TASKBOARD_HERMES_ID` env var on the Hermes side, or (if unset) that host's machine hostname. **You don't have to pre-register** — plugins that connect with an unknown ID appear automatically in the servers list as "auto-registered" entries.
+- **Name** — friendly label; optional
+- **Default server** — used when a task doesn't specify one
+- **Server max concurrent** — cap on simultaneous Attempts (defaults to 5)
+
+No base URL or API key — the plugin dials us, not the other way around. Authentication is an optional shared secret (`TASKBOARD_PLUGIN_TOKEN`); not required on single-machine setups.
+
+**Hermes-side setup (manual):**
+
+```bash
+# 1. Install the plugin (into Hermes's venv, if any)
+pip install hermes-taskboard-bridge
+# 2. Add to ~/.hermes/.env
+#    TASKBOARD_WS_URL=ws://<taskboard-host>:1900/api/plugin/ws
+#    TASKBOARD_HERMES_ID=<short-name>    (optional; defaults to hostname)
+# 3. Swap the startup command — pick the one that matches your setup:
+#    systemd:     hermes-taskboard-bridge install-service && hermes gateway restart
+#    pm2:         pm2 delete hermes && pm2 start "hermes-taskboard-bridge run" --name hermes && pm2 save
+#    foreground:  run `hermes-taskboard-bridge run` instead of `hermes gateway run`
+# 4. Verify
+hermes-taskboard-bridge doctor
+```
+
+The plugin auto-registers on first connect; no further action needed in taskboard unless you want to set a friendly name or concurrency cap.
+
+**Hermes-side setup (tell Hermes to do it):**
+
+```
+Help me connect this Hermes to taskboard via the plugin bridge.
+
+1. Install the plugin into Hermes's Python environment:
+     pip install hermes-taskboard-bridge
+   (If Hermes lives in a venv, use its pip — e.g. ~/.hermes/hermes-agent/venv/bin/pip install hermes-taskboard-bridge)
+2. Open ~/.hermes/.env and add these two lines:
+     TASKBOARD_WS_URL=ws://<TASKBOARD_HOST>:1900/api/plugin/ws
+     TASKBOARD_HERMES_ID=<a short name for this host; leave blank to use hostname>
+3. Swap the Hermes startup command so it loads the bridge wrapper. Pick whichever matches how Hermes is managed:
+     - systemd (`hermes gateway start`):    `hermes-taskboard-bridge install-service && hermes gateway restart`
+     - pm2:                                  `pm2 delete hermes && pm2 start "hermes-taskboard-bridge run" --name hermes && pm2 save`
+     - foreground shell / docker:            run `hermes-taskboard-bridge run` instead of `hermes gateway run`
+4. Verify: `hermes-taskboard-bridge doctor` should print all ✓ and echo the TASKBOARD_WS_URL you set.
+5. Report back whether the doctor command succeeded. Taskboard auto-registers the plugin — no further action needed on the taskboard side.
+```
+
+Replace `<TASKBOARD_HOST>` with the hostname/IP of this taskboard (e.g. `127.0.0.1` if Hermes and taskboard run on the same box).
 
 ### 6.2 Tags
 

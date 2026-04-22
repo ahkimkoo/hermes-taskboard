@@ -101,19 +101,112 @@ Attempt 跑起来后:
 
 ### 6.1 Hermes Servers
 
-注册到 Hermes Gateway 的连接。
+taskboard 用**两种 transport** 对接 Hermes。可以混用 —— 同一台 taskboard 上不同 Hermes 走不同 transport 都行。
+
+| | 🌐 **HTTP** | 🔌 **Plugin** |
+|---|---|---|
+| 方向 | taskboard → Hermes | Hermes → taskboard |
+| Hermes 端改什么 | 打开 `api_server` 平台 | 装 `hermes-taskboard-bridge` pip 包 + 换启动命令 |
+| taskboard 端填什么 | 填 base URL + API key | 选填 ID 预登记(或插件连上后自动登记) |
+| 客户端断连后任务是否存活 | ❌ `api_server` SSE 断了就 interrupt agent | ✅ Hermes 持有 session,客户端来去自由 |
+| Cancel 怎么走 | HTTP cancel(以前有一类 404 bug,已自愈) | Hermes 原生 `/stop` 中断 |
+| 什么时候选哪种 | Hermes 在远程,过 HTTP 代理你改不了 | 自己控制的 Hermes 主机,能装 pip | |
+
+设置 → Hermes Servers 里两种方式并排,两个按钮:**+ 🌐 HTTP server** 和 **+ 🔌 Plugin server**,各开一个表单,内嵌**对接操作指引** + 一键「复制让 Hermes 自己干」的 Prompt。
+
+#### HTTP server 字段
 
 - **ID / 名称** — 内部标识符 + 显示名
-- **Base URL** — 例如 `http://127.0.0.1:8642`(本机)或远程 IP
-- **API Key** — Hermes API 鉴权,**保存时本地用 AEAD 加密**(`data/db/.secret` 是密钥)
-- **作为默认 Server** — 任务没指定 server 时用这个
-- **Server 级最大并发** — 这个 server 同时跑多少 attempt
-- **Models (agent profile)**:server 下面的 agent profile 列表
-  - **名称** — 必须和 Hermes 里的 agent profile 名字对应,默认 `hermes-agent`
+- **Base URL** — 例如 `http://127.0.0.1:8642`(本机)或远程 IP+端口
+- **API Key** — Hermes 的 `API_SERVER_KEY`,**保存时 AEAD 加密**,密钥在 `data/db/.secret`
+- **作为默认 server** — 任务没指定 server 时用
+- **server 级最大并发** — 这台同时跑多少 attempt
+- **Models(agent profile)**:
+  - **名称** — 必须和 Hermes 里的 agent profile 对应,默认 `hermes-agent`
   - **作为默认 model** — server 内部默认
-  - **profile 级最大并发** — 这个 profile 同时跑多少 attempt(和 server 级是双重限制)
+  - **profile 级最大并发** — 和 server 级双重限制
 
-> 没配 model 时 taskboard 会自动 fallback 到 `"hermes-agent"`(Hermes 自带的默认 profile)。
+> 没配 model 时 taskboard fallback 到 `"hermes-agent"`(Hermes 内置默认 profile)。
+
+**Hermes 端配置(手工):**
+
+```bash
+# 1. 生成 API key
+openssl rand -hex 20
+# 2. 加到 ~/.hermes/.env
+#    API_SERVER_ENABLED=true
+#    API_SERVER_KEY=<刚才生成的 key>
+#    API_SERVER_HOST=0.0.0.0
+#    API_SERVER_PORT=8642
+# 3. 重启
+hermes gateway restart
+# 4. 验证
+curl -s http://127.0.0.1:8642/health    # -> {"status":"ok","platform":"hermes-agent"}
+```
+
+**Hermes 端配置(让 Hermes 自己干)** —— 把下面这段贴到任意 Hermes 对话里:
+
+```
+帮我在这台 Hermes 上打开 API server,让 taskboard 能连过来。
+
+1. 生成随机 API key:运行 `openssl rand -hex 20`,记下输出。
+2. 编辑 ~/.hermes/.env,加上(或更新)这四行:
+     API_SERVER_ENABLED=true
+     API_SERVER_KEY=<第 1 步的 key>
+     API_SERVER_HOST=0.0.0.0
+     API_SERVER_PORT=8642
+3. 重启 Hermes:`hermes gateway restart`(没起过就 `hermes gateway start`)。
+4. 验证:`curl -s http://127.0.0.1:8642/health` 应该返回 `{"status":"ok","platform":"hermes-agent"}`。
+5. 告诉我:(a) 别的主机能访问到的 base URL(如 http://<本机 IP>:8642),(b) 你生成的 API key。我把它们填进 taskboard。
+```
+
+#### Plugin server 字段
+
+- **ID** — 必须和插件声明的一致:Hermes 端的 `TASKBOARD_HERMES_ID` 环境变量;没设就是该主机的 hostname。**不用预登记** —— 插件连上时如果 ID 没在配置里,会自动出现在服务器列表里标为「auto-registered」。
+- **名称** — 显示名;可选
+- **作为默认 server** — 任务没指定 server 时用
+- **server 级最大并发** — 默认 5
+
+没有 Base URL / API Key —— 是插件主动拨我们,不是反过来。可选用共享 token(`TASKBOARD_PLUGIN_TOKEN`)做鉴权,单机环境不必要。
+
+**Hermes 端配置(手工):**
+
+```bash
+# 1. 装插件(在 Hermes 的 venv 里)
+pip install hermes-taskboard-bridge
+# 2. 加到 ~/.hermes/.env
+#    TASKBOARD_WS_URL=ws://<taskboard-host>:1900/api/plugin/ws
+#    TASKBOARD_HERMES_ID=<简短名>    (可选,默认用 hostname)
+# 3. 改启动命令 —— 三选一,看你怎么管 Hermes:
+#    systemd:    hermes-taskboard-bridge install-service && hermes gateway restart
+#    pm2:        pm2 delete hermes && pm2 start "hermes-taskboard-bridge run" --name hermes && pm2 save
+#    前台:      用 `hermes-taskboard-bridge run` 替代 `hermes gateway run`
+# 4. 自检
+hermes-taskboard-bridge doctor
+```
+
+插件连上后自动登记,不需要在 taskboard 里预先配条目(除非你想给它起个友好名或改并发上限)。
+
+**Hermes 端配置(让 Hermes 自己干):**
+
+```
+帮我在这台 Hermes 上通过 plugin bridge 连接 taskboard。
+
+1. 把插件装进 Hermes 的 Python 环境:
+     pip install hermes-taskboard-bridge
+   (如果 Hermes 用了 venv,得用 venv 里的 pip,比如 ~/.hermes/hermes-agent/venv/bin/pip install hermes-taskboard-bridge)
+2. 编辑 ~/.hermes/.env,加这两行:
+     TASKBOARD_WS_URL=ws://<TASKBOARD_HOST>:1900/api/plugin/ws
+     TASKBOARD_HERMES_ID=<这台 Hermes 的简短名;不填就用 hostname>
+3. 把 Hermes 启动命令换成走 bridge wrapper,根据你的管理方式三选一:
+     - systemd(`hermes gateway start` 管的):`hermes-taskboard-bridge install-service && hermes gateway restart`
+     - pm2:`pm2 delete hermes && pm2 start "hermes-taskboard-bridge run" --name hermes && pm2 save`
+     - 前台/docker:用 `hermes-taskboard-bridge run` 替换 `hermes gateway run`
+4. 自检:`hermes-taskboard-bridge doctor` 应该全是 ✓,并且回显 TASKBOARD_WS_URL。
+5. 告诉我 doctor 是否成功。taskboard 会自动登记插件,不需要额外动作。
+```
+
+把 `<TASKBOARD_HOST>` 替换成 taskboard 的主机名/IP(同一台机器就是 `127.0.0.1`)。
 
 ### 6.2 标签
 
