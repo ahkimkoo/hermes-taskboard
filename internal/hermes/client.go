@@ -318,48 +318,96 @@ func consumeSSE(ctx context.Context, body io.Reader, out chan<- Event) error {
 // ---------------- Pool ----------------
 
 // Pool routes requests by server_id; rebuilds on config reload.
+//
+// Servers have two possible transports:
+//   - "http": taskboard holds a *Client and talks to Hermes's HTTP API.
+//   - "plugin": taskboard *has no Client for them*. Instead a plugin
+//     running inside Hermes dials into taskboard's WebSocket. Pool still
+//     tracks the ID so callers can ask `Transport(id)` and branch.
 type Pool struct {
-	mu      sync.RWMutex
-	clients map[string]*Client
-	defID   string
+	mu         sync.RWMutex
+	clients    map[string]*Client
+	transports map[string]string // id → "http" | "plugin"
+	defID      string
 }
 
-func NewPool() *Pool { return &Pool{clients: map[string]*Client{}} }
+func NewPool() *Pool {
+	return &Pool{
+		clients:    map[string]*Client{},
+		transports: map[string]string{},
+	}
+}
 
 type PoolEntry struct {
 	ID        string
 	BaseURL   string
 	APIKey    string
 	IsDefault bool
+	Transport string // "" or "http" (default) or "plugin"
 }
 
 // Reload replaces the pool atomically with the provided entries.
 func (p *Pool) Reload(entries []PoolEntry) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	next := map[string]*Client{}
+	nextClients := map[string]*Client{}
+	nextTransport := map[string]string{}
 	for _, e := range entries {
-		// reuse existing client to keep conn pool warm when URL+key match
-		if cur, ok := p.clients[e.ID]; ok && cur.BaseURL == strings.TrimRight(e.BaseURL, "/") && cur.APIKey == e.APIKey {
-			next[e.ID] = cur
-		} else {
-			next[e.ID] = NewClient(e.ID, e.BaseURL, e.APIKey)
+		transport := e.Transport
+		if transport == "" {
+			transport = "http"
+		}
+		nextTransport[e.ID] = transport
+		if transport == "http" {
+			// reuse existing client to keep conn pool warm when URL+key match
+			if cur, ok := p.clients[e.ID]; ok && cur.BaseURL == strings.TrimRight(e.BaseURL, "/") && cur.APIKey == e.APIKey {
+				nextClients[e.ID] = cur
+			} else {
+				nextClients[e.ID] = NewClient(e.ID, e.BaseURL, e.APIKey)
+			}
 		}
 		if e.IsDefault {
 			p.defID = e.ID
 		}
 	}
-	p.clients = next
+	p.clients = nextClients
+	p.transports = nextTransport
 }
 
+// Transport returns the configured transport kind for a server id.
+// Empty string means the id is not registered.
+func (p *Pool) Transport(id string) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.transports[id]
+}
+
+// Get returns the HTTP client for a server id. Plugin-transport servers
+// don't have one — callers must branch on Transport() first.
 func (p *Pool) Get(id string) (*Client, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	t := p.transports[id]
+	if t == "plugin" {
+		return nil, fmt.Errorf("hermes server %q uses plugin transport; use PluginServer instead", id)
+	}
 	c, ok := p.clients[id]
 	if !ok {
 		return nil, fmt.Errorf("hermes server %q not registered", id)
 	}
 	return c, nil
+}
+
+// AllIDs returns every registered server id (both transports), in the
+// order the Reload entries arrived.
+func (p *Pool) AllIDs() []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]string, 0, len(p.transports))
+	for id := range p.transports {
+		out = append(out, id)
+	}
+	return out
 }
 
 func (p *Pool) Default() (*Client, error) {

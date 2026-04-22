@@ -69,6 +69,7 @@ func main() {
 				ID: sv.ID, BaseURL: sv.BaseURL,
 				APIKey:    sv.DecryptedAPIKey(cfgStore.Secret()),
 				IsDefault: sv.IsDefault,
+				Transport: sv.TransportKind(),
 			})
 		}
 		pool.Reload(entries)
@@ -78,7 +79,9 @@ func main() {
 
 	hub := sse.NewHub()
 	boardSvc := board.New(st, hub)
+	pluginSrv := hermes.NewPluginServer(logger)
 	runner := attempt.New(cfgStore, st, fs, pool, hub, boardSvc)
+	runner.PluginServer = pluginSrv
 	authSvc := auth.New(cfgStore)
 	sched := scheduler.New(cfgStore, st, runner, logger)
 
@@ -97,6 +100,7 @@ func main() {
 	}
 
 	srv := server.New(cfgStore, st, fs, pool, hub, boardSvc, runner, authSvc, logger, webfs.FS, *dataDir)
+	srv.PluginServer = pluginSrv
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

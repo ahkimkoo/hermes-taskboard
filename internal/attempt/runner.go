@@ -21,12 +21,17 @@ import (
 )
 
 type Runner struct {
-	Cfg   *config.Store
-	Store *store.Store
-	FS    *fsstore.FS
-	Pool  *hermes.Pool
-	Hub   *sse.Hub
-	Board *board.Service
+	Cfg          *config.Store
+	Store        *store.Store
+	FS           *fsstore.FS
+	Pool         *hermes.Pool
+	Hub          *sse.Hub
+	Board        *board.Service
+	// PluginServer is the WS hub for plugin-transport Hermes hosts. Set by
+	// main.go after construction so taskboard shares one instance between
+	// the Runner (which dispatches) and the HTTP server (which hosts /ws).
+	// May be nil in unit-test harnesses that don't exercise plugin paths.
+	PluginServer *hermes.PluginServer
 
 	mu       sync.Mutex
 	active   map[string]*runCtx // attempt_id → live context
@@ -204,12 +209,37 @@ func (r *Runner) Start(ctx context.Context, taskID, serverID, model string) (*st
 		return nil, err
 	}
 	cfg := r.Cfg.Snapshot()
-	sv, effModel := cfg.ResolveServerModel(
+	// Reachability predicate lets the resolver skip plugin-transport
+	// servers whose plugin isn't currently connected, so auto-dispatched
+	// tasks don't land on a dead slot when other Hermes hosts are live.
+	// HTTP servers always count as reachable — we trust their per-request
+	// error to surface.
+	connected := map[string]bool{}
+	if r.PluginServer != nil {
+		for _, p := range r.PluginServer.Plugins() {
+			connected[p.HermesID] = true
+		}
+	}
+	isReachable := func(id string) bool {
+		for _, sv := range cfg.HermesServers {
+			if sv.ID == id {
+				if sv.TransportKind() == "plugin" {
+					return connected[id]
+				}
+				return true
+			}
+		}
+		// Server id wasn't in config: might be an auto-registered plugin.
+		// Accept it if a live plugin announces the same id.
+		return connected[id]
+	}
+	sv, effModel := cfg.ResolveServerModelWithReachability(
 		firstNonEmpty(serverID, task.PreferredServer),
 		firstNonEmpty(model, task.PreferredModel),
+		isReachable,
 	)
 	if sv == nil {
-		return nil, errors.New("no hermes server configured")
+		return nil, errors.New("no hermes server configured / reachable")
 	}
 	if effModel == "" {
 		return nil, errors.New("no model resolvable")
@@ -430,6 +460,14 @@ func (r *Runner) runOnce(ctx context.Context, attemptID, input string, first boo
 	if err != nil {
 		return err
 	}
+
+	// Branch on transport. Plugin-transport Hermes hosts don't speak HTTP
+	// at all — taskboard pushes the turn over an already-connected
+	// WebSocket and consumes native agent frames.
+	if r.Pool.Transport(att.ServerID) == "plugin" {
+		return r.runOncePlugin(ctx, attemptID, input, first, att)
+	}
+
 	client, err := r.Pool.Get(att.ServerID)
 	if err != nil {
 		return err

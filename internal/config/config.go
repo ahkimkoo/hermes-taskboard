@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -71,12 +72,27 @@ type Server struct {
 type HermesServer struct {
 	ID            string        `yaml:"id"`
 	Name          string        `yaml:"name"`
-	BaseURL       string        `yaml:"base_url"`
+	// Transport selects how taskboard reaches this Hermes.
+	//   "" or "http" — dial BaseURL + APIKey, current behavior
+	//   "plugin"     — a plugin with hermes_id==ID dials into taskboard's
+	//                  /api/plugin/ws. BaseURL / APIKey are ignored.
+	Transport     string        `yaml:"transport,omitempty"`
+	BaseURL       string        `yaml:"base_url,omitempty"`
 	APIKey        string        `yaml:"api_key,omitempty"`      // plaintext convenience — auto-encrypted on save
 	APIKeyEnc     string        `yaml:"api_key_enc,omitempty"`  // encrypted storage form
 	IsDefault     bool          `yaml:"is_default"`
 	MaxConcurrent int           `yaml:"max_concurrent"`
 	Models        []HermesModel `yaml:"models"`
+}
+
+// TransportKind returns the normalized transport string ("http" or "plugin").
+func (h *HermesServer) TransportKind() string {
+	switch strings.ToLower(strings.TrimSpace(h.Transport)) {
+	case "plugin":
+		return "plugin"
+	default:
+		return "http"
+	}
 }
 
 type HermesModel struct {
@@ -555,4 +571,86 @@ func (c *Config) ResolveServerModel(preferredServer, preferredModel string) (*He
 		}
 	}
 	return sv, sv.DefaultModel()
+}
+
+// ResolveServerModelWithReachability is the dispatch-time variant of
+// ResolveServerModel. It consults an `isReachable` predicate so plugin-
+// transport servers whose plugin hasn't connected (yet / any more) are
+// filtered out of the auto-pick pool. When the caller didn't specify a
+// preferred server and multiple eligible servers remain, one is picked
+// uniformly at random — letting tasks fan out across connected Hermes
+// hosts without a sticky default.
+//
+// If preferredServer is non-empty it is honoured even when unreachable;
+// the caller may then surface the "plugin not connected" error itself.
+func (c *Config) ResolveServerModelWithReachability(
+	preferredServer, preferredModel string,
+	isReachable func(serverID string) bool,
+) (*HermesServer, string) {
+	if preferredServer != "" {
+		sv := c.FindServer(preferredServer)
+		if sv != nil {
+			return sv, c.resolveModelFor(sv, preferredModel)
+		}
+	}
+
+	// No preferred server or preferred-but-unknown → pick from reachable.
+	reachable := c.reachableServers(isReachable)
+	if len(reachable) == 0 {
+		return c.DefaultServer(), ""
+	}
+	// Prefer the configured default if it's in the reachable set.
+	if def := c.DefaultServer(); def != nil {
+		for _, sv := range reachable {
+			if sv.ID == def.ID {
+				return sv, c.resolveModelFor(sv, preferredModel)
+			}
+		}
+	}
+	// Else uniform random among the reachable.
+	pick := reachable[randomInt(len(reachable))]
+	return pick, c.resolveModelFor(pick, preferredModel)
+}
+
+func (c *Config) resolveModelFor(sv *HermesServer, preferredModel string) string {
+	if preferredModel != "" {
+		for _, m := range sv.Models {
+			if strings.EqualFold(m.Name, preferredModel) {
+				return m.Name
+			}
+		}
+	}
+	return sv.DefaultModel()
+}
+
+func (c *Config) reachableServers(isReachable func(string) bool) []*HermesServer {
+	if isReachable == nil {
+		// No probe → treat every HTTP server as reachable, skip plugin ones.
+		isReachable = func(id string) bool {
+			for _, sv := range c.HermesServers {
+				if sv.ID == id {
+					return sv.TransportKind() == "http"
+				}
+			}
+			return false
+		}
+	}
+	out := make([]*HermesServer, 0, len(c.HermesServers))
+	for i := range c.HermesServers {
+		sv := &c.HermesServers[i]
+		if isReachable(sv.ID) {
+			out = append(out, sv)
+		}
+	}
+	return out
+}
+
+// randomInt: tiny indirection so tests can stub. crypto/rand is overkill;
+// math/rand's default source is seeded at process start from the clock,
+// good enough for round-robin fan-out.
+func randomInt(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	return int(time.Now().UnixNano()%int64(n))
 }

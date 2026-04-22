@@ -50,7 +50,9 @@ func New(
 	return &Server{
 		Cfg: cfg, Store: st, FS: fs, Pool: pool, Hub: hub, Board: b, Runner: r, Auth: a,
 		Logger: logger, Web: sub, DataDir: dataDir,
-		PluginServer: hermes.NewPluginServer(logger),
+		// PluginServer must be set by the caller — main.go shares one
+		// instance between Runner and Server so the Runner can drive the
+		// same connections the UI sees listed.
 	}
 }
 
