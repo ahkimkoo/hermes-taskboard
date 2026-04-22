@@ -630,22 +630,58 @@ type serverDTO struct {
 	ID            string                `json:"id"`
 	Name          string                `json:"name"`
 	BaseURL       string                `json:"base_url"`
+	Transport     string                `json:"transport"`     // "http" | "plugin"
+	Connected     bool                  `json:"connected"`     // plugin transport: WS currently attached
 	HasAPIKey     bool                  `json:"has_api_key"`
 	IsDefault     bool                  `json:"is_default"`
 	MaxConcurrent int                   `json:"max_concurrent"`
 	Models        []config.HermesModel  `json:"models"`
+	// Virtual=true means this entry is auto-synthesised from a connected
+	// plugin that has no hermes_servers[] config entry. UI can treat
+	// these differently (e.g. "ephemeral" badge, no Edit/Delete).
+	Virtual       bool                  `json:"virtual"`
 }
 
 func (s *Server) hListServers(w http.ResponseWriter, r *http.Request) {
 	cur := s.Cfg.Snapshot()
+	// Snapshot the live plugin connections once.
+	connectedPlugins := map[string]bool{}
+	if s.PluginServer != nil {
+		for _, p := range s.PluginServer.Plugins() {
+			connectedPlugins[p.HermesID] = true
+		}
+	}
 	out := []serverDTO{}
+	seen := map[string]bool{}
 	for _, sv := range cur.HermesServers {
+		transport := sv.TransportKind()
+		connected := true
+		if transport == "plugin" {
+			connected = connectedPlugins[sv.ID]
+		}
 		out = append(out, serverDTO{
 			ID: sv.ID, Name: sv.Name, BaseURL: sv.BaseURL,
+			Transport:  transport,
+			Connected:  connected,
 			HasAPIKey:  sv.APIKey != "" || sv.APIKeyEnc != "",
 			IsDefault:  sv.IsDefault,
 			MaxConcurrent: sv.MaxConcurrent,
 			Models:     sv.Models,
+		})
+		seen[sv.ID] = true
+	}
+	// Auto-registered plugins not in config.
+	for id := range connectedPlugins {
+		if seen[id] {
+			continue
+		}
+		out = append(out, serverDTO{
+			ID:            id,
+			Name:          id,
+			Transport:     "plugin",
+			Connected:     true,
+			MaxConcurrent: 5,
+			Virtual:       true,
 		})
 	}
 	writeJSON(w, 200, map[string]any{"servers": out})

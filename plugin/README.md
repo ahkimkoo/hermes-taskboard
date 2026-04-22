@@ -52,10 +52,25 @@ Add to `~/.hermes/.env`:
 ```
 TASKBOARD_WS_URL=ws://127.0.0.1:1900/api/plugin/ws
 TASKBOARD_PLUGIN_TOKEN=         # optional; sent in hello_ack frame
+TASKBOARD_HERMES_ID=            # optional; defaults to socket.gethostname()
 ```
+
+`TASKBOARD_HERMES_ID` is the identity taskboard uses to route tasks
+back to *this* Hermes host. Leave blank to use the machine hostname;
+set it explicitly when you have multiple Hermes installs on the same
+host or want a shorter / more stable label than the hostname.
 
 No `config.yaml` changes required — when `TASKBOARD_WS_URL` is set the
 bridge injects its own `PlatformConfig` at startup.
+
+### Taskboard-side auto-registration
+
+When a plugin connects, taskboard auto-registers it under the
+announced `hermes_id`: no need to add a `hermes_servers[]` entry on
+the taskboard side. Auto-registered servers appear in the task-create
+dropdown with a 🔌 badge and `max_concurrent=5` defaults. Add a real
+`hermes_servers[]` entry with `transport: plugin` + matching `id`
+only when you want a friendly `name` or a non-default concurrency cap.
 
 ## Verify
 

@@ -284,7 +284,12 @@ const NewTaskModal = {
             <label>{{ $t('field.server') }} <span class="optional">({{ $t('field.optional') }})</span></label>
             <select v-model="form.preferred_server">
               <option value="">{{ $t('field.default') }}</option>
-              <option v-for="s in $root.state.servers" :key="s.id" :value="s.id">{{ s.name || s.id }}</option>
+              <option
+                v-for="s in $root.state.servers"
+                :key="s.id"
+                :value="s.id"
+                :disabled="s.transport === 'plugin' && !s.connected"
+              >{{ serverOptionLabel(s) }}</option>
             </select>
           </div>
           <div class="form-row">
@@ -304,6 +309,7 @@ const NewTaskModal = {
     </div>
   `,
   methods: {
+    serverOptionLabel(s) { return formatServerOption(s); },
     async save() {
       if (!this.canSave) return;
       try {
@@ -324,6 +330,17 @@ const NewTaskModal = {
     },
   },
 };
+
+// Format a server entry for a <select> option. Shows the human name,
+// appends a plugin indicator, and marks offline plugins so users know
+// that "(offline)" rows are disabled above.
+function formatServerOption(s) {
+  const label = s.name || s.id;
+  if (s.transport !== 'plugin') return label;
+  const badge = s.virtual ? '🔌' : '🧭';
+  if (!s.connected) return badge + ' ' + label + ' · offline';
+  return badge + ' ' + label;
+}
 
 const TaskModal = {
   components: { DescriptionEditor, EventStream, TagInput, DependencyPicker, SchedulePicker },
@@ -457,7 +474,12 @@ const TaskModal = {
                 <label>{{ $t('field.server') }} <span class="optional">({{ $t('field.optional') }})</span></label>
                 <select v-model="form.preferred_server">
                   <option value="">{{ $t('field.default') }}</option>
-                  <option v-for="s in $root.state.servers" :key="s.id" :value="s.id">{{ s.name || s.id }}</option>
+                  <option
+                    v-for="s in $root.state.servers"
+                    :key="s.id"
+                    :value="s.id"
+                    :disabled="s.transport === 'plugin' && !s.connected"
+                  >{{ serverOptionLabel(s) }}</option>
                 </select>
               </div>
               <div class="form-row" style="flex:1">
@@ -628,8 +650,9 @@ const TaskModal = {
     serverDisplay(id) {
       if (!id) return t('field.default');
       const sv = (this.$root.state.servers || []).find((s) => s.id === id);
-      return sv ? (sv.name || sv.id) : id;
+      return sv ? formatServerOption(sv) : id;
     },
+    serverOptionLabel(s) { return formatServerOption(s); },
     async load() {
       if (!this.taskId) { this.task = null; return; }
       try {
