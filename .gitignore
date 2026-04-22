@@ -30,3 +30,4 @@ config.example.yaml
 /pluginprobe
 plugin/src/**/__pycache__/
 plugin/src/**/*.egg-info/
+plugin/dist/

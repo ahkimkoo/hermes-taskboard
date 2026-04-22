@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/ahkimkoo/hermes-taskboard/internal/sse"
 )
 
 // PluginFrame is every JSON frame on the wire (both directions). Fields not
@@ -128,10 +130,14 @@ func (c *pluginConn) fanout(f PluginFrame) {
 // PluginServer accepts WS connections from Hermes plugins and exposes a
 // simple API for the Runner to drive sessions.
 type PluginServer struct {
-	Log    *slog.Logger
-	Token  string // optional shared secret; if non-empty, plugins must match
-	mu     sync.RWMutex
-	conns  map[string]*pluginConn // hermes_id → active conn
+	Log   *slog.Logger
+	Token string // optional shared secret; if non-empty, plugins must match
+	// Hub, when set, is used to publish plugin.connected /
+	// plugin.disconnected events on the "board" topic so the frontend
+	// server-list can refresh without polling.
+	Hub   *sse.Hub
+	mu    sync.RWMutex
+	conns map[string]*pluginConn // hermes_id → active conn
 }
 
 func NewPluginServer(log *slog.Logger) *PluginServer {
@@ -142,6 +148,23 @@ func NewPluginServer(log *slog.Logger) *PluginServer {
 		Log:   log,
 		conns: map[string]*pluginConn{},
 	}
+}
+
+// broadcastStatus is a best-effort board event. Safe no-op when Hub is nil.
+func (s *PluginServer) broadcastStatus(eventName string, info PluginInfo) {
+	if s.Hub == nil {
+		return
+	}
+	s.Hub.Publish("board", sse.Event{
+		Event: eventName,
+		Data: map[string]any{
+			"hermes_id":      info.HermesID,
+			"hostname":       info.Hostname,
+			"plugin_version": info.PluginVer,
+			"remote_addr":    info.RemoteAddr,
+			"ts":             time.Now().Unix(),
+		},
+	})
 }
 
 // HandleWS is the http.HandlerFunc for the taskboard WS endpoint, e.g.
@@ -233,6 +256,7 @@ func (s *PluginServer) HandleWS(w http.ResponseWriter, r *http.Request) {
 		"remote", r.RemoteAddr,
 		"plugin_version", ack.PluginVer,
 	)
+	s.broadcastStatus("plugin.connected", conn.info)
 
 	defer func() {
 		s.mu.Lock()
@@ -241,6 +265,7 @@ func (s *PluginServer) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.Unlock()
 		s.Log.Info("plugin disconnected", "hermes_id", hermesID)
+		s.broadcastStatus("plugin.disconnected", conn.info)
 	}()
 
 	// Read loop.

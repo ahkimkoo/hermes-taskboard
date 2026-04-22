@@ -1,0 +1,58 @@
+version: "3.9"
+
+# Two-service self-host for hermes-taskboard with the plugin bridge.
+#
+# Services:
+#   taskboard    — Go HTTP server; UI on :1900, WS endpoint at /api/plugin/ws.
+#   hermes-bridge — Hermes gateway patched with the taskboard bridge plugin,
+#                   dials out to taskboard's WS to register as a Hermes host.
+#
+# Bring up:
+#   docker compose up -d
+#   # then visit http://localhost:1900 and create a task targeting the
+#   # auto-registered Hermes (it appears under its container hostname).
+#
+# Prereqs:
+#   - Set OPENROUTER_API_KEY (or your LLM provider key) in a .env next to
+#     this file, or export it in your shell.
+#   - Build the plugin wheel first: (cd plugin && python3 -m build)
+#     …so the Dockerfile has plugin/dist/*.whl to install.
+
+services:
+  taskboard:
+    image: successage/hermes-taskboard:latest
+    # or build from source:
+    # build: .
+    container_name: taskboard
+    ports:
+      - "1900:1900"
+    volumes:
+      - taskboard_data:/data
+    restart: unless-stopped
+
+  hermes-bridge:
+    build:
+      context: .
+      dockerfile: plugin/Dockerfile
+    container_name: hermes-bridge
+    depends_on:
+      - taskboard
+    environment:
+      # The bridge dials out to the taskboard WS using this URL. Use the
+      # service name as the host so Docker's internal DNS resolves it.
+      TASKBOARD_WS_URL: "ws://taskboard:1900/api/plugin/ws"
+      # Identity under which this Hermes host registers on taskboard.
+      # Falls back to the container hostname if unset — set it explicitly
+      # when running multiple hermes-bridge containers on the same compose.
+      TASKBOARD_HERMES_ID: "docker"
+      # TASKBOARD_PLUGIN_TOKEN: ""  # optional shared secret
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}"
+      # Anything else Hermes reads from its own .env / env — OPENAI_API_KEY,
+      # TELEGRAM_BOT_TOKEN, etc. — can go here too.
+    volumes:
+      - hermes_home:/home/hermes/.hermes
+    restart: unless-stopped
+
+volumes:
+  taskboard_data:
+  hermes_home:

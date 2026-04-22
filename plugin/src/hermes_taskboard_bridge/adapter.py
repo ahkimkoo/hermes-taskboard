@@ -80,6 +80,12 @@ def build_adapter_class():
     class TaskboardBridgeAdapter(BasePlatformAdapter):
         """Bridge Hermes sessions to an external taskboard WS server."""
 
+        # Tell Hermes's stream_consumer that we accept edit_message calls.
+        # That unlocks token-level streaming: the agent's partial output is
+        # sent via repeated edits to the same message_id, finalised with a
+        # send() when the turn completes.
+        SUPPORTS_MESSAGE_EDITING = True
+
         def __init__(self, config: PlatformConfig):
             super().__init__(config, Platform.TASKBOARD)  # type: ignore[attr-defined]
             extra = config.extra or {}
@@ -200,6 +206,34 @@ def build_adapter_class():
             return SendResult(
                 success=False, error="images not supported on taskboard bridge"
             )
+
+        async def edit_message(
+            self,
+            chat_id: str,
+            message_id: str,
+            content: str,
+        ) -> SendResult:
+            """Streaming update: push the growing assistant content as a
+            `stream_update` frame so the taskboard UI can overwrite the
+            in-progress bubble instead of appending noise. Hermes's
+            stream_consumer calls this as the model produces tokens when
+            streaming is enabled in the Hermes streaming config + the
+            model provider actually returns SSE deltas."""
+            self._seq += 1
+            frame = {
+                "type": "agent_event",
+                "attempt_id": chat_id,
+                "seq": self._seq,
+                "event": {
+                    "kind": "stream_update",
+                    "message_id": message_id,
+                    "content": content,
+                    "ts": time.time(),
+                },
+            }
+            self._buffer(chat_id, frame)
+            await self._push(frame)
+            return SendResult(success=True, message_id=message_id)
 
         async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
             return {"name": f"attempt {chat_id}", "type": "dm", "chat_id": chat_id}

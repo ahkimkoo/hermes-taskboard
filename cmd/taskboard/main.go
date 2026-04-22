@@ -80,6 +80,7 @@ func main() {
 	hub := sse.NewHub()
 	boardSvc := board.New(st, hub)
 	pluginSrv := hermes.NewPluginServer(logger)
+	pluginSrv.Hub = hub
 	runner := attempt.New(cfgStore, st, fs, pool, hub, boardSvc)
 	runner.PluginServer = pluginSrv
 	authSvc := auth.New(cfgStore)

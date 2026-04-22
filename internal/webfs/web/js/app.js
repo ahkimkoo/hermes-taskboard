@@ -1404,6 +1404,12 @@ const App = {
     doRefresh() { refreshAll(); },
     subscribeBoard() {
       sseSubscribe('/api/stream/board', (evt) => {
+        // Plugin connection/disconnection: refresh the servers list so the
+        // dropdown + connected-dot stay live.
+        if (evt && (evt.event === 'plugin.connected' || evt.event === 'plugin.disconnected')) {
+          refreshServers();
+          return;
+        }
         refreshTasks();
         if (!evt) return;
         if (evt.state === 'running') playSound('execute_start');
