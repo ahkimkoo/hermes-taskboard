@@ -33,7 +33,6 @@ export const EventStream = {
       // pages backwards on demand via the "加载更早" link.
       hasMore: false,        // true when older events exist server-side
       loadingMore: false,    // guards concurrent clicks on the link
-      refreshing: false,     // guards the manual "refresh" button
     };
   },
   watch: { attemptId: { immediate: true, handler: 'reload' } },
@@ -110,21 +109,6 @@ export const EventStream = {
           </div>
         </template>
         <div v-if="!messages.length" class="empty">—</div>
-        <!-- Manual refresh: reconnects to the Hermes run and re-pulls
-             the event tail. Lets the user catch up on a stalled/done
-             attempt without having to send a dummy "continue" message. -->
-        <div v-if="attemptId" class="stream-footer">
-          <button class="refresh-btn" :class="{ spinning: refreshing }"
-                  :disabled="refreshing"
-                  :title="$t('event.refresh_title')"
-                  @click="refresh">
-            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
-              <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                    d="M15.5 4.5A7 7 0 1 0 17 10M15.5 4.5V8h-3.5"/>
-            </svg>
-            <span>{{ refreshing ? $t('event.refreshing') : $t('event.refresh') }}</span>
-          </button>
-        </div>
       </div>
       <button v-if="hasNewBelow" class="jump-to-bottom" @click="jumpToBottom">
         ↓ {{ $t('event.new_below') }}
@@ -228,26 +212,6 @@ export const EventStream = {
       requestAnimationFrame(() => this.scrollBottom());
       setTimeout(() => this.scrollBottom(), 150);
       setTimeout(() => this.scrollBottom(), 400);
-    },
-    async refresh() {
-      if (this.refreshing || !this.attemptId) return;
-      this.refreshing = true;
-      try {
-        // Ask backend to reopen the Hermes run stream if it's not already
-        // owned by a live runCtx. Any missed events flow back via SSE.
-        await api('/api/attempts/' + this.attemptId + '/reconnect',
-          { method: 'POST' }).catch(() => {});
-        // Re-pull the event tail so anything persisted to disk between
-        // our last tick and now shows up immediately — SSE would catch up
-        // too, but this gives the click instant visual confirmation.
-        const { events } = await api('/api/attempts/' + this.attemptId +
-          '/events?tail=30');
-        this.events = events || [];
-        this.hasMore = this.events.length > 0 && (this.events[0].seq || 0) > 1;
-        this.rebuild();
-        this.$nextTick(() => this.scrollBottom());
-      } catch {}
-      this.refreshing = false;
     },
     async loadMore() {
       // Fetch 30 more events whose seq is strictly below our earliest-known
