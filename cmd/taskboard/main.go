@@ -118,6 +118,12 @@ func main() {
 	}
 	go rpr.Loop(ctx)
 
+	// Auto-resume attempts whose SSE dropped abnormally (network blip,
+	// taskboard restart mid-stream, etc.) by sending a synthetic
+	// `continue` message. Bounded to 3 retries per attempt with a 60s
+	// cooldown so a pathologically wedged Hermes can't loop forever.
+	(&attempt.Resumer{Runner: runner, Log: logger.With("component", "resumer")}).Start(ctx)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {

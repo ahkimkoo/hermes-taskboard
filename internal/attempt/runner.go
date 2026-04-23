@@ -308,6 +308,14 @@ func (r *Runner) SendMessage(ctx context.Context, attemptID, text string) error 
 	if err != nil {
 		return err
 	}
+	// A real user message (as opposed to the auto-resumer's synthetic
+	// "continue") means the user took over, so reset the auto-continue
+	// counter — otherwise we'd hold stale abnormal-disconnect retry
+	// state and refuse to auto-recover on a future network blip.
+	if meta, _ := r.FS.LoadAttemptMeta(attemptID); meta != nil && meta.Session.ContinueResumeCount > 0 {
+		meta.Session.ContinueResumeCount = 0
+		_ = r.FS.SaveAttemptMeta(meta)
+	}
 	// Record the user's bubble immediately — regardless of whether we start a
 	// new run, append to an active queue, or reopen from a terminal state.
 	// If we defer the log to dispatch time (runOnce), a user typing while an
@@ -390,6 +398,13 @@ func (r *Runner) loop(ctx context.Context, attemptID, firstInput string, rc *run
 	for {
 		if pending != "" {
 			if err := r.runOnce(ctx, attemptID, pending, isFirst); err != nil {
+				// Abnormal disconnect is not a permanent failure — the
+				// attempt stays in its current running state so the
+				// Resumer can pick it up and send a synthetic continue.
+				// runOnce already logged `abnormal_disconnect` for the UI.
+				if errors.Is(err, errAbnormalDisconnect) {
+					return
+				}
 				r.logSystemEvent(attemptID, "error", map[string]any{"msg": err.Error()})
 				_ = r.Store.UpdateAttemptState(ctx, attemptID, store.AttemptFailed)
 				r.broadcastStateChange(attemptID, store.AttemptFailed)
@@ -545,23 +560,66 @@ func (r *Runner) runOnce(ctx context.Context, attemptID, input string, first boo
 		close(events)
 	}()
 
-	// consume until stream closes
+	// consume until stream closes — flag whether the stream reached
+	// `response.completed` before closing. That, plus ctx.Err(), lets us
+	// classify the turn's exit as completed / cancelled / abnormal.
+	var sawCompleted bool
 	for e := range events {
 		r.handleEvent(attemptID, e)
+		if typ, _ := e.Data["type"].(string); typ == "response.completed" {
+			sawCompleted = true
+		}
 	}
 	err = <-streamErr
 	r.logSystemEvent(attemptID, "run_end", map[string]any{"run_id": runID, "err": errStr(err)})
 
-	// finalize meta
+	// Classify the disconnect + record it on meta for the auto-resumer.
+	// `ctx` cancellation maps to user-cancel (Runner.Cancel calls rc.cancel).
+	// Stream ended cleanly after response.completed → completed.
+	// Anything else (net error, premature close, 5xx, timeout) → abnormal.
+	reason := store.DisconnectAbnormal
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		reason = store.DisconnectCancelled
+	} else if err == nil && sawCompleted {
+		reason = store.DisconnectCompleted
+	}
 	if meta, _ := r.FS.LoadAttemptMeta(attemptID); meta != nil {
 		meta.Session.CurrentRunID = ""
+		meta.Session.LastDisconnectReason = reason
+		meta.Session.LastDisconnectAt = time.Now().Unix()
+		// A clean completion resets the auto-resume counter — if the
+		// agent just delivered a normal turn, any prior abnormal-streak
+		// is clearly over.
+		if reason == store.DisconnectCompleted {
+			meta.Session.ContinueResumeCount = 0
+		}
 		_ = r.FS.SaveAttemptMeta(meta)
+	}
+	// Mark abnormal for the UI so the user sees a clear badge.
+	if reason == store.DisconnectAbnormal {
+		r.logSystemEvent(attemptID, "abnormal_disconnect", map[string]any{
+			"run_id":   runID,
+			"err":      errStr(err),
+			"ctx_err":  errStr(ctx.Err()),
+		})
+		// Signal to the loop() caller that this is an abnormal disconnect,
+		// NOT a permanent failure — the attempt should stay in running
+		// state so the Resumer can retry it. Caller must treat this
+		// sentinel specially (don't flip to failed, don't auto-complete).
+		return errAbnormalDisconnect
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
 	return nil
 }
+
+// errAbnormalDisconnect is the signal runOnce returns when the SSE stream
+// dropped unexpectedly (network, Hermes crash, taskboard killed mid-stream).
+// The loop() goroutine treats this differently from a hard error: the
+// attempt stays in its current state so the background Resumer can later
+// send a synthetic `continue` to pick up where the agent left off.
+var errAbnormalDisconnect = errors.New("abnormal SSE disconnect; awaiting auto-resume")
 
 // handleEvent is the single routing point for a Hermes SSE event.
 func (r *Runner) handleEvent(attemptID string, e hermes.Event) {

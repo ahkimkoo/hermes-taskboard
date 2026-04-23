@@ -103,6 +103,11 @@ export const EventStream = {
             ✗ {{ m.msg }}
             <span v-if="m.ts" class="es-time" :title="formatTsFull(m.ts)">{{ formatTs(m.ts) }}</span>
           </div>
+
+          <div v-else-if="m.kind==='abnormal'" class="es-system abnormal" :title="m.detail || ''">
+            {{ m.label }}
+            <span v-if="m.ts" class="es-time" :title="formatTsFull(m.ts)">{{ formatTs(m.ts) }}</span>
+          </div>
         </template>
         <div v-if="!messages.length" class="empty">—</div>
         <!-- Manual refresh: reconnects to the Hermes run and re-pulls
@@ -335,6 +340,25 @@ export const EventStream = {
             out.push({ kind: 'system', label: '— run ended —', ts: e.ts, key: 're' + e.seq });
           } else if (e.event === 'error') {
             out.push({ kind: 'error', msg: e.msg || 'error', ts: e.ts, key: 'er' + e.seq });
+          } else if (e.event === 'abnormal_disconnect') {
+            // Yellow banner: SSE dropped before Hermes finished. Shows
+            // inline in the chat so the user knows it's not a logic
+            // error — the Resumer will send a `continue` shortly (up to
+            // 3 times with 60s cooldown).
+            out.push({
+              kind: 'abnormal',
+              label: '⚠ 异常断开 — 连接提前结束，taskboard 将尝试自动 continue',
+              detail: (e.err || '') + (e.ctx_err ? ' (ctx: ' + e.ctx_err + ')' : ''),
+              ts: e.ts,
+              key: 'ad' + e.seq,
+            });
+          } else if (e.event === 'auto_resume') {
+            out.push({
+              kind: 'system',
+              label: '↻ 自动 continue 第 ' + (e.retry_count || '?') + '/' + (e.max_retries || '?') + ' 次',
+              ts: e.ts,
+              key: 'ar' + e.seq,
+            });
           }
           continue;
         }

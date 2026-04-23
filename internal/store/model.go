@@ -111,9 +111,31 @@ type AttemptMeta struct {
 	Summary  string          `json:"summary,omitempty"`
 }
 
+// DisconnectReason classifies why a Hermes SSE stream stopped. Stored
+// on meta.session so the auto-resumer can decide whether to retry.
+type DisconnectReason string
+
+const (
+	DisconnectCompleted DisconnectReason = "completed"  // clean end after response.completed
+	DisconnectCancelled DisconnectReason = "cancelled"  // user hit Stop (ctx cancelled)
+	DisconnectAbnormal  DisconnectReason = "abnormal"   // network drop, 5xx, taskboard crash, …
+)
+
 type AttemptSession struct {
 	ConversationID   string   `json:"conversation_id"`
 	Runs             []string `json:"runs"`
 	CurrentRunID     string   `json:"current_run_id,omitempty"`
 	LatestResponseID string   `json:"latest_response_id,omitempty"`
+	// LastDisconnectReason records how the most recent turn's SSE
+	// stream ended. Abnormal + attempt still running means the auto-
+	// resumer should send a `continue` message (with rate-limiting).
+	LastDisconnectReason DisconnectReason `json:"last_disconnect_reason,omitempty"`
+	LastDisconnectAt     int64            `json:"last_disconnect_at,omitempty"`
+	// ContinueResumeCount is the number of synthetic "continue" messages
+	// the auto-resumer has sent to this attempt since the last clean
+	// response.completed. Capped (see scheduler/reaper) so a wedged
+	// attempt can't loop forever. Reset to 0 when (a) we see
+	// response.completed, (b) the user sends a message via the UI.
+	ContinueResumeCount int   `json:"continue_resume_count,omitempty"`
+	LastContinueAt      int64 `json:"last_continue_at,omitempty"`
 }

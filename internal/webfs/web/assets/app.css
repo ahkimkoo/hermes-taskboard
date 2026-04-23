@@ -383,6 +383,18 @@ body.dragging-active * { cursor: grabbing !important; }
 
 .es-system { text-align: center; color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin: 4px 0; }
 .es-system.error { color: var(--danger); text-transform: none; }
+.es-system.abnormal {
+  color: var(--warning);
+  text-transform: none;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 50%, transparent);
+  border-radius: 6px;
+  padding: 6px 10px;
+  letter-spacing: 0;
+  font-size: 12px;
+  margin: 8px 0;
+  font-weight: 500;
+}
 
 .es-message { display: flex; gap: 8px; align-items: flex-start; position: relative; }
 .es-bubble-wrap { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 2px; }
