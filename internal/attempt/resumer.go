@@ -1,19 +1,7 @@
-// Background auto-resumer for abnormal SSE disconnects.
-//
-// When Hermes's stream closes for any reason other than (a) response.completed
-// or (b) user cancel, the turn is marked "abnormal" and the Hermes agent may
-// still be waiting for a prompt to continue. Rather than requiring the user
-// to manually type something, this watcher periodically scans for attempts
-// that are *stuck* in this state and sends a synthetic "continue" message.
-//
-// Guardrails to prevent runaway loops (user's explicit concern):
-//   - max retries per attempt: AutoResumeMaxRetries (3)
-//   - cooldown between retries: AutoResumeCooldown (60s)
-//   - reset count to 0 on any clean response.completed (runner.runOnce)
-//   - reset count to 0 on any real user message (runner.SendMessage)
-//   - skip attempts already in a terminal state
-//   - skip attempts with an active runCtx (something is streaming right now)
-
+// Background auto-resumer for abnormal SSE disconnects. Scans every
+// user's active attempts every AutoResumeScanInterval and fires a
+// synthetic "continue" for ones stuck on an abnormal-disconnect
+// (bounded by AutoResumeMaxRetries and AutoResumeCooldown).
 package attempt
 
 import (
@@ -24,8 +12,6 @@ import (
 	"github.com/ahkimkoo/hermes-taskboard/internal/store"
 )
 
-// Resumer runs a loop that auto-recovers attempts wedged on abnormal
-// SSE disconnect. One per Runner.
 type Resumer struct {
 	Runner *Runner
 	Log    *slog.Logger
@@ -38,8 +24,6 @@ const (
 	AutoResumeMessage      = "[auto-resume] taskboard detected the connection dropped before the previous turn finished. Please continue where you left off."
 )
 
-// Start launches the scan loop; returns immediately. Stops when ctx
-// cancels (taskboard shutdown).
 func (rz *Resumer) Start(ctx context.Context) {
 	go rz.loop(ctx)
 }
@@ -61,34 +45,29 @@ func (rz *Resumer) tick(ctx context.Context) {
 	if rz.Runner == nil {
 		return
 	}
-	// Enumerate active attempts (queued/running/needs_input). Terminal
-	// ones (completed/failed/cancelled) never need auto-resume.
-	active, err := rz.Runner.Store.ListActiveAttempts(ctx)
+	owned, err := rz.Runner.Stores.ListAllActiveAttempts(ctx, rz.Runner.allUsernames())
 	if err != nil {
 		rz.log().Warn("resumer list failed", "err", err)
 		return
 	}
 	now := time.Now().Unix()
-	for _, a := range active {
-		// Skip attempts with a live runCtx — their loop goroutine is
-		// already owning them; a fresh "continue" would collide with
-		// the in-flight stream.
+	for _, oa := range owned {
+		a := oa.Attempt
+		// Skip attempts with a live runCtx.
 		rz.Runner.mu.Lock()
 		_, live := rz.Runner.active[a.ID]
 		rz.Runner.mu.Unlock()
 		if live {
 			continue
 		}
-		meta, err := rz.Runner.FS.LoadAttemptMeta(a.ID)
+		fs := rz.Runner.FS.Get(oa.Username)
+		meta, err := fs.LoadAttemptMeta(a.ID)
 		if err != nil || meta == nil {
 			continue
 		}
 		if meta.Session.LastDisconnectReason != store.DisconnectAbnormal {
 			continue
 		}
-		// Idempotency: enforce cooldown + max-retries so a wedged
-		// Hermes that keeps dropping after every continue can't get us
-		// into a send-loop.
 		if meta.Session.ContinueResumeCount >= AutoResumeMaxRetries {
 			continue
 		}
@@ -96,39 +75,30 @@ func (rz *Resumer) tick(ctx context.Context) {
 			continue
 		}
 
-		// Record the attempt + fire.
 		meta.Session.ContinueResumeCount++
 		meta.Session.LastContinueAt = now
-		_ = rz.Runner.FS.SaveAttemptMeta(meta)
+		_ = fs.SaveAttemptMeta(meta)
 
-		rz.Runner.logSystemEvent(a.ID, "auto_resume", map[string]any{
+		rz.Runner.logSystemEvent(oa.Username, a.ID, "auto_resume", map[string]any{
 			"retry_count": meta.Session.ContinueResumeCount,
 			"max_retries": AutoResumeMaxRetries,
 			"reason":      "abnormal_disconnect",
 		})
 		rz.log().Info("auto-resume",
+			"user", oa.Username,
 			"attempt", a.ID,
 			"retry", meta.Session.ContinueResumeCount,
 			"max", AutoResumeMaxRetries,
 		)
-		// Use a short-lived ctx derived from the scan ctx so shutdown
-		// doesn't leave a send in flight. We deliberately do NOT log a
-		// user_message for the synthetic prompt — we don't want it to
-		// pollute the user-visible chat bubbles, and we don't want it
-		// to reset ContinueResumeCount (which SendMessage does for
-		// real user messages).
 		sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		if err := rz.autoSend(sctx, a.ID, AutoResumeMessage); err != nil {
+		if err := rz.autoSend(sctx, oa.Username, a.ID, AutoResumeMessage); err != nil {
 			rz.log().Warn("auto-resume send failed", "attempt", a.ID, "err", err)
 		}
 		cancel()
 	}
 }
 
-// autoSend mirrors Runner.SendMessage's spawn path but without the
-// ContinueResumeCount reset and without logging user_message — this is
-// taskboard talking to itself, not a user action.
-func (rz *Resumer) autoSend(ctx context.Context, attemptID, text string) error {
+func (rz *Resumer) autoSend(ctx context.Context, username, attemptID, text string) error {
 	rz.Runner.mu.Lock()
 	rc, live := rz.Runner.active[attemptID]
 	rz.Runner.mu.Unlock()
@@ -140,7 +110,7 @@ func (rz *Resumer) autoSend(ctx context.Context, attemptID, text string) error {
 		}
 		return nil
 	}
-	rz.Runner.startLoop(attemptID, text)
+	rz.Runner.startLoop(username, attemptID, text)
 	return nil
 }
 

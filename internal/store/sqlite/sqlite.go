@@ -10,6 +10,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Per-user DB schema. Users themselves live in data/{username}/config.yaml
+// (see internal/userdir) — this file tracks only the work artefacts:
+// tasks, dep edges, tag links, attempts, schedules. owner_id is
+// implicit — it's whichever user directory the file sits in.
 const schema = `
 CREATE TABLE IF NOT EXISTS tasks (
   id                  TEXT PRIMARY KEY,
@@ -24,19 +28,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   description_excerpt TEXT,
   position            INTEGER NOT NULL DEFAULT 0
 );
--- (idx_tasks_status_position created after migrate, see migrate())
 
 CREATE TABLE IF NOT EXISTS task_deps (
   task_id        TEXT NOT NULL,
   depends_on     TEXT NOT NULL,
   required_state TEXT NOT NULL DEFAULT 'done',
   PRIMARY KEY (task_id, depends_on)
-);
-
-CREATE TABLE IF NOT EXISTS tags (
-  name          TEXT PRIMARY KEY,
-  color         TEXT,
-  system_prompt TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS task_tags (
@@ -88,6 +85,7 @@ func Open(path string) (*sql.DB, error) {
 // migrate applies idempotent ALTERs for column additions on pre-existing DBs.
 // SQLite lacks IF NOT EXISTS on ADD COLUMN, so we inspect PRAGMA first.
 func migrate(ctx context.Context, db *sql.DB) error {
+	// tasks.position — older DBs don't have it.
 	has, err := columnExists(ctx, db, "tasks", "position")
 	if err != nil {
 		return err
@@ -96,7 +94,6 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, `ALTER TABLE tasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return fmt.Errorf("add tasks.position: %w", err)
 		}
-		// Seed positions by created_at for existing rows so ordering is stable.
 		if _, err := db.ExecContext(ctx, `UPDATE tasks SET position = (created_at / 1000)`); err != nil {
 			return fmt.Errorf("seed positions: %w", err)
 		}
@@ -112,16 +109,6 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	if !hasReqState {
 		if _, err := db.ExecContext(ctx, `ALTER TABLE task_deps ADD COLUMN required_state TEXT NOT NULL DEFAULT 'done'`); err != nil {
 			return fmt.Errorf("add task_deps.required_state: %w", err)
-		}
-	}
-	// tags.system_prompt — inject the tag's prompt when a task carrying it is dispatched.
-	hasSys, err := columnExists(ctx, db, "tags", "system_prompt")
-	if err != nil {
-		return err
-	}
-	if !hasSys {
-		if _, err := db.ExecContext(ctx, `ALTER TABLE tags ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''`); err != nil {
-			return fmt.Errorf("add tags.system_prompt: %w", err)
 		}
 	}
 	// task_schedules — added in round 7. `kind` column kept for forward

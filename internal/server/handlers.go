@@ -21,6 +21,7 @@ import (
 	"github.com/ahkimkoo/hermes-taskboard/internal/sse"
 	"github.com/ahkimkoo/hermes-taskboard/internal/store"
 	"github.com/ahkimkoo/hermes-taskboard/internal/store/fsstore"
+	"github.com/ahkimkoo/hermes-taskboard/internal/userdir"
 )
 
 func contextWithTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
@@ -30,15 +31,18 @@ func contextWithTimeout(parent context.Context, d time.Duration) (context.Contex
 // ---------------- tasks ----------------
 
 func (s *Server) hListTasks(w http.ResponseWriter, r *http.Request) {
+	st, _, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
 	q := r.URL.Query()
-	f := store.TaskFilter{
+	list, err := st.ListTasks(r.Context(), store.TaskFilter{
 		Status: q.Get("status"),
 		Tag:    q.Get("tag"),
 		Query:  q.Get("q"),
 		Server: q.Get("server"),
 		Model:  q.Get("model"),
-	}
-	list, err := s.Store.ListTasks(r.Context(), f)
+	})
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -55,18 +59,15 @@ type createTaskReq struct {
 	PreferredServer string            `json:"preferred_server,omitempty"`
 	PreferredModel  string            `json:"preferred_model,omitempty"`
 	Tags            []string          `json:"tags,omitempty"`
-	Dependencies    []json.RawMessage `json:"dependencies,omitempty"` // []string or []{task_id,required_state}
+	Dependencies    []json.RawMessage `json:"dependencies,omitempty"`
 }
 
-// normalizeDeps converts mixed string / object entries into the canonical TaskDep form.
-// Legacy payloads that pass a bare string are assumed to mean required_state="done".
 func normalizeDeps(raws []json.RawMessage) []store.TaskDep {
 	out := make([]store.TaskDep, 0, len(raws))
 	for _, raw := range raws {
 		if len(raw) == 0 {
 			continue
 		}
-		// Try object first.
 		var obj struct {
 			TaskID        string `json:"task_id"`
 			RequiredState string `json:"required_state"`
@@ -78,7 +79,6 @@ func normalizeDeps(raws []json.RawMessage) []store.TaskDep {
 			out = append(out, store.TaskDep{TaskID: obj.TaskID, RequiredState: obj.RequiredState})
 			continue
 		}
-		// Fall back to string.
 		var s string
 		if err := json.Unmarshal(raw, &s); err == nil && s != "" {
 			out = append(out, store.TaskDep{TaskID: s, RequiredState: "done"})
@@ -88,6 +88,11 @@ func normalizeDeps(raws []json.RawMessage) []store.TaskDep {
 }
 
 func (s *Server) hCreateTask(w http.ResponseWriter, r *http.Request) {
+	st, username, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	fs := s.FS.Get(username)
 	var req createTaskReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err)
@@ -121,15 +126,15 @@ func (s *Server) hCreateTask(w http.ResponseWriter, r *http.Request) {
 		Dependencies:       normalizeDeps(req.Dependencies),
 		DescriptionExcerpt: truncExcerpt(req.Description, 200),
 	}
-	if err := s.Store.CreateTask(r.Context(), t); err != nil {
+	if err := st.CreateTask(r.Context(), t); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	if err := s.FS.SaveTaskDoc(&fsstore.TaskDoc{ID: t.ID, Description: req.Description, Tags: req.Tags}); err != nil {
+	if err := fs.SaveTaskDoc(&fsstore.TaskDoc{ID: t.ID, Description: req.Description, Tags: req.Tags}); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	s.Hub.Publish("board", toEvent("task.created", map[string]any{"task_id": t.ID}))
+	s.Hub.Publish("board", toEvent("task.created", map[string]any{"task_id": t.ID, "owner": username}))
 	t.Description = req.Description
 	writeJSON(w, 201, map[string]any{"task": t})
 }
@@ -178,7 +183,11 @@ func (s *Server) routeTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) hGetTask(w http.ResponseWriter, r *http.Request, id string) {
-	t, err := s.Store.GetTask(r.Context(), id)
+	st, username, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	t, err := st.GetTask(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, 404, err)
@@ -187,7 +196,8 @@ func (s *Server) hGetTask(w http.ResponseWriter, r *http.Request, id string) {
 		}
 		return
 	}
-	if doc, _ := s.FS.LoadTaskDoc(id); doc != nil {
+	fs := s.FS.Get(username)
+	if doc, _ := fs.LoadTaskDoc(id); doc != nil {
 		t.Description = doc.Description
 	}
 	writeJSON(w, 200, map[string]any{"task": t})
@@ -205,12 +215,16 @@ type patchTaskReq struct {
 }
 
 func (s *Server) hPatchTask(w http.ResponseWriter, r *http.Request, id string) {
+	st, username, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
 	var req patchTaskReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	t, err := s.Store.GetTask(r.Context(), id)
+	t, err := st.GetTask(r.Context(), id)
 	if err != nil {
 		writeErr(w, 404, err)
 		return
@@ -239,47 +253,57 @@ func (s *Server) hPatchTask(w http.ResponseWriter, r *http.Request, id string) {
 	if req.Description != nil {
 		t.DescriptionExcerpt = truncExcerpt(*req.Description, 200)
 	}
-	if err := s.Store.UpdateTask(r.Context(), t); err != nil {
+	if err := st.UpdateTask(r.Context(), t); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
+	fs := s.FS.Get(username)
 	if req.Description != nil {
-		doc, _ := s.FS.LoadTaskDoc(id)
+		doc, _ := fs.LoadTaskDoc(id)
 		if doc == nil {
 			doc = &fsstore.TaskDoc{ID: id}
 		}
 		doc.Description = *req.Description
-		_ = s.FS.SaveTaskDoc(doc)
+		_ = fs.SaveTaskDoc(doc)
 		t.Description = *req.Description
 	}
-	s.Hub.Publish("board", toEvent("task.updated", map[string]any{"task_id": id}))
+	s.Hub.Publish("board", toEvent("task.updated", map[string]any{"task_id": id, "owner": username}))
 	writeJSON(w, 200, map[string]any{"task": t})
 }
 
 func (s *Server) hDeleteTask(w http.ResponseWriter, r *http.Request, id string) {
-	ids, err := s.Store.DeleteTask(r.Context(), id)
+	st, username, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	ids, err := st.DeleteTask(r.Context(), id)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	_ = s.FS.DeleteTask(id)
+	fs := s.FS.Get(username)
+	_ = fs.DeleteTask(id)
 	for _, aid := range ids {
-		_ = s.FS.DeleteAttempt(aid)
+		_ = fs.DeleteAttempt(aid)
 	}
-	s.Hub.Publish("board", toEvent("task.deleted", map[string]any{"task_id": id}))
+	s.Hub.Publish("board", toEvent("task.deleted", map[string]any{"task_id": id, "owner": username}))
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 type transitionReq struct {
 	To       string `json:"to"`
 	Reason   string `json:"reason,omitempty"`
-	AfterID  string `json:"after_id,omitempty"`  // drop target: place right after this card
-	BeforeID string `json:"before_id,omitempty"` // drop target: place right before this card
+	AfterID  string `json:"after_id,omitempty"`
+	BeforeID string `json:"before_id,omitempty"`
 }
 
 func (s *Server) hTransition(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != "POST" {
 		http.Error(w, "method not allowed", 405)
+		return
+	}
+	st, username, ok := s.storeFor(w, r)
+	if !ok {
 		return
 	}
 	var req transitionReq
@@ -288,15 +312,14 @@ func (s *Server) hTransition(w http.ResponseWriter, r *http.Request, id string) 
 		return
 	}
 	to := store.TaskStatus(req.To)
-	// Special-cases: Plan → Execute via manual drag = same as hitting Start.
 	if to == store.StatusExecute {
-		t, err := s.Store.GetTask(r.Context(), id)
+		t, err := st.GetTask(r.Context(), id)
 		if err != nil {
 			writeErr(w, 404, err)
 			return
 		}
 		if t.Status == store.StatusPlan || t.Status == store.StatusDraft {
-			if _, err := s.Runner.Start(r.Context(), id, "", ""); err != nil {
+			if _, err := s.Runner.Start(r.Context(), username, id, "", ""); err != nil {
 				if ce, ok := err.(*attempt.ConcurrencyErr); ok {
 					writeJSON(w, 409, map[string]any{"code": "concurrency_limit", "level": ce.Level})
 					return
@@ -308,10 +331,8 @@ func (s *Server) hTransition(w http.ResponseWriter, r *http.Request, id string) 
 			return
 		}
 	}
-	// If caller passed after_id/before_id (drag-within-or-across columns with a
-	// specific drop slot), use MoveTask so ordering is preserved exactly.
 	if req.AfterID != "" || req.BeforeID != "" {
-		if err := s.Store.MoveTask(r.Context(), id, to, req.AfterID, req.BeforeID); err != nil {
+		if err := st.MoveTask(r.Context(), id, to, req.AfterID, req.BeforeID); err != nil {
 			writeErr(w, 400, err)
 			return
 		}
@@ -319,7 +340,7 @@ func (s *Server) hTransition(w http.ResponseWriter, r *http.Request, id string) 
 		writeJSON(w, 200, map[string]any{"ok": true})
 		return
 	}
-	if err := s.Board.Transition(r.Context(), id, to, board.KindManual, req.Reason); err != nil {
+	if err := s.Board.Transition(r.Context(), st, id, to, board.KindManual, req.Reason); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -332,7 +353,11 @@ type startAttemptReq struct {
 }
 
 func (s *Server) hListTaskAttempts(w http.ResponseWriter, r *http.Request, id string) {
-	atts, err := s.Store.ListAttemptsForTask(r.Context(), id)
+	st, _, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	atts, err := st.ListAttemptsForTask(r.Context(), id)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -345,9 +370,13 @@ func (s *Server) hStartAttempt(w http.ResponseWriter, r *http.Request, id string
 		http.Error(w, "method not allowed", 405)
 		return
 	}
+	_, username, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
 	var req startAttemptReq
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	att, err := s.Runner.Start(r.Context(), id, req.ServerID, req.Model)
+	att, err := s.Runner.Start(r.Context(), username, id, req.ServerID, req.Model)
 	if err != nil {
 		if ce, ok := err.(*attempt.ConcurrencyErr); ok {
 			writeJSON(w, 409, map[string]any{"code": "concurrency_limit", "level": ce.Level})
@@ -371,11 +400,14 @@ func (s *Server) routeAttempts(w http.ResponseWriter, r *http.Request) {
 	id := parts[0]
 	switch {
 	case len(parts) == 1:
-		if r.Method != "GET" {
+		switch r.Method {
+		case "GET":
+			s.hGetAttempt(w, r, id)
+		case "DELETE":
+			s.hDeleteAttempt(w, r, id)
+		default:
 			http.Error(w, "method not allowed", 405)
-			return
 		}
-		s.hGetAttempt(w, r, id)
 	case parts[1] == "messages":
 		s.hAttemptMessages(w, r, id)
 	case parts[1] == "cancel":
@@ -389,17 +421,16 @@ func (s *Server) routeAttempts(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// hAttemptReconnect is invoked by the UI when the user scrolls the task
-// modal to the bottom. It asks the Runner to open a fresh SSE subscription
-// to Hermes for any recorded run — useful for stale / terminal attempts
-// we might have transitioned to failed prematurely. If the attempt is
-// already owned by a live runCtx this is a no-op (returns `already_live`).
 func (s *Server) hAttemptReconnect(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != "POST" {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	status, err := s.Runner.TryReconnect(r.Context(), id)
+	_, username, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	status, err := s.Runner.TryReconnect(r.Context(), username, id)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"status": "error", "error": err.Error()})
 		return
@@ -408,16 +439,53 @@ func (s *Server) hAttemptReconnect(w http.ResponseWriter, r *http.Request, id st
 }
 
 func (s *Server) hGetAttempt(w http.ResponseWriter, r *http.Request, id string) {
-	att, err := s.Store.GetAttempt(r.Context(), id)
+	st, username, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	att, err := st.GetAttempt(r.Context(), id)
 	if err != nil {
 		writeErr(w, 404, err)
 		return
 	}
-	meta, _ := s.FS.LoadAttemptMeta(id)
+	fs := s.FS.Get(username)
+	meta, _ := fs.LoadAttemptMeta(id)
 	writeJSON(w, 200, map[string]any{"attempt": att, "meta": meta})
 }
 
+// hDeleteAttempt removes a single attempt row + its filesystem payload
+// from the caller's per-user store.
+func (s *Server) hDeleteAttempt(w http.ResponseWriter, r *http.Request, id string) {
+	st, username, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	att, err := st.GetAttempt(r.Context(), id)
+	if err != nil {
+		writeErr(w, 404, err)
+		return
+	}
+	if att.State == store.AttemptQueued || att.State == store.AttemptRunning || att.State == store.AttemptNeedsInput {
+		writeErr(w, 409, errors.New("cancel the attempt first"))
+		return
+	}
+	if err := st.DeleteAttempt(r.Context(), id); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	fs := s.FS.Get(username)
+	_ = fs.DeleteAttempt(id)
+	s.Hub.Publish("board", toEvent("attempt.deleted", map[string]any{"task_id": att.TaskID, "attempt_id": id, "owner": username}))
+	s.Hub.Publish("attempt:"+id, toEvent("attempt.deleted", map[string]any{"task_id": att.TaskID, "attempt_id": id, "owner": username}))
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
 func (s *Server) hAttemptMessages(w http.ResponseWriter, r *http.Request, id string) {
+	_, username, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	fs := s.FS.Get(username)
 	switch r.Method {
 	case "POST":
 		var req struct {
@@ -427,21 +495,20 @@ func (s *Server) hAttemptMessages(w http.ResponseWriter, r *http.Request, id str
 			writeErr(w, 400, errors.New("text required"))
 			return
 		}
-		if err := s.Runner.SendMessage(r.Context(), id, req.Text); err != nil {
+		if err := s.Runner.SendMessage(r.Context(), username, id, req.Text); err != nil {
 			writeErr(w, 500, err)
 			return
 		}
 		writeJSON(w, 202, map[string]any{"ok": true})
 	case "GET":
 		q := r.URL.Query()
-		// tail=N or before_seq=X & limit=
 		if bs := q.Get("before_seq"); bs != "" {
 			before, _ := strconv.ParseUint(bs, 10, 64)
 			limit, _ := strconv.Atoi(q.Get("limit"))
 			if limit <= 0 {
 				limit = 20
 			}
-			events, err := s.FS.ReadEventsBefore(id, before, limit)
+			events, err := fs.ReadEventsBefore(id, before, limit)
 			if err != nil {
 				writeErr(w, 500, err)
 				return
@@ -453,7 +520,7 @@ func (s *Server) hAttemptMessages(w http.ResponseWriter, r *http.Request, id str
 		if t := q.Get("tail"); t != "" {
 			tail, _ = strconv.Atoi(t)
 		}
-		events, err := s.FS.ReadEventsTail(id, tail*10) // 10 events per "message" approx
+		events, err := fs.ReadEventsTail(id, tail*10)
 		if err != nil {
 			writeErr(w, 500, err)
 			return
@@ -469,7 +536,11 @@ func (s *Server) hAttemptCancel(w http.ResponseWriter, r *http.Request, id strin
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	if err := s.Runner.Cancel(r.Context(), id); err != nil {
+	_, username, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	if err := s.Runner.Cancel(r.Context(), username, id); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
@@ -481,11 +552,12 @@ func (s *Server) hAttemptEvents(w http.ResponseWriter, r *http.Request, id strin
 		http.Error(w, "method not allowed", 405)
 		return
 	}
+	_, username, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	fs := s.FS.Get(username)
 	q := r.URL.Query()
-	// `tail=N` returns the last N events (ascending). When combined with
-	// `before_seq=S`, returns the last N events whose seq is strictly below
-	// S — that's the "load earlier" pagination the UI uses to page back
-	// through a long event log without shipping the whole thing on open.
 	if t := q.Get("tail"); t != "" {
 		n, _ := strconv.Atoi(t)
 		if n <= 0 {
@@ -493,7 +565,7 @@ func (s *Server) hAttemptEvents(w http.ResponseWriter, r *http.Request, id strin
 		}
 		if bs := q.Get("before_seq"); bs != "" {
 			before, _ := strconv.ParseUint(bs, 10, 64)
-			events, err := s.FS.ReadEventsBefore(id, before, n)
+			events, err := fs.ReadEventsBefore(id, before, n)
 			if err != nil {
 				writeErr(w, 500, err)
 				return
@@ -501,7 +573,7 @@ func (s *Server) hAttemptEvents(w http.ResponseWriter, r *http.Request, id strin
 			writeJSON(w, 200, map[string]any{"events": events})
 			return
 		}
-		events, err := s.FS.ReadEventsTail(id, n)
+		events, err := fs.ReadEventsTail(id, n)
 		if err != nil {
 			writeErr(w, 500, err)
 			return
@@ -511,7 +583,7 @@ func (s *Server) hAttemptEvents(w http.ResponseWriter, r *http.Request, id strin
 	}
 	since, _ := strconv.ParseUint(q.Get("since_seq"), 10, 64)
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	events, err := s.FS.ReadEventsRange(id, since, limit)
+	events, err := fs.ReadEventsRange(id, since, limit)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -531,6 +603,18 @@ func (s *Server) hStreamAttempt(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	_, username, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	// Access check: the attempt must exist in this user's store.
+	st, _ := s.Stores.Get(username)
+	if st != nil {
+		if _, err := st.GetAttempt(r.Context(), id); err != nil {
+			http.Error(w, `{"code":"not_found"}`, http.StatusNotFound)
+			return
+		}
+	}
 	var since uint64
 	if v := r.URL.Query().Get("since_seq"); v != "" {
 		since, _ = strconv.ParseUint(v, 10, 64)
@@ -540,10 +624,10 @@ func (s *Server) hStreamAttempt(w http.ResponseWriter, r *http.Request) {
 			since = v
 		}
 	}
-	s.streamTopic(w, r, "attempt:"+id, since)
+	s.streamTopicForUser(w, r, "attempt:"+id, since, username, id)
 }
 
-func (s *Server) streamTopic(w http.ResponseWriter, r *http.Request, topic string, since uint64) {
+func (s *Server) streamTopicForUser(w http.ResponseWriter, r *http.Request, topic string, since uint64, username, attemptID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -554,10 +638,9 @@ func (s *Server) streamTopic(w http.ResponseWriter, r *http.Request, topic strin
 		return
 	}
 
-	// For attempt topics with `since`, replay history from disk first.
-	if strings.HasPrefix(topic, "attempt:") && since > 0 {
-		attID := strings.TrimPrefix(topic, "attempt:")
-		events, _ := s.FS.ReadEventsRange(attID, since, 2000)
+	if since > 0 {
+		fs := s.FS.Get(username)
+		events, _ := fs.ReadEventsRange(attemptID, since, 2000)
 		for _, e := range events {
 			seq := uint64(0)
 			if v, ok := e["seq"].(float64); ok {
@@ -571,11 +654,9 @@ func (s *Server) streamTopic(w http.ResponseWriter, r *http.Request, topic strin
 	ch, unsub := s.Hub.Subscribe(topic)
 	defer unsub()
 
-	// keepalive
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 
-	// initial comment to establish connection
 	fmt.Fprintln(w, ":ok")
 	flusher.Flush()
 
@@ -597,16 +678,44 @@ func (s *Server) streamTopic(w http.ResponseWriter, r *http.Request, topic strin
 	}
 }
 
-// writeSSE emits a Server-Sent Events frame. We intentionally DO NOT emit the
-// `event:` header: a named event is only delivered to matching
-// addEventListener(name) handlers and never to onmessage, which was silently
-// starving our generic board subscriber. Instead we inline the event name into
-// the JSON payload (key "event") so the frontend's onmessage handler can
-// discriminate from a single stream.
-//
-// IMPORTANT: attempt-stream frames already carry their own `event` discriminator
-// inside data (e.g. "user_message", "run_start", emitted by AttemptRunner).
-// We must not overwrite that — only fill in `event` when data didn't set it.
+func (s *Server) streamTopic(w http.ResponseWriter, r *http.Request, topic string, since uint64) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", 500)
+		return
+	}
+
+	ch, unsub := s.Hub.Subscribe(topic)
+	defer unsub()
+
+	ping := time.NewTicker(15 * time.Second)
+	defer ping.Stop()
+
+	fmt.Fprintln(w, ":ok")
+	flusher.Flush()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			writeSSE(w, ev.Seq, ev.Event, ev.Data)
+			flusher.Flush()
+		case <-ping.C:
+			fmt.Fprintln(w, ":ping")
+			flusher.Flush()
+		}
+	}
+}
+
 func writeSSE(w http.ResponseWriter, seq uint64, event string, data map[string]any) {
 	if seq > 0 {
 		fmt.Fprintf(w, "id: %d\n", seq)
@@ -633,68 +742,95 @@ type serverDTO struct {
 	HasAPIKey     bool                  `json:"has_api_key"`
 	IsDefault     bool                  `json:"is_default"`
 	MaxConcurrent int                   `json:"max_concurrent"`
-	Models        []config.HermesModel  `json:"models"`
+	Models        []userdir.HermesModel `json:"models"`
+	Shared        bool                  `json:"shared"`
+	OwnerID       string                `json:"owner_id"`
+	OwnerUsername string                `json:"owner_username"`
+	Mine          bool                  `json:"mine"`
 }
 
 func (s *Server) hListServers(w http.ResponseWriter, r *http.Request) {
-	cur := s.Cfg.Snapshot()
-	out := []serverDTO{}
-	for _, sv := range cur.HermesServers {
+	u := auth.UserFromContext(r.Context())
+	if u == nil {
+		writeErr(w, 401, errors.New("unauthorized"))
+		return
+	}
+	views := s.Users.VisibleServers(u.Username)
+	out := make([]serverDTO, 0, len(views))
+	for _, v := range views {
 		out = append(out, serverDTO{
-			ID: sv.ID, Name: sv.Name, BaseURL: sv.BaseURL,
-			HasAPIKey:  sv.APIKey != "" || sv.APIKeyEnc != "",
-			IsDefault:  sv.IsDefault,
-			MaxConcurrent: sv.MaxConcurrent,
-			Models:     sv.Models,
+			ID: v.ID, Name: v.Name, BaseURL: v.BaseURL,
+			HasAPIKey:     v.APIKey != "" || v.APIKeyEnc != "",
+			IsDefault:     v.IsDefault,
+			MaxConcurrent: v.MaxConcurrent,
+			Models:        v.Models,
+			Shared:        v.Shared,
+			OwnerID:       v.OwnerID,
+			OwnerUsername: v.OwnerUsername,
+			Mine:          v.Mine,
 		})
 	}
 	writeJSON(w, 200, map[string]any{"servers": out})
 }
 
 type serverUpsertReq struct {
-	ID            string               `json:"id"`
-	Name          string               `json:"name"`
-	BaseURL       string               `json:"base_url"`
-	APIKey        string               `json:"api_key,omitempty"`
-	IsDefault     bool                 `json:"is_default"`
-	MaxConcurrent int                  `json:"max_concurrent,omitempty"`
-	Models        []config.HermesModel `json:"models,omitempty"`
+	ID            string                `json:"id"`
+	Name          string                `json:"name"`
+	BaseURL       string                `json:"base_url"`
+	APIKey        string                `json:"api_key,omitempty"`
+	IsDefault     bool                  `json:"is_default"`
+	MaxConcurrent int                   `json:"max_concurrent,omitempty"`
+	Models        []userdir.HermesModel `json:"models,omitempty"`
+	Shared        bool                  `json:"shared"`
 }
 
 func (s *Server) hCreateServer(w http.ResponseWriter, r *http.Request) {
+	me := auth.UserFromContext(r.Context())
+	if me == nil {
+		writeErr(w, 401, errors.New("unauthorized"))
+		return
+	}
 	var req serverUpsertReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
+	req.ID = strings.TrimSpace(req.ID)
 	if req.ID == "" || req.BaseURL == "" {
 		writeErr(w, 400, errors.New("id and base_url required"))
 		return
 	}
-	err := s.Cfg.Mutate(func(c *config.Config) error {
-		for i := range c.HermesServers {
-			if c.HermesServers[i].ID == req.ID {
-				return errors.New("id already exists")
+	// Server IDs must be globally unique across users so the Hermes pool
+	// can key clients by ID alone.
+	if owner, _, _, found := s.Users.FindServer(me.Username, req.ID); found {
+		writeErr(w, 409, fmt.Errorf("server id %q already exists (owner: %s)", req.ID, owner))
+		return
+	}
+	err := s.Users.Mutate(me.Username, func(uc *userdir.UserConfig) error {
+		for _, sv := range uc.HermesServers {
+			if strings.EqualFold(sv.BaseURL, req.BaseURL) {
+				return fmt.Errorf("you already have a server with base_url %q", req.BaseURL)
 			}
 		}
 		if req.IsDefault {
-			for i := range c.HermesServers {
-				c.HermesServers[i].IsDefault = false
+			for i := range uc.HermesServers {
+				uc.HermesServers[i].IsDefault = false
 			}
 		}
-		ns := config.HermesServer{
+		uc.HermesServers = append(uc.HermesServers, userdir.HermesServer{
 			ID: req.ID, Name: req.Name, BaseURL: req.BaseURL,
 			APIKey: req.APIKey, IsDefault: req.IsDefault,
 			MaxConcurrent: req.MaxConcurrent,
-			Models: req.Models,
-		}
-		c.HermesServers = append(c.HermesServers, ns)
+			Models:        req.Models,
+			Shared:        req.Shared,
+		})
 		return nil
 	})
 	if err != nil {
 		writeErr(w, 400, err)
 		return
 	}
+	s.ReloadPool()
 	writeJSON(w, 201, map[string]any{"ok": true})
 }
 
@@ -726,19 +862,27 @@ func (s *Server) routeServers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) hUpdateServer(w http.ResponseWriter, r *http.Request, id string) {
+	me := auth.UserFromContext(r.Context())
+	if me == nil {
+		writeErr(w, 401, errors.New("unauthorized"))
+		return
+	}
+	owner, _, _, found := s.Users.FindServer(me.Username, id)
+	if !found || owner != me.Username {
+		writeErr(w, 404, errors.New("not found"))
+		return
+	}
 	var req serverUpsertReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	err := s.Cfg.Mutate(func(c *config.Config) error {
-		found := false
-		for i := range c.HermesServers {
-			if c.HermesServers[i].ID != id {
+	err := s.Users.Mutate(me.Username, func(uc *userdir.UserConfig) error {
+		for i := range uc.HermesServers {
+			if uc.HermesServers[i].ID != id {
 				continue
 			}
-			found = true
-			sv := &c.HermesServers[i]
+			sv := &uc.HermesServers[i]
 			if req.Name != "" {
 				sv.Name = req.Name
 			}
@@ -755,30 +899,40 @@ func (s *Server) hUpdateServer(w http.ResponseWriter, r *http.Request, id string
 			if req.Models != nil {
 				sv.Models = req.Models
 			}
+			sv.Shared = req.Shared
 			if req.IsDefault {
-				for j := range c.HermesServers {
-					c.HermesServers[j].IsDefault = false
+				for j := range uc.HermesServers {
+					uc.HermesServers[j].IsDefault = false
 				}
 				sv.IsDefault = true
 			}
+			return nil
 		}
-		if !found {
-			return errors.New("not found")
-		}
-		return nil
+		return errors.New("not found")
 	})
 	if err != nil {
 		writeErr(w, 400, err)
 		return
 	}
+	s.ReloadPool()
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (s *Server) hDeleteServer(w http.ResponseWriter, r *http.Request, id string) {
-	err := s.Cfg.Mutate(func(c *config.Config) error {
+	me := auth.UserFromContext(r.Context())
+	if me == nil {
+		writeErr(w, 401, errors.New("unauthorized"))
+		return
+	}
+	owner, _, _, found := s.Users.FindServer(me.Username, id)
+	if !found || owner != me.Username {
+		writeErr(w, 404, errors.New("not found"))
+		return
+	}
+	err := s.Users.Mutate(me.Username, func(uc *userdir.UserConfig) error {
 		idx := -1
-		for i := range c.HermesServers {
-			if c.HermesServers[i].ID == id {
+		for i := range uc.HermesServers {
+			if uc.HermesServers[i].ID == id {
 				idx = i
 				break
 			}
@@ -786,13 +940,14 @@ func (s *Server) hDeleteServer(w http.ResponseWriter, r *http.Request, id string
 		if idx < 0 {
 			return errors.New("not found")
 		}
-		c.HermesServers = append(c.HermesServers[:idx], c.HermesServers[idx+1:]...)
+		uc.HermesServers = append(uc.HermesServers[:idx], uc.HermesServers[idx+1:]...)
 		return nil
 	})
 	if err != nil {
 		writeErr(w, 400, err)
 		return
 	}
+	s.ReloadPool()
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -844,16 +999,21 @@ func (s *Server) hServerModels(w http.ResponseWriter, r *http.Request, id string
 // ---------------- tags ----------------
 
 func (s *Server) hListTags(w http.ResponseWriter, r *http.Request) {
-	tags, err := s.Store.ListTags(r.Context())
-	if err != nil {
-		writeErr(w, 500, err)
+	u := auth.UserFromContext(r.Context())
+	if u == nil {
+		writeErr(w, 401, errors.New("unauthorized"))
 		return
 	}
-	writeJSON(w, 200, map[string]any{"tags": tags})
+	writeJSON(w, 200, map[string]any{"tags": s.Users.VisibleTags(u.Username)})
 }
 
 func (s *Server) hUpsertTag(w http.ResponseWriter, r *http.Request) {
-	var t store.Tag
+	me := auth.UserFromContext(r.Context())
+	if me == nil {
+		writeErr(w, 401, errors.New("unauthorized"))
+		return
+	}
+	var t userdir.Tag
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
 		writeErr(w, 400, err)
 		return
@@ -863,7 +1023,24 @@ func (s *Server) hUpsertTag(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errors.New("tag name required"))
 		return
 	}
-	if err := s.Store.UpsertTag(r.Context(), t); err != nil {
+	// Only allowed to edit if no one else owns this tag name, OR it's mine.
+	if owner, _, _, found := s.Users.TagByName(me.Username, t.Name); found && owner != me.Username {
+		writeErr(w, 403, errors.New("tag owned by another user"))
+		return
+	}
+	err := s.Users.Mutate(me.Username, func(uc *userdir.UserConfig) error {
+		for i := range uc.Tags {
+			if uc.Tags[i].Name == t.Name {
+				uc.Tags[i].Color = t.Color
+				uc.Tags[i].SystemPrompt = t.SystemPrompt
+				uc.Tags[i].Shared = t.Shared
+				return nil
+			}
+		}
+		uc.Tags = append(uc.Tags, t)
+		return nil
+	})
+	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
@@ -875,9 +1052,33 @@ func (s *Server) hDeleteTag(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
+	me := auth.UserFromContext(r.Context())
+	if me == nil {
+		writeErr(w, 401, errors.New("unauthorized"))
+		return
+	}
 	name := strings.TrimPrefix(r.URL.Path, "/api/tags/")
-	if err := s.Store.DeleteTag(r.Context(), name); err != nil {
-		writeErr(w, 500, err)
+	owner, _, _, found := s.Users.TagByName(me.Username, name)
+	if !found || owner != me.Username {
+		writeErr(w, 404, errors.New("not found"))
+		return
+	}
+	err := s.Users.Mutate(me.Username, func(uc *userdir.UserConfig) error {
+		idx := -1
+		for i := range uc.Tags {
+			if uc.Tags[i].Name == name {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return errors.New("not found")
+		}
+		uc.Tags = append(uc.Tags[:idx], uc.Tags[idx+1:]...)
+		return nil
+	})
+	if err != nil {
+		writeErr(w, 400, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
@@ -888,15 +1089,15 @@ func (s *Server) hDeleteTag(w http.ResponseWriter, r *http.Request) {
 func (s *Server) hGetSettings(w http.ResponseWriter, r *http.Request) {
 	c := s.Cfg.Snapshot()
 	ossOut := c.OSS
-	ossOut.AccessKeySecret = ""       // never leak
-	ossOut.AccessKeySecretEnc = ""    // never leak
+	ossOut.AccessKeySecret = ""
+	ossOut.AccessKeySecretEnc = ""
 	hasSecret := c.OSS.AccessKeySecret != "" || c.OSS.AccessKeySecretEnc != ""
 	writeJSON(w, 200, map[string]any{
-		"scheduler":        c.Scheduler,
-		"archive":          c.Archive,
-		"server":           c.Server,
-		"oss":              ossOut,
-		"oss_has_secret":   hasSecret,
+		"scheduler":      c.Scheduler,
+		"archive":        c.Archive,
+		"server":         c.Server,
+		"oss":            ossOut,
+		"oss_has_secret": hasSecret,
 	})
 }
 
@@ -924,7 +1125,6 @@ func (s *Server) hUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			c.Server = *req.Server
 		}
 		if req.OSS != nil {
-			// Preserve existing encrypted secret if caller didn't send a new plaintext.
 			prev := c.OSS
 			c.OSS = *req.OSS
 			if req.OSS.AccessKeySecret == "" {
@@ -942,40 +1142,41 @@ func (s *Server) hUpdateSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) hGetPreferences(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"preferences": s.Cfg.Snapshot().Preferences})
+	u := auth.UserFromContext(r.Context())
+	if u == nil {
+		writeErr(w, 401, errors.New("unauthorized"))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"preferences": u.Preferences})
 }
 
 func (s *Server) hUpdatePreferences(w http.ResponseWriter, r *http.Request) {
-	var p config.Preferences
+	me := auth.UserFromContext(r.Context())
+	if me == nil {
+		writeErr(w, 401, errors.New("unauthorized"))
+		return
+	}
+	var p userdir.Preferences
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	err := s.Cfg.Mutate(func(c *config.Config) error {
-		c.Preferences = p
+	err := s.Users.Mutate(me.Username, func(uc *userdir.UserConfig) error {
+		uc.Preferences = p
 		return nil
 	})
 	if err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	s.Hub.Publish("board", toEvent("preferences_updated", map[string]any{}))
+	s.Hub.Publish("board", toEvent("preferences_updated", map[string]any{"owner": me.Username}))
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (s *Server) hGetConfig(w http.ResponseWriter, r *http.Request) {
 	c := s.Cfg.Snapshot()
-	// sanitize: strip secrets
 	sanitized := *c
-	sanitized.Auth.PasswordHash = ""
 	sanitized.Auth.SessionSecret = ""
-	clean := make([]config.HermesServer, len(c.HermesServers))
-	for i, sv := range c.HermesServers {
-		clean[i] = sv
-		clean[i].APIKey = ""
-		clean[i].APIKeyEnc = ""
-	}
-	sanitized.HermesServers = clean
 	writeJSON(w, 200, map[string]any{"config": sanitized})
 }
 
@@ -988,19 +1189,30 @@ func (s *Server) hReloadConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
+	if err := s.Users.Reload(); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	s.ReloadPool()
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // ---------------- auth handlers ----------------
 
 func (s *Server) hAuthStatus(w http.ResponseWriter, r *http.Request) {
-	c := s.Cfg.Snapshot()
-	logged := true
-	if c.Auth.Enabled {
-		cookie, err := r.Cookie(auth.CookieName)
-		logged = err == nil && s.Auth.Valid(cookie.Value)
+	u := auth.UserFromContext(r.Context())
+	if u == nil {
+		writeJSON(w, 200, map[string]any{"logged_in": false})
+		return
 	}
-	writeJSON(w, 200, map[string]any{"enabled": c.Auth.Enabled, "logged_in": logged, "username": c.Auth.Username})
+	writeJSON(w, 200, map[string]any{
+		"logged_in": true,
+		"user": map[string]any{
+			"id":       u.ID,
+			"username": u.Username,
+			"is_admin": u.IsAdmin,
+		},
+	})
 }
 
 func (s *Server) hAuthLogin(w http.ResponseWriter, r *http.Request) {
@@ -1013,13 +1225,18 @@ func (s *Server) hAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	token, exp, err := s.Auth.Login(req.Username, req.Password)
+	token, exp, u, err := s.Auth.Login(r.Context(), req.Username, req.Password)
 	if err != nil {
 		writeErr(w, 401, err)
 		return
 	}
 	auth.WriteCookie(w, token, exp, auth.IsSecureRequest(r))
-	writeJSON(w, 200, map[string]any{"ok": true})
+	writeJSON(w, 200, map[string]any{
+		"ok": true,
+		"user": map[string]any{
+			"id": u.ID, "username": u.Username, "is_admin": u.IsAdmin,
+		},
+	})
 }
 
 func (s *Server) hAuthLogout(w http.ResponseWriter, r *http.Request) {
@@ -1031,44 +1248,14 @@ func (s *Server) hAuthLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
-func (s *Server) hAuthEnable(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "method not allowed", 405)
-		return
-	}
-	var req struct{ Username, Password string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	if err := s.Auth.Enable(req.Username, req.Password); err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{"ok": true})
-}
-
-func (s *Server) hAuthDisable(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "method not allowed", 405)
-		return
-	}
-	var req struct{ Password string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	if err := s.Auth.Disable(req.Password); err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	auth.ClearCookie(w)
-	writeJSON(w, 200, map[string]any{"ok": true})
-}
-
 func (s *Server) hAuthChange(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "method not allowed", 405)
+		return
+	}
+	u := auth.UserFromContext(r.Context())
+	if u == nil {
+		writeErr(w, 401, errors.New("unauthorized"))
 		return
 	}
 	var req struct {
@@ -1079,7 +1266,7 @@ func (s *Server) hAuthChange(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	if err := s.Auth.ChangePassword(req.OldPassword, req.NewPassword); err != nil {
+	if err := s.Auth.ChangePassword(r.Context(), u.Username, req.OldPassword, req.NewPassword); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -1089,14 +1276,18 @@ func (s *Server) hAuthChange(w http.ResponseWriter, r *http.Request) {
 // ---------------- schedules ----------------
 
 type scheduleReq struct {
-	Kind    string `json:"kind"`    // accepted: "cron" (empty defaults to "cron")
-	Spec    string `json:"spec"`    // 5-field cron expression
+	Kind    string `json:"kind"`
+	Spec    string `json:"spec"`
 	Note    string `json:"note,omitempty"`
 	Enabled *bool  `json:"enabled,omitempty"`
 }
 
 func (s *Server) hListTaskSchedules(w http.ResponseWriter, r *http.Request, taskID string) {
-	list, err := s.Store.ListSchedulesForTask(r.Context(), taskID)
+	st, _, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	list, err := st.ListSchedulesForTask(r.Context(), taskID)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -1105,6 +1296,10 @@ func (s *Server) hListTaskSchedules(w http.ResponseWriter, r *http.Request, task
 }
 
 func (s *Server) hCreateSchedule(w http.ResponseWriter, r *http.Request, taskID string) {
+	st, _, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
 	var req scheduleReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err)
@@ -1133,25 +1328,31 @@ func (s *Server) hCreateSchedule(w http.ResponseWriter, r *http.Request, taskID 
 		writeErr(w, 400, err)
 		return
 	}
-	if err := s.Store.CreateSchedule(r.Context(), &sch); err != nil {
+	if err := st.CreateSchedule(r.Context(), &sch); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
 	writeJSON(w, 201, map[string]any{"schedule": sch})
 }
 
-// routeSchedules handles /api/schedules/{id} — PATCH toggles the enabled
-// flag; DELETE removes the row. Changing kind/spec is done via DELETE + POST
-// to avoid needing to re-derive next_run_at relative to an unknown base.
 func (s *Server) routeSchedules(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/schedules/")
 	if id == "" || strings.Contains(id, "/") {
 		http.NotFound(w, r)
 		return
 	}
+	st, _, ok := s.storeFor(w, r)
+	if !ok {
+		return
+	}
+	sch, err := st.GetSchedule(r.Context(), id)
+	if err != nil {
+		writeErr(w, 404, err)
+		return
+	}
 	switch r.Method {
 	case "DELETE":
-		if err := s.Store.DeleteSchedule(r.Context(), id); err != nil {
+		if err := st.DeleteSchedule(r.Context(), id); err != nil {
 			writeErr(w, 500, err)
 			return
 		}
@@ -1168,20 +1369,14 @@ func (s *Server) routeSchedules(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, errors.New("only enabled toggle is supported"))
 			return
 		}
-		existing, err := s.Store.GetSchedule(r.Context(), id)
-		if err != nil {
-			writeErr(w, 404, err)
-			return
-		}
-		if err := s.Store.SetScheduleEnabled(r.Context(), id, *req.Enabled); err != nil {
+		if err := st.SetScheduleEnabled(r.Context(), id, *req.Enabled); err != nil {
 			writeErr(w, 500, err)
 			return
 		}
-		// When re-enabling, recompute next_run_at from now so it actually fires.
 		if *req.Enabled {
-			existing.Enabled = true
-			if err := cronpkg.Compute(existing, time.Now()); err == nil {
-				_ = s.Store.UpdateSchedule(r.Context(), existing)
+			sch.Enabled = true
+			if err := cronpkg.Compute(sch, time.Now()); err == nil {
+				_ = st.UpdateSchedule(r.Context(), sch)
 			}
 		}
 		writeJSON(w, 200, map[string]any{"ok": true})
@@ -1192,17 +1387,6 @@ func (s *Server) routeSchedules(w http.ResponseWriter, r *http.Request) {
 
 // ---------------- uploads ----------------
 
-// hUploadFile accepts a multipart form file named "file" and returns {url}.
-// Size limit: 50 MB. Accepted: images (image/*), audio/video (audio/*,
-// video/*) — explicitly mp4/mov/avi/mp3/wav — and common documents (pdf,
-// txt, md, doc/docx, xls/xlsx, ppt/pptx) verified by MIME prefix and
-// filename extension fallback.
-//
-// We refuse uploads outright unless Aliyun OSS is configured: Hermes forwards
-// the task description verbatim as text to its LLM provider, so a
-// locally-hosted URL can't be fetched by the LLM. Without OSS there's
-// literally no way for the file to reach the model — we fail loud instead
-// of silently saving bytes nobody will see.
 func (s *Server) hUploadFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "method not allowed", 405)
@@ -1217,7 +1401,7 @@ func (s *Server) hUploadFile(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	const maxUpload = 50 << 20 // 50 MB
+	const maxUpload = 50 << 20
 	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
 	if err := r.ParseMultipartForm(maxUpload); err != nil {
 		writeErr(w, 400, err)
@@ -1231,7 +1415,7 @@ func (s *Server) hUploadFile(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	ct := hdr.Header.Get("Content-Type")
 	if !uploadTypeAllowed(ct, hdr.Filename) {
-		writeErr(w, 400, errors.New("file type not allowed; accepted: image/audio/video and pdf/doc/docx/xls/xlsx/ppt/pptx/txt/md"))
+		writeErr(w, 400, errors.New("file type not allowed"))
 		return
 	}
 	buf := make([]byte, 0, hdr.Size)
@@ -1260,28 +1444,22 @@ func (s *Server) hUploadFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"url": url, "size": len(buf), "storage": kind})
 }
 
-// uploadTypeAllowed checks the upload allowlist via MIME prefix first then
-// filename extension as a fallback (browsers sometimes report empty MIME
-// for office documents picked from older OSes). Mirrors the manual.md
-// spec: images, audio, video, PDF, plain text, markdown, and the
-// MS Office formats.
 func uploadTypeAllowed(contentType, filename string) bool {
 	ct := strings.ToLower(contentType)
 	if strings.HasPrefix(ct, "image/") || strings.HasPrefix(ct, "audio/") || strings.HasPrefix(ct, "video/") {
 		return true
 	}
 	docMIMEs := map[string]bool{
-		"application/pdf":  true,
-		"text/plain":       true,
-		"text/markdown":    true,
+		"application/pdf":    true,
+		"text/plain":         true,
+		"text/markdown":      true,
 		"application/msword": true,
 		"application/vnd.openxmlformats-officedocument.wordprocessingml.document": true,
 		"application/vnd.ms-excel": true,
-		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": true,
-		"application/vnd.ms-powerpoint": true,
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":       true,
+		"application/vnd.ms-powerpoint":                                            true,
 		"application/vnd.openxmlformats-officedocument.presentationml.presentation": true,
 	}
-	// Strip ;charset=… style suffix.
 	bare := ct
 	if i := strings.IndexByte(bare, ';'); i >= 0 {
 		bare = strings.TrimSpace(bare[:i])
@@ -1289,7 +1467,6 @@ func uploadTypeAllowed(contentType, filename string) bool {
 	if docMIMEs[bare] {
 		return true
 	}
-	// Extension fallback for poorly-typed uploads.
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
 	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
@@ -1300,7 +1477,6 @@ func uploadTypeAllowed(contentType, filename string) bool {
 	return false
 }
 
-// hUploadServe serves files from data/uploads/{name}.
 func (s *Server) hUploadServe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		http.Error(w, "method not allowed", 405)
@@ -1317,7 +1493,6 @@ func (s *Server) hStatic(w http.ResponseWriter, r *http.Request) {
 	if p == "" {
 		p = "index.html"
 	}
-	// Fallback to index.html for SPA-style routes (/login, /settings, etc.)
 	f, err := s.Web.Open(p)
 	if err != nil {
 		if p != "index.html" {
@@ -1339,33 +1514,13 @@ func (s *Server) hStatic(w http.ResponseWriter, r *http.Request) {
 	copyTo(w, f)
 }
 
-// setStaticCacheHeaders writes Cache-Control so the browser doesn't pin the
-// app's frontend to whatever it loaded the first time. Without this Go
-// returns no Cache-Control at all and Chrome / Safari heuristically cache
-// the JS / CSS for hours, which makes "I changed the code, why doesn't the
-// fix show up?" the dominant failure mode during development.
-//
-//   - index.html and sw.js: must always re-validate against the server so
-//     a fresh deploy is picked up on the next reload.
-//   - The rest of the app shell (JS / CSS / locales): same — the file might
-//     have changed since the cached copy, so revalidate every load. The
-//     server-side service worker bumps its CACHE name on each release, so
-//     the offline fallback eventually replaces too.
-//   - Static assets that are content-addressable by name (icons, the
-//     vendored vue.global.js): can cache forever; we keep them
-//     conservative for now and treat them like the rest until we add
-//     hashed filenames.
 func setStaticCacheHeaders(w http.ResponseWriter, pathInside string) {
 	if pathInside == "sw.js" || pathInside == "index.html" {
-		// Service worker spec already says browsers must revalidate sw.js,
-		// but explicit no-cache is belt-and-suspenders.
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("Expires", "0")
 		return
 	}
-	// Everything else: allow a cached copy but require revalidation each
-	// time so a redeploy always wins on next reload.
 	w.Header().Set("Cache-Control", "no-cache")
 }
 
@@ -1416,9 +1571,6 @@ func setContentType(w http.ResponseWriter, path string) {
 	case strings.HasSuffix(path, ".css"):
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	case strings.HasSuffix(path, ".webmanifest"):
-		// Strict MIME type from the W3C manifest spec. Some browser
-		// installability checks are picky and reject a manifest served
-		// as plain application/json.
 		w.Header().Set("Content-Type", "application/manifest+json")
 	case strings.HasSuffix(path, ".json"):
 		w.Header().Set("Content-Type", "application/json")

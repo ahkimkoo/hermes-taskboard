@@ -1,4 +1,6 @@
-// Package server wires together HTTP routing, middleware, and the embedded frontend.
+// Package server wires together HTTP routing, middleware, and the
+// embedded frontend. Every handler resolves a per-user store/FS via
+// the request context's authenticated user.
 package server
 
 import (
@@ -21,35 +23,68 @@ import (
 	"github.com/ahkimkoo/hermes-taskboard/internal/store"
 	"github.com/ahkimkoo/hermes-taskboard/internal/store/fsstore"
 	"github.com/ahkimkoo/hermes-taskboard/internal/uploads"
+	"github.com/ahkimkoo/hermes-taskboard/internal/userdir"
 )
 
 type Server struct {
-	Cfg     *config.Store
-	Store   *store.Store
-	FS      *fsstore.FS
-	Pool    *hermes.Pool
-	Hub     *sse.Hub
-	Board   *board.Service
-	Runner  *attempt.Runner
-	Auth    *auth.Service
-	Logger  *slog.Logger
-	Web     fs.FS
-	DataDir string
+	Cfg        *config.Store
+	Stores     *store.Manager
+	FS         *fsstore.Manager
+	Users      *userdir.Manager
+	Pool       *hermes.Pool
+	ReloadPool func()
+	Hub        *sse.Hub
+	Board      *board.Service
+	Runner     *attempt.Runner
+	Auth       *auth.Service
+	Logger     *slog.Logger
+	Web        fs.FS
+	DataDir    string
 
 	mu   sync.Mutex
 	http atomic.Pointer[http.Server]
 }
 
 func New(
-	cfg *config.Store, st *store.Store, fs *fsstore.FS, pool *hermes.Pool,
+	cfg *config.Store, stores *store.Manager, fsMgr *fsstore.Manager, users *userdir.Manager,
+	pool *hermes.Pool, reloadPool func(),
 	hub *sse.Hub, b *board.Service, r *attempt.Runner, a *auth.Service,
 	logger *slog.Logger, web embed.FS, dataDir string,
 ) *Server {
 	sub, _ := fsGetSub(web, "web")
 	return &Server{
-		Cfg: cfg, Store: st, FS: fs, Pool: pool, Hub: hub, Board: b, Runner: r, Auth: a,
+		Cfg: cfg, Stores: stores, FS: fsMgr, Users: users,
+		Pool: pool, ReloadPool: reloadPool,
+		Hub: hub, Board: b, Runner: r, Auth: a,
 		Logger: logger, Web: sub, DataDir: dataDir,
 	}
+}
+
+// storeFor resolves the per-user store for the request's authenticated
+// user. Writes a 401 + returns (nil, "", false) on unauthenticated.
+func (s *Server) storeFor(w http.ResponseWriter, r *http.Request) (*store.Store, string, bool) {
+	u := auth.UserFromContext(r.Context())
+	if u == nil {
+		http.Error(w, `{"code":"unauthorized"}`, http.StatusUnauthorized)
+		return nil, "", false
+	}
+	st, err := s.Stores.Get(u.Username)
+	if err != nil {
+		writeErr(w, 500, err)
+		return nil, "", false
+	}
+	return st, u.Username, true
+}
+
+// fsFor returns the per-user filesystem wrapper for the authenticated
+// user. Mirror of storeFor.
+func (s *Server) fsFor(w http.ResponseWriter, r *http.Request) (*fsstore.FS, string, bool) {
+	u := auth.UserFromContext(r.Context())
+	if u == nil {
+		http.Error(w, `{"code":"unauthorized"}`, http.StatusUnauthorized)
+		return nil, "", false
+	}
+	return s.FS.Get(u.Username), u.Username, true
 }
 
 // uploadsService builds a per-request uploads.Service from current config.
@@ -82,9 +117,6 @@ func (s *Server) Handler() http.Handler {
 	// --- attempts ---
 	mux.HandleFunc("/api/attempts/", s.routeAttempts)
 
-	// --- task-nested routes (schedules under /api/tasks/{id}/schedules) are
-	//     handled inside routeTasks. See handlers.go.
-
 	// --- servers (hermes) ---
 	mux.HandleFunc("/api/servers", s.withMethod(map[string]http.HandlerFunc{
 		"GET":  s.hListServers,
@@ -103,24 +135,28 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/schedules/", s.routeSchedules)
 
 	// --- settings / config / preferences ---
-	mux.HandleFunc("/api/settings", s.withMethod(map[string]http.HandlerFunc{
+	// Global admin-only config: scheduler, archive, OSS, listen, session.
+	mux.Handle("/api/settings", auth.RequireAdmin(s.withMethod(map[string]http.HandlerFunc{
 		"GET": s.hGetSettings,
 		"PUT": s.hUpdateSettings,
-	}))
+	})))
+	// Per-user preferences.
 	mux.HandleFunc("/api/preferences", s.withMethod(map[string]http.HandlerFunc{
 		"GET": s.hGetPreferences,
 		"PUT": s.hUpdatePreferences,
 	}))
-	mux.HandleFunc("/api/config", s.hGetConfig)
-	mux.HandleFunc("/api/config/reload", s.hReloadConfig)
+	mux.Handle("/api/config", auth.RequireAdmin(http.HandlerFunc(s.hGetConfig)))
+	mux.Handle("/api/config/reload", auth.RequireAdmin(http.HandlerFunc(s.hReloadConfig)))
 
 	// --- auth ---
 	mux.HandleFunc("/api/auth/status", s.hAuthStatus)
 	mux.HandleFunc("/api/auth/login", s.hAuthLogin)
 	mux.HandleFunc("/api/auth/logout", s.hAuthLogout)
-	mux.HandleFunc("/api/auth/enable", s.hAuthEnable)
-	mux.HandleFunc("/api/auth/disable", s.hAuthDisable)
 	mux.HandleFunc("/api/auth/change", s.hAuthChange)
+
+	// --- users (admin only) ---
+	mux.Handle("/api/users", auth.RequireAdmin(http.HandlerFunc(s.routeUsers)))
+	mux.Handle("/api/users/", auth.RequireAdmin(http.HandlerFunc(s.routeUserItem)))
 
 	// --- streaming ---
 	mux.HandleFunc("/api/stream/board", s.hStreamBoard)
@@ -138,7 +174,6 @@ func (s *Server) Handler() http.Handler {
 	// --- static / web ---
 	mux.HandleFunc("/", s.hStatic)
 
-	// Compose middleware: CORS → auth
 	handler := s.Auth.Middleware(isPublic)(mux)
 	handler = s.cors(handler)
 	handler = s.recovery(handler)
@@ -233,11 +268,9 @@ func isPublic(r *http.Request) bool {
 		return true
 	}
 	if strings.HasPrefix(p, "/api/auth/login") ||
-		strings.HasPrefix(p, "/api/auth/status") ||
-		strings.HasPrefix(p, "/api/auth/enable") {
+		strings.HasPrefix(p, "/api/auth/status") {
 		return true
 	}
-	// static / web assets + locally-served uploads
 	if !strings.HasPrefix(p, "/api/") {
 		return true
 	}

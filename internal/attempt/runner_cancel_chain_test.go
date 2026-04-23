@@ -18,7 +18,7 @@ import (
 	"github.com/ahkimkoo/hermes-taskboard/internal/sse"
 	"github.com/ahkimkoo/hermes-taskboard/internal/store"
 	"github.com/ahkimkoo/hermes-taskboard/internal/store/fsstore"
-	sqlitestore "github.com/ahkimkoo/hermes-taskboard/internal/store/sqlite"
+	"github.com/ahkimkoo/hermes-taskboard/internal/userdir"
 )
 
 // fakeHermes simulates the subset of the Hermes /v1/responses endpoint that
@@ -133,25 +133,42 @@ func (f *fakeHermes) handle(w http.ResponseWriter, r *http.Request) {
 
 // testHarness bundles the pieces a test drives runOnce through.
 type testHarness struct {
-	t       *testing.T
-	runner  *Runner
-	store   *store.Store
-	fs      *fsstore.FS
-	fake    *fakeHermes
-	httpSrv *httptest.Server
+	t        *testing.T
+	runner   *Runner
+	store    *store.Store
+	fs       *fsstore.FS
+	fake     *fakeHermes
+	httpSrv  *httptest.Server
+	username string
 }
+
+const testUsername = "testuser"
 
 func newHarness(t *testing.T) *testHarness {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := sqlitestore.Open(filepath.Join(dir, "db", "taskboard.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
 
-	st := store.New(db)
-	fs := fsstore.New(dir)
+	cfg, err := config.NewStore(filepath.Join(dir, "config.yaml"), filepath.Join(dir, "secret.key"))
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	// Seed userdir with a single test user so the Runner's tag lookup
+	// and other userdir-backed paths have something to find.
+	users := userdir.New(dir, cfg.Secret())
+	if err := users.Create(&userdir.UserConfig{
+		Username: testUsername, PasswordHash: "x", IsAdmin: true,
+	}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	stores := store.NewManager(dir)
+	t.Cleanup(func() { stores.Close() })
+	st, err := stores.Get(testUsername)
+	if err != nil {
+		t.Fatalf("open user store: %v", err)
+	}
+	fsMgr := fsstore.NewManager(dir)
+	fs := fsMgr.Get(testUsername)
 
 	fake := newFakeHermes()
 	srv := httptest.NewServer(http.HandlerFunc(fake.handle))
@@ -161,15 +178,10 @@ func newHarness(t *testing.T) *testHarness {
 	pool.Reload([]hermes.PoolEntry{{ID: "test-srv", BaseURL: srv.URL, APIKey: "k", IsDefault: true}})
 
 	hub := sse.NewHub()
-	boardSvc := board.New(st, hub)
+	boardSvc := board.New(hub)
 
-	cfg, err := config.NewStore(filepath.Join(dir, "config.yaml"), filepath.Join(dir, "secret.key"))
-	if err != nil {
-		t.Fatalf("config: %v", err)
-	}
-
-	runner := New(cfg, st, fs, pool, hub, boardSvc)
-	return &testHarness{t: t, runner: runner, store: st, fs: fs, fake: fake, httpSrv: srv}
+	runner := New(cfg, stores, fsMgr, users, pool, hub, boardSvc)
+	return &testHarness{t: t, runner: runner, store: st, fs: fs, fake: fake, httpSrv: srv, username: testUsername}
 }
 
 // newAttempt inserts a bare attempt row + empty meta ready for runOnce.
@@ -217,7 +229,7 @@ func (h *testHarness) runCancelledTurn(attemptID, input string) {
 	h.fake.setMode("cancel")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- h.runner.runOnce(ctx, attemptID, input, true) }()
+	go func() { done <- h.runner.runOnce(ctx, h.username, attemptID, input, true) }()
 
 	// Wait for the runner to have processed response.created — evidenced
 	// by CurrentRunID being written into meta by handleEvent. Polling this
@@ -250,7 +262,7 @@ func (h *testHarness) runCompletedTurn(attemptID, input string) {
 	h.fake.setMode("complete")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := h.runner.runOnce(ctx, attemptID, input, false); err != nil {
+	if err := h.runner.runOnce(ctx, h.username, attemptID, input, false); err != nil {
 		h.t.Fatalf("runOnce completed turn: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)

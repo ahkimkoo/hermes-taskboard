@@ -180,13 +180,31 @@ Pasting images into a task description requires this. Hermes is given the descri
 
 When OSS is disabled, image paste / drop is rejected by the UI.
 
-### 6.7 Auth
+### 6.7 Access control & users
 
-- **Enable username / password** — pick a credential pair; subsequent access requires login
-- **Change password**
-- **Disable** — back to no auth
+Login is always on. The board ships a default admin (`admin` / `admin123`) on first boot — change the password immediately via **Settings → Access control**. Forgot it? Stop the server and run `taskboard --reset-admin`; the admin password goes back to `admin123` and any disabled flag is cleared.
 
-Without auth, anyone who can reach port 1900 controls the board. **Only safe for localhost or a trusted LAN.**
+**Folder-level isolation.** Every user has their own directory at `data/{username}/`, containing their password + preferences + hermes servers + tags (in a per-user `config.yaml`), plus `db/taskboard.db` (tasks / attempts / schedules), plus `task/` and `attempt/` data. To wipe a user cleanly, stop the board and `rm -rf data/{username}/` — no stale rows left in a shared DB.
+
+**No cross-user view.** Each account only sees its own board. To work as someone else, log out and log back in with their password. Admins don't have an "act as X" shortcut — the one-user-per-session rule keeps the data model simple.
+
+**Admin vs. regular user.** Admins see the same tasks column as any user (their own), plus admin-only panels:
+- **Users** — invite, reset password, disable/enable, delete.
+- **Global / Scheduler** — scan interval, global concurrency cap.
+- **Integrations** (OSS) — Aliyun OSS credentials for image uploads.
+- **Archive** — auto-purge retention.
+- **Reload config from file** — re-scan `data/config.yaml` + every `data/*/config.yaml` without a restart.
+
+Regular users only see **Hermes Servers**, **Access control** (change own password), **Preferences**, and **Tags**. They can create/edit/delete their own tags and Hermes servers; creating either with **Shared** checked makes it read-only-visible to every other user.
+
+**Disabling an account.** Admin clicks **Disable** in Users → the board creates `data/{username}/disabled` (empty sentinel file). Any existing session for that user fails the next request with 401, and login attempts return `account disabled`. To re-enable, click **Enable** (the sentinel is removed).
+
+### 6.8 Attempts
+
+Each attempt is one dispatch of a task to Hermes. Inside the task modal:
+- **Stop** (inline 2-click confirm) cancels a running attempt.
+- **✕** next to a terminated attempt deletes that attempt and its event log. Running / needs-input attempts must be cancelled first.
+- Deleting a task automatically deletes every attempt belonging to it.
 
 ---
 

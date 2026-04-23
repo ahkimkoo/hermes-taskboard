@@ -1,11 +1,7 @@
-// Package cron is the task scheduler. It maintains next_run_at timestamps on
-// task_schedules rows and, on each tick, fires due schedules by starting a
-// fresh Attempt on the owning task (bypassing the Plan-column requirement
-// used by the auto-trigger scheduler).
-//
-// Schedules use standard 5-field cron ("min hour dom month dow") parsed by
-// robfig/cron. Multiple schedules per task are allowed; each lives in its own
-// row and ticks independently.
+// Package cron is the cron worker. It maintains next_run_at timestamps
+// on task_schedules rows and, on each tick, fires due schedules by
+// starting a fresh Attempt on the owning task. Schedules live in each
+// user's per-user DB; the worker iterates every registered user.
 package cron
 
 import (
@@ -19,10 +15,12 @@ import (
 
 	"github.com/ahkimkoo/hermes-taskboard/internal/attempt"
 	"github.com/ahkimkoo/hermes-taskboard/internal/store"
+	"github.com/ahkimkoo/hermes-taskboard/internal/userdir"
 )
 
 type Worker struct {
-	Store  *store.Store
+	Stores *store.Manager
+	Users  *userdir.Manager
 	Runner *attempt.Runner
 	Logger *slog.Logger
 	// TickInterval defaults to 5 s when zero.
@@ -30,7 +28,6 @@ type Worker struct {
 }
 
 // Compute computes the NextRunAt field for a schedule relative to `from`.
-// Updates s in place. Returns an error if the spec is malformed.
 func Compute(s *store.Schedule, from time.Time) error {
 	if !s.Enabled {
 		s.NextRunAt = nil
@@ -45,13 +42,11 @@ func Compute(s *store.Schedule, from time.Time) error {
 	return nil
 }
 
-// Validate checks whether a spec parses as a 5-field cron expression.
 func Validate(kind store.ScheduleKind, spec string) error {
 	stub := store.Schedule{Kind: kind, Spec: spec, Enabled: true}
 	return Compute(&stub, time.Now())
 }
 
-// Start runs the scheduler goroutine until ctx is cancelled.
 func (w *Worker) Start(ctx context.Context) {
 	interval := w.TickInterval
 	if interval <= 0 {
@@ -61,25 +56,28 @@ func (w *Worker) Start(ctx context.Context) {
 	go w.loop(ctx, interval)
 }
 
-// rehydrate recomputes next_run_at for any enabled schedule that lost it
-// (NULL in DB) — e.g. rows freshly migrated from interval → cron. Without
-// this, ListDueSchedules would skip them forever.
 func (w *Worker) rehydrate(ctx context.Context) {
-	rows, err := w.Store.ListEnabledNullNextSchedules(ctx)
-	if err != nil {
-		w.Logger.Warn("rehydrate list", "err", err)
-		return
-	}
-	now := time.Now()
-	for i := range rows {
-		s := rows[i]
-		if err := Compute(&s, now); err != nil {
-			w.Logger.Warn("rehydrate compute", "id", s.ID, "spec", s.Spec, "err", err)
-			s.Enabled = false
-			s.NextRunAt = nil
+	for _, u := range w.Users.List() {
+		st, err := w.Stores.Get(u.Username)
+		if err != nil {
+			continue
 		}
-		if err := w.Store.UpdateSchedule(ctx, &s); err != nil {
-			w.Logger.Warn("rehydrate update", "id", s.ID, "err", err)
+		rows, err := st.ListEnabledNullNextSchedules(ctx)
+		if err != nil {
+			w.Logger.Warn("rehydrate list", "user", u.Username, "err", err)
+			continue
+		}
+		now := time.Now()
+		for i := range rows {
+			s := rows[i]
+			if err := Compute(&s, now); err != nil {
+				w.Logger.Warn("rehydrate compute", "user", u.Username, "id", s.ID, "spec", s.Spec, "err", err)
+				s.Enabled = false
+				s.NextRunAt = nil
+			}
+			if err := st.UpdateSchedule(ctx, &s); err != nil {
+				w.Logger.Warn("rehydrate update", "user", u.Username, "id", s.ID, "err", err)
+			}
 		}
 	}
 }
@@ -99,31 +97,36 @@ func (w *Worker) loop(ctx context.Context, interval time.Duration) {
 
 func (w *Worker) tick(ctx context.Context) {
 	now := time.Now()
-	due, err := w.Store.ListDueSchedules(ctx, now)
-	if err != nil {
-		w.Logger.Warn("list due schedules", "err", err)
-		return
-	}
-	for i := range due {
-		s := due[i]
-		// Always bump next_run_at BEFORE firing so a Hermes failure doesn't
-		// trap us into an infinite retry loop within one tick window.
-		last := now
-		s.LastRunAt = &last
-		if err := Compute(&s, now); err != nil {
-			w.Logger.Warn("schedule compute next", "id", s.ID, "err", err)
-			// Disable the schedule so it doesn't re-fire instantly.
-			s.Enabled = false
-			s.NextRunAt = nil
-		}
-		if err := w.Store.UpdateSchedule(ctx, &s); err != nil {
-			w.Logger.Warn("schedule update", "id", s.ID, "err", err)
+	for _, u := range w.Users.List() {
+		if w.Users.IsDisabled(u.Username) {
 			continue
 		}
-		if _, err := w.Runner.Start(ctx, s.TaskID, "", ""); err != nil {
-			// Concurrency limit is a soft failure — we'll catch it next tick.
-			if _, ok := err.(*attempt.ConcurrencyErr); !ok {
-				w.Logger.Warn("schedule fire", "id", s.ID, "task", s.TaskID, "err", err)
+		st, err := w.Stores.Get(u.Username)
+		if err != nil {
+			continue
+		}
+		due, err := st.ListDueSchedules(ctx, now)
+		if err != nil {
+			w.Logger.Warn("list due schedules", "user", u.Username, "err", err)
+			continue
+		}
+		for i := range due {
+			s := due[i]
+			last := now
+			s.LastRunAt = &last
+			if err := Compute(&s, now); err != nil {
+				w.Logger.Warn("schedule compute next", "user", u.Username, "id", s.ID, "err", err)
+				s.Enabled = false
+				s.NextRunAt = nil
+			}
+			if err := st.UpdateSchedule(ctx, &s); err != nil {
+				w.Logger.Warn("schedule update", "user", u.Username, "id", s.ID, "err", err)
+				continue
+			}
+			if _, err := w.Runner.Start(ctx, u.Username, s.TaskID, "", ""); err != nil {
+				if _, ok := err.(*attempt.ConcurrencyErr); !ok {
+					w.Logger.Warn("schedule fire", "user", u.Username, "id", s.ID, "task", s.TaskID, "err", err)
+				}
 			}
 		}
 	}

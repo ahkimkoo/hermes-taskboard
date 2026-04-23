@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/ahkimkoo/hermes-taskboard/internal/config"
+	"github.com/ahkimkoo/hermes-taskboard/internal/userdir"
 )
 
 type env struct {
@@ -52,22 +53,29 @@ type reply struct {
 }
 
 func main() {
-	cfgPath := flag.String("config", "/home/kasm-user/project/hermes-taskboard/data/config.yaml", "config path")
+	dataDir := flag.String("data", "/home/kasm-user/project/hermes-taskboard/data", "data directory")
 	secretPath := flag.String("secret", "/home/kasm-user/project/hermes-taskboard/data/db/.secret", "secret path")
 	serverID := flag.String("server", "local", "server id")
 	only := flag.String("only", "", "comma-separated scenarios to run (e.g. s1,s4); default runs all")
 	flag.Parse()
 
-	store, err := config.NewStore(*cfgPath, *secretPath)
+	cfgStore, err := config.NewStore(*dataDir+"/config.yaml", *secretPath)
 	if err != nil {
 		die("load config", err)
 	}
-	cfg := store.Snapshot()
-	var sv *config.HermesServer
-	for i := range cfg.HermesServers {
-		if cfg.HermesServers[i].ID == *serverID {
-			sv = &cfg.HermesServers[i]
-			break
+	users := userdir.New(*dataDir, cfgStore.Secret())
+	if err := users.LoadAll(); err != nil {
+		die("load userdir", err)
+	}
+	// The probe operates from admin's perspective — hermes servers are
+	// keyed by globally-unique id so we can resolve against any user.
+	var sv *userdir.HermesServer
+	for _, u := range users.List() {
+		for i := range u.HermesServers {
+			if u.HermesServers[i].ID == *serverID {
+				s := u.HermesServers[i]
+				sv = &s
+			}
 		}
 	}
 	if sv == nil {
@@ -75,7 +83,7 @@ func main() {
 	}
 	e := env{
 		baseURL: sv.BaseURL,
-		apiKey:  sv.DecryptedAPIKey(store.Secret()),
+		apiKey:  users.DecryptedAPIKey(sv),
 		model:   firstNonEmptyModel(sv),
 	}
 	if e.apiKey == "" {
@@ -373,7 +381,7 @@ func containsAll(s string, needles ...string) bool {
 	return true
 }
 
-func firstNonEmptyModel(sv *config.HermesServer) string {
+func firstNonEmptyModel(sv *userdir.HermesServer) string {
 	for _, m := range sv.Models {
 		if m.IsDefault && m.Name != "" {
 			return m.Name

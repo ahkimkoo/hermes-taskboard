@@ -1,15 +1,18 @@
-// Package auth implements optional username/password gate for the board.
-// Storage is in data/config.yaml (auth.*); cookies are HMAC-signed with session_secret.
+// Package auth implements always-on username/password login backed by
+// the userdir registry. Session cookies are HMAC-signed with a secret
+// kept in the global config.yaml and carry the authenticated user's
+// username — which is also the directory name under data/, making
+// the cookie → user dir lookup trivial.
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -17,72 +20,30 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/ahkimkoo/hermes-taskboard/internal/config"
+	"github.com/ahkimkoo/hermes-taskboard/internal/userdir"
 )
 
 const CookieName = "hermes_taskboard_session"
 
+// Service validates credentials against userdir.Manager and signs
+// session cookies.
 type Service struct {
 	Cfg *config.Store
+	Dir *userdir.Manager
 }
 
-func New(cfg *config.Store) *Service { return &Service{Cfg: cfg} }
-
-// Enable creates a new auth record; allowed only when auth is currently disabled.
-func (s *Service) Enable(username, password string) error {
-	if len(password) < 8 {
-		return errors.New("password must be ≥8 characters")
-	}
-	if strings.TrimSpace(username) == "" {
-		return errors.New("username required")
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
-	if err != nil {
-		return err
-	}
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		return err
-	}
-	return s.Cfg.Mutate(func(c *config.Config) error {
-		if c.Auth.Enabled {
-			return errors.New("already enabled")
-		}
-		c.Auth.Enabled = true
-		c.Auth.Username = username
-		c.Auth.PasswordHash = string(hash)
-		c.Auth.SessionSecret = base64.StdEncoding.EncodeToString(secret)
-		if c.Auth.SessionTTLHours == 0 {
-			c.Auth.SessionTTLHours = 168
-		}
-		return nil
-	})
+func New(cfg *config.Store, dir *userdir.Manager) *Service {
+	return &Service{Cfg: cfg, Dir: dir}
 }
 
-// Disable requires current password; clears credentials and rotates secret (invalidates cookies).
-func (s *Service) Disable(password string) error {
-	cur := s.Cfg.Snapshot()
-	if !cur.Auth.Enabled {
-		return errors.New("not enabled")
+// ChangePassword verifies old password for the given user, then
+// writes a new hash into data/{username}/config.yaml.
+func (s *Service) ChangePassword(ctx context.Context, username, oldPw, newPw string) error {
+	u, ok := s.Dir.GetRaw(username)
+	if !ok {
+		return errors.New("user not found")
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(cur.Auth.PasswordHash), []byte(password)); err != nil {
-		return errors.New("bad password")
-	}
-	return s.Cfg.Mutate(func(c *config.Config) error {
-		c.Auth.Enabled = false
-		c.Auth.Username = ""
-		c.Auth.PasswordHash = ""
-		c.Auth.SessionSecret = ""
-		return nil
-	})
-}
-
-// ChangePassword verifies old password then updates hash; rotates secret to invalidate old cookies.
-func (s *Service) ChangePassword(oldPw, newPw string) error {
-	cur := s.Cfg.Snapshot()
-	if !cur.Auth.Enabled {
-		return errors.New("auth not enabled")
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(cur.Auth.PasswordHash), []byte(oldPw)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(oldPw)); err != nil {
 		return errors.New("bad password")
 	}
 	if len(newPw) < 8 {
@@ -92,61 +53,127 @@ func (s *Service) ChangePassword(oldPw, newPw string) error {
 	if err != nil {
 		return err
 	}
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		return err
-	}
-	return s.Cfg.Mutate(func(c *config.Config) error {
-		c.Auth.PasswordHash = string(hash)
-		c.Auth.SessionSecret = base64.StdEncoding.EncodeToString(secret)
+	return s.Dir.Mutate(username, func(uc *userdir.UserConfig) error {
+		uc.PasswordHash = string(hash)
 		return nil
 	})
 }
 
-// Login verifies credentials, returns a signed cookie value.
-func (s *Service) Login(username, password string) (string, time.Time, error) {
+// AdminSetPassword overwrites a user's password without the old one.
+// Caller is responsible for enforcing admin privilege.
+func (s *Service) AdminSetPassword(ctx context.Context, username, newPw string) error {
+	if len(newPw) < 8 {
+		return errors.New("password must be ≥8 characters")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPw), 12)
+	if err != nil {
+		return err
+	}
+	return s.Dir.Mutate(username, func(uc *userdir.UserConfig) error {
+		uc.PasswordHash = string(hash)
+		return nil
+	})
+}
+
+// Login verifies credentials and returns a signed cookie value.
+// Disabled users (presence of the `disabled` sentinel) fail the
+// check with "account disabled".
+func (s *Service) Login(ctx context.Context, username, password string) (string, time.Time, *userdir.UserConfig, error) {
+	u, ok := s.Dir.GetRaw(username)
+	if !ok {
+		return "", time.Time{}, nil, errors.New("invalid credentials")
+	}
+	if s.Dir.IsDisabled(username) {
+		return "", time.Time{}, nil, errors.New("account disabled")
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
+		return "", time.Time{}, nil, errors.New("invalid credentials")
+	}
 	cur := s.Cfg.Snapshot()
-	if !cur.Auth.Enabled {
-		return "", time.Time{}, errors.New("auth not enabled")
-	}
-	if cur.Auth.Username != username {
-		return "", time.Time{}, errors.New("invalid credentials")
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(cur.Auth.PasswordHash), []byte(password)); err != nil {
-		return "", time.Time{}, errors.New("invalid credentials")
-	}
 	ttl := time.Duration(cur.Auth.SessionTTLHours) * time.Hour
 	if ttl == 0 {
 		ttl = 168 * time.Hour
 	}
-	exp := time.Now().Add(ttl)
-	token, err := signToken(cur.Auth.SessionSecret, username, exp)
+	secret, err := s.ensureSessionSecret()
 	if err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, nil, err
 	}
-	return token, exp, nil
+	exp := time.Now().Add(ttl)
+	token, err := signToken(secret, username, exp)
+	if err != nil {
+		return "", time.Time{}, nil, err
+	}
+	// Return a safe copy (no hash).
+	cpy := *u
+	cpy.PasswordHash = ""
+	return token, exp, &cpy, nil
 }
 
-// Valid checks a cookie value against current secret.
-func (s *Service) Valid(token string) bool {
+// ensureSessionSecret returns the current session secret, generating
+// and persisting one if none is set yet.
+func (s *Service) ensureSessionSecret() (string, error) {
 	cur := s.Cfg.Snapshot()
-	if !cur.Auth.Enabled {
-		return true
+	if cur.Auth.SessionSecret != "" {
+		return cur.Auth.SessionSecret, nil
 	}
-	return validateToken(cur.Auth.SessionSecret, token)
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return "", err
+	}
+	encoded := base64.StdEncoding.EncodeToString(secret)
+	err := s.Cfg.Mutate(func(c *config.Config) error {
+		if c.Auth.SessionSecret == "" {
+			c.Auth.SessionSecret = encoded
+		} else {
+			encoded = c.Auth.SessionSecret
+		}
+		return nil
+	})
+	return encoded, err
 }
 
-// Middleware enforces login on non-public API paths when auth is enabled.
+// ----- request context -----
+
+type contextKey int
+
+const userKey contextKey = 1
+
+// UserFromContext returns the authenticated user, or nil when the
+// request is unauthenticated.
+func UserFromContext(ctx context.Context) *userdir.UserConfig {
+	u, _ := ctx.Value(userKey).(*userdir.UserConfig)
+	return u
+}
+
+// WithUser installs the user on the context.
+func WithUser(ctx context.Context, u *userdir.UserConfig) context.Context {
+	return context.WithValue(ctx, userKey, u)
+}
+
+// Middleware enforces login on non-public paths and attaches the
+// authenticated user to the request context.
 func (s *Service) Middleware(isPublic func(*http.Request) bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cur := s.Cfg.Snapshot()
-			if !cur.Auth.Enabled || isPublic(r) {
+			var resolved *userdir.UserConfig
+			if cookie, err := r.Cookie(CookieName); err == nil {
+				if uname, ok := validateToken(cur.Auth.SessionSecret, cookie.Value); ok {
+					if u, ok := s.Dir.GetRaw(uname); ok && !s.Dir.IsDisabled(uname) {
+						cp := *u
+						cp.PasswordHash = ""
+						resolved = &cp
+					}
+				}
+			}
+			if resolved != nil {
+				r = r.WithContext(WithUser(r.Context(), resolved))
+			}
+			if isPublic(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
-			cookie, err := r.Cookie(CookieName)
-			if err != nil || !validateToken(cur.Auth.SessionSecret, cookie.Value) {
+			if resolved == nil {
 				if strings.HasPrefix(r.URL.Path, "/api/") {
 					http.Error(w, `{"code":"unauthorized"}`, http.StatusUnauthorized)
 					return
@@ -157,6 +184,22 @@ func (s *Service) Middleware(isPublic func(*http.Request) bool) func(http.Handle
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// RequireAdmin gates an http.Handler so only admins reach it.
+func RequireAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u := UserFromContext(r.Context())
+		if u == nil {
+			http.Error(w, `{"code":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		if !u.IsAdmin {
+			http.Error(w, `{"code":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // WriteCookie sets the session cookie.
@@ -202,16 +245,16 @@ func ClearCookie(w http.ResponseWriter) {
 // ----- token helpers -----
 
 type tokenPayload struct {
-	User string `json:"u"`
+	User string `json:"u"` // username
 	Exp  int64  `json:"e"`
 }
 
-func signToken(secretB64, user string, exp time.Time) (string, error) {
+func signToken(secretB64, username string, exp time.Time) (string, error) {
 	key, err := base64.StdEncoding.DecodeString(secretB64)
 	if err != nil {
 		return "", err
 	}
-	p := tokenPayload{User: user, Exp: exp.Unix()}
+	p := tokenPayload{User: username, Exp: exp.Unix()}
 	body, _ := json.Marshal(p)
 	bodyB64 := base64.RawURLEncoding.EncodeToString(body)
 	h := hmac.New(sha256.New, key)
@@ -220,34 +263,31 @@ func signToken(secretB64, user string, exp time.Time) (string, error) {
 	return bodyB64 + "." + sig, nil
 }
 
-func validateToken(secretB64, token string) bool {
+func validateToken(secretB64, token string) (string, bool) {
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
-		return false
+		return "", false
 	}
 	key, err := base64.StdEncoding.DecodeString(secretB64)
 	if err != nil {
-		return false
+		return "", false
 	}
 	h := hmac.New(sha256.New, key)
 	h.Write([]byte(parts[0]))
 	wantSig := base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 	if !hmac.Equal([]byte(wantSig), []byte(parts[1])) {
-		return false
+		return "", false
 	}
 	body, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return false
+		return "", false
 	}
 	var p tokenPayload
 	if err := json.Unmarshal(body, &p); err != nil {
-		return false
+		return "", false
 	}
 	if time.Unix(p.Exp, 0).Before(time.Now()) {
-		return false
+		return "", false
 	}
-	return true
+	return p.User, true
 }
-
-// Ensure bcrypt import is not pruned when cross-compiling against CGO-less targets.
-var _ = fmt.Sprintf

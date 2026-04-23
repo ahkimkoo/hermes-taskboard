@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-// Store is the repository facade. All SQL access goes through here.
+// Store is the per-user repository facade. A Store wraps the SQLite
+// database rooted at data/{username}/db/taskboard.db — all rows it
+// returns belong to that user by construction. See store.Manager for
+// the multi-user lookup layer.
 type Store struct {
 	DB *sql.DB
 }
@@ -17,6 +20,14 @@ type Store struct {
 func New(db *sql.DB) *Store { return &Store{DB: db} }
 
 var ErrNotFound = errors.New("not found")
+
+// Close releases the underlying DB handle. Safe to call nil.
+func (s *Store) Close() error {
+	if s == nil || s.DB == nil {
+		return nil
+	}
+	return s.DB.Close()
+}
 
 // ----- tasks -----
 
@@ -40,7 +51,6 @@ func (s *Store) CreateTask(ctx context.Context, t *Task) error {
 		return err
 	}
 	defer tx.Rollback()
-	// Position: max + 1024 within target column so new cards land at the end.
 	var maxPos sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `SELECT MAX(position) FROM tasks WHERE status=?`, string(t.Status)).Scan(&maxPos); err != nil {
 		return err
@@ -101,7 +111,6 @@ func (s *Store) UpdateTask(ctx context.Context, t *Task) error {
 }
 
 func (s *Store) SetTaskStatus(ctx context.Context, id string, to TaskStatus) error {
-	// When status changes, park at end of the target column (position = max+1024).
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -125,13 +134,9 @@ func (s *Store) SetTaskStatus(ctx context.Context, id string, to TaskStatus) err
 	return tx.Commit()
 }
 
-// MoveTask relocates a task into `to` column at a specific slot:
-//   - afterID empty, beforeID empty → end of column
-//   - afterID empty, beforeID set   → before given task
-//   - afterID set,   beforeID empty → after given task
-//   - afterID set,   beforeID set   → midpoint between the two
-// New position is chosen between neighbors; if neighbors collide, renumbers
-// the column with 1024-spaced positions to recover.
+// MoveTask relocates a task into `to` column at a specific slot.
+// See the original implementation for the full contract — unchanged in
+// the per-user layout since there's never cross-user drag.
 func (s *Store) MoveTask(ctx context.Context, id string, to TaskStatus, afterID, beforeID string) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -188,7 +193,6 @@ func (s *Store) MoveTask(ctx context.Context, id string, to TaskStatus, afterID,
 			}
 		}
 	} else {
-		// End of column.
 		if len(neighbors) > 0 {
 			lo = neighbors[len(neighbors)-1].pos
 			haveLo = true
@@ -199,13 +203,11 @@ func (s *Store) MoveTask(ctx context.Context, id string, to TaskStatus, afterID,
 	switch {
 	case haveLo && haveHi:
 		if hi-lo <= 1 {
-			// collision — renumber column with 1024 spacing to recover.
 			for i, n := range neighbors {
 				if _, err := tx.ExecContext(ctx, `UPDATE tasks SET position=? WHERE id=?`, int64(i+1)*1024, n.id); err != nil {
 					return err
 				}
 			}
-			// Recompute neighbors' positions.
 			for i := range neighbors {
 				neighbors[i].pos = int64(i+1) * 1024
 			}
@@ -253,7 +255,6 @@ func (s *Store) DeleteTask(ctx context.Context, id string) ([]string, error) {
 		return nil, err
 	}
 	defer tx.Rollback()
-	// Collect attempt ids first so caller can clean FS.
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM attempts WHERE task_id=?`, id)
 	if err != nil {
 		return nil, err
@@ -274,6 +275,7 @@ func (s *Store) DeleteTask(ctx context.Context, id string) ([]string, error) {
 		`DELETE FROM task_deps WHERE task_id=?`,
 		`DELETE FROM task_deps WHERE depends_on=?`,
 		`DELETE FROM attempts WHERE task_id=?`,
+		`DELETE FROM task_schedules WHERE task_id=?`,
 		`DELETE FROM tasks WHERE id=?`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {
@@ -309,15 +311,27 @@ func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
 	return t, nil
 }
 
-// ListTasks applies filters and returns tasks sorted by priority asc, updated_at desc.
+// DeleteAttempt removes a single attempt row by id.
+func (s *Store) DeleteAttempt(ctx context.Context, id string) error {
+	res, err := s.DB.ExecContext(ctx, `DELETE FROM attempts WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 type TaskFilter struct {
-	Status   string
-	Tag      string
-	Query    string
-	Server   string
-	Model    string
-	Limit    int
-	Offset   int
+	Status string
+	Tag    string
+	Query  string
+	Server string
+	Model  string
+	Limit  int
+	Offset int
 }
 
 func (s *Store) ListTasks(ctx context.Context, f TaskFilter) ([]*Task, error) {
@@ -350,9 +364,6 @@ func (s *Store) ListTasks(ctx context.Context, f TaskFilter) ([]*Task, error) {
 	if len(where) > 0 {
 		sb.WriteString(" WHERE " + strings.Join(where, " AND "))
 	}
-	// Preserve the user's per-column drag order (position ASC). `status` is
-	// the primary sort so the backend emits cards grouped by column even
-	// though the frontend groups independently.
 	sb.WriteString(" ORDER BY t.status, t.position ASC")
 	if f.Limit > 0 {
 		sb.WriteString(fmt.Sprintf(" LIMIT %d OFFSET %d", f.Limit, f.Offset))
@@ -373,7 +384,6 @@ func (s *Store) ListTasks(ctx context.Context, f TaskFilter) ([]*Task, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// populate tags/deps/attempt counts
 	for _, t := range list {
 		if err := s.loadTaskTagsDeps(ctx, t); err != nil {
 			return nil, err
@@ -406,10 +416,6 @@ func (s *Store) TaskIDs(ctx context.Context, status TaskStatus) ([]string, error
 
 // AllDependenciesDone returns whether every dep of taskID is satisfied,
 // per its recorded required_state.
-//
-// Satisfaction semantics:
-//   required_state='verify'  → target ∈ {verify, done, archive}
-//   required_state='done'    → target ∈ {done, archive}
 func (s *Store) AllDependenciesDone(ctx context.Context, taskID string) (bool, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT COUNT(*) FROM task_deps d
@@ -503,7 +509,6 @@ func (s *Store) ListActiveAttempts(ctx context.Context) ([]*Attempt, error) {
 }
 
 // AllAttemptsTerminal returns true if every attempt for task is in terminal state.
-// Returns false when there are no attempts yet.
 func (s *Store) AllAttemptsTerminal(ctx context.Context, taskID string) (bool, int, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT COUNT(*), SUM(CASE WHEN state IN ('completed','failed','cancelled') THEN 1 ELSE 0 END) FROM attempts WHERE task_id=?`, taskID)
@@ -524,7 +529,9 @@ func (s *Store) AllAttemptsTerminal(ctx context.Context, taskID string) (bool, i
 	return total.Int64 == term.Int64, int(total.Int64), nil
 }
 
-// CountActiveByServerModel returns (global, server, server+model) active counts.
+// CountActive returns active attempt counts scoped to THIS store.
+// Global counts (for global_max_concurrent) are aggregated by the
+// Manager across all per-user stores.
 func (s *Store) CountActive(ctx context.Context, serverID, model string) (global, byServer, byPair int, err error) {
 	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM attempts WHERE state IN ('queued','running','needs_input')`).Scan(&global)
 	if err != nil {
@@ -539,72 +546,6 @@ func (s *Store) CountActive(ctx context.Context, serverID, model string) (global
 		`SELECT COUNT(*) FROM attempts WHERE state IN ('queued','running','needs_input') AND server_id=? AND model=?`,
 		serverID, model).Scan(&byPair)
 	return
-}
-
-// ----- tags -----
-
-func (s *Store) ListTags(ctx context.Context) ([]Tag, error) {
-	rows, err := s.DB.QueryContext(ctx,
-		`SELECT name, COALESCE(color,''), COALESCE(system_prompt,'') FROM tags ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Tag
-	for rows.Next() {
-		var t Tag
-		if err := rows.Scan(&t.Name, &t.Color, &t.SystemPrompt); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
-}
-
-// TagsByNames returns each requested tag (if present) in the same order.
-// Missing tags are skipped silently.
-func (s *Store) TagsByNames(ctx context.Context, names []string) ([]Tag, error) {
-	if len(names) == 0 {
-		return nil, nil
-	}
-	out := make([]Tag, 0, len(names))
-	for _, n := range names {
-		var t Tag
-		err := s.DB.QueryRowContext(ctx,
-			`SELECT name, COALESCE(color,''), COALESCE(system_prompt,'') FROM tags WHERE name=?`, n,
-		).Scan(&t.Name, &t.Color, &t.SystemPrompt)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, nil
-}
-
-func (s *Store) UpsertTag(ctx context.Context, t Tag) error {
-	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO tags(name, color, system_prompt) VALUES(?,?,?)
-		 ON CONFLICT(name) DO UPDATE SET color=excluded.color, system_prompt=excluded.system_prompt`,
-		t.Name, t.Color, t.SystemPrompt)
-	return err
-}
-
-func (s *Store) DeleteTag(ctx context.Context, name string) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM task_tags WHERE tag=?`, name); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE name=?`, name); err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 // ----- helpers -----
@@ -662,12 +603,6 @@ func writeTags(ctx context.Context, tx *sql.Tx, taskID string, tags []string) er
 		tag = strings.TrimSpace(tag)
 		if tag == "" {
 			continue
-		}
-		// INSERT OR IGNORE preserves any existing system_prompt — it only
-		// adds a row for a brand-new tag.
-		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO tags(name, color, system_prompt) VALUES(?,'','')`, tag); err != nil {
-			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO task_tags(task_id,tag) VALUES(?,?)`, taskID, tag); err != nil {
 			return err
@@ -789,8 +724,6 @@ func (s *Store) UpdateSchedule(ctx context.Context, sch *Schedule) error {
 	return err
 }
 
-// SetScheduleEnabled flips the enabled flag and clears next_run_at when
-// disabling (so the worker stops picking it up until re-enabled).
 func (s *Store) SetScheduleEnabled(ctx context.Context, id string, enabled bool) error {
 	var q string
 	if enabled {
@@ -802,7 +735,6 @@ func (s *Store) SetScheduleEnabled(ctx context.Context, id string, enabled bool)
 	return err
 }
 
-// GetSchedule returns the schedule row with the given id.
 func (s *Store) GetSchedule(ctx context.Context, id string) (*Schedule, error) {
 	row := s.DB.QueryRowContext(ctx,
 		`SELECT id, task_id, kind, spec, COALESCE(note,''), enabled, last_run_at, next_run_at
@@ -822,9 +754,6 @@ func (s *Store) DeleteSchedule(ctx context.Context, id string) error {
 	return err
 }
 
-// ListEnabledNullNextSchedules returns enabled schedules whose next_run_at
-// is NULL — used on boot to rehydrate rows that lost their schedule time
-// (e.g. just migrated from interval → cron, or a corrupted row).
 func (s *Store) ListEnabledNullNextSchedules(ctx context.Context) ([]Schedule, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT id, task_id, kind, spec, COALESCE(note,''), enabled, last_run_at, next_run_at
@@ -845,7 +774,6 @@ func (s *Store) ListEnabledNullNextSchedules(ctx context.Context) ([]Schedule, e
 	return out, rows.Err()
 }
 
-// ListDueSchedules returns enabled schedules whose next_run_at ≤ `at`.
 func (s *Store) ListDueSchedules(ctx context.Context, at time.Time) ([]Schedule, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT id, task_id, kind, spec, COALESCE(note,''), enabled, last_run_at, next_run_at

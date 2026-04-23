@@ -3,6 +3,48 @@
 すべての注目すべき変更をここに追跡し、日付別にグループ化しています。
 フォーマットは [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) に従っています。
 
+## 2026-04-23 — v0.3.0
+
+### マルチユーザー対応 — フォルダ単位のデータ分離
+
+各ユーザーが `data/` 配下に自分の専用ディレクトリを持つようになりました。パスワード、設定、Hermes server、タグ、タスク、Attempt、スケジュールまで全部そこに入ります。共有の中央 DB はもうありません。レイアウト:
+
+```
+data/
+  config.yaml                 # グローバル: listen / scheduler / archive / OSS / session_secret
+  admin/
+    config.yaml               # ユーザー単位: id / password_hash / is_admin / preferences / hermes_servers[] / tags[]
+    disabled                  # 存在すればこのアカウントは無効化されている
+    db/taskboard.db           # このユーザーのタスク・Attempt・依存・スケジュール
+    task/{task-id}.json
+    attempt/{attempt-id}/
+  tony/
+    config.yaml
+    db/…
+    task/…
+    attempt/…
+```
+
+**フォルダ単位で抜き差し可能**:1ユーザー分のデータを消したいときは `rm -rf data/{username}/` だけで済みます。SQL 層は同時に複数ユーザーを見ないので、ユーザー同士のデータが混ざることはありません。
+
+**ログインは常に必須になりました。** 初回起動時に `admin` / `admin123` のデフォルト管理者が作成されます。ログイン後すぐに **設定 → 访问控制** でパスワードを変更してください。忘れたら `./taskboard -data ./data --reset-admin` で admin のパスワードを admin123 に戻し、disabled フラグもクリアします。
+
+**管理者でもクロスユーザー表示はありません。** 管理者も自分のタスクしか見えません。他のユーザーとして作業するには一度ログアウトして、そのユーザーのパスワードで再ログインしてください。管理者だけが見られるパネル:**用户管理**、**全局 / 调度**、**第三方集成** (OSS)、**归档**、**从文件重新加载配置**。
+
+**共有 Hermes server と共有タグ。** 作成時に「共有」にチェックを入れると、他のユーザーのリストに読み取り専用で表示されます(使える・編集不可)。
+
+**旧レイアウトからの一発マイグレーション。** 古い `data/db/taskboard.db` や `data/config.yaml` の `hermes_servers` フィールドを検知すると、起動時に一度だけ:
+
+1. タスク/Attempt/依存/タグリンク/スケジュールを admin ユーザーに再割り当てし `data/admin/db/taskboard.db` にコピー
+2. 旧 `hermes_servers` を admin の per-user config.yaml に引き取り、API key は同じ `data/db/.secret` の AEAD で暗号化し直す
+3. `data/task/` → `data/admin/task/`、`data/attempt/` → `data/admin/attempt/` を移動
+4. 旧 `data/db/` を `data/_migrated-YYYYMMDD-HHMMSS/db/` にアーカイブ(削除せず保管)
+5. `data/config.yaml` をグローバル項目だけに書き戻す
+
+### Attempt を個別削除できるように
+
+タスクモーダルの Attempt リスト右端に「✕」ボタンを追加しました(インライン二段階確認)。Attempt の SQL 行 + イベントログが丸ごと消えます。実行中・入力待ちの Attempt はまず停止してから削除する UI 仕様です。タスク削除は相変わらずタスク配下の全 Attempt を連鎖削除します。
+
 ## 2026-04-19
 
 ### リリース（ラウンド 7.2 → v0.1.0 タグ付け）— スケジュールピッカー UX、孤立 Attempt の回収、ドラッグ/クリック修正

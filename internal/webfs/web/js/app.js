@@ -42,7 +42,8 @@ const state = reactive({
   servers: [],
   settings: { scheduler: {}, archive: {}, server: {}, oss: {}, oss_has_secret: false },
   preferences: { language: '', theme: 'dark', sound: { enabled: true, volume: 0.7, events: {} } },
-  auth: { enabled: false, logged_in: true, username: '' },
+  auth: { logged_in: false, user: null },
+  users: [],
   toasts: [],
   openTaskId: null,
   showSettings: false,
@@ -92,11 +93,27 @@ async function refreshPrefs() {
 }
 
 async function refreshAuth() {
-  try { state.auth = await api('/api/auth/status'); } catch (e) {}
+  try {
+    const r = await api('/api/auth/status');
+    state.auth = { logged_in: !!r.logged_in, user: r.user || null };
+  } catch (e) { state.auth = { logged_in: false, user: null }; }
 }
 
+async function refreshUsers() {
+  if (!state.auth.user || !state.auth.user.is_admin) { state.users = []; return; }
+  try { const r = await api('/api/users'); state.users = r.users || []; }
+  catch (e) {}
+}
+
+// Admin-only endpoints (e.g. /api/settings, /api/config) return 401 for
+// regular users — skip them from refreshAll so the main board doesn't
+// noisily redirect those users to /login.
 async function refreshAll() {
-  await Promise.all([refreshTasks(), refreshServers(), refreshSettings(), refreshPrefs()]);
+  const jobs = [refreshTasks(), refreshServers(), refreshPrefs()];
+  if (state.auth.user && state.auth.user.is_admin) {
+    jobs.push(refreshSettings(), refreshUsers());
+  }
+  await Promise.all(jobs);
 }
 
 function applyTheme(theme) {
@@ -344,6 +361,7 @@ const TaskModal = {
       listOpen: false,          // attempt list collapse state
       confirmNewAttempt: false, // confirmation modal guard
       confirmDelete: false,
+      confirmDeleteAttemptId: null, // id of attempt showing its confirm state
       confirmStop: false,       // inline 2-click confirm for Stop
       showAttemptHelp: false,
       // Auto-fullscreen on phones (< 768px) so the card modal fills the
@@ -557,6 +575,14 @@ const TaskModal = {
                   <div class="meta">{{ a.server_id }} / {{ a.model }}</div>
                   <div class="time">{{ formatTime(a.started_at) }}</div>
                   <div class="shortid">{{ a.id.slice(0,8) }}</div>
+                  <button v-if="canDeleteAttempt(a) && confirmDeleteAttemptId !== a.id"
+                          class="danger small attempt-del-btn"
+                          :title="$t('action.delete_attempt')"
+                          @click.stop="confirmDeleteAttemptId = a.id">✕</button>
+                  <button v-else-if="canDeleteAttempt(a)"
+                          class="danger small attempt-del-btn"
+                          :title="$t('action.confirm_delete')"
+                          @click.stop="deleteAttempt(a.id)">{{ $t('action.confirm_delete') }}</button>
                 </div>
                 <button v-if="attempts.length > 0" class="secondary small new-attempt-btn"
                         @click="confirmNewAttempt = true">
@@ -694,6 +720,21 @@ const TaskModal = {
         this.$emit('refresh');
       } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
+    canDeleteAttempt(a) {
+      // Running / needs_input attempts must be stopped before they can be
+      // removed — otherwise we'd be orphaning a live Hermes stream.
+      return a && a.state !== 'queued' && a.state !== 'running' && a.state !== 'needs_input';
+    },
+    async deleteAttempt(id) {
+      this.confirmDeleteAttemptId = null;
+      try {
+        await api('/api/attempts/' + id, { method: 'DELETE' });
+        if (this.activeAttemptId === id) this.activeAttemptId = null;
+        await this.load();
+        this.$emit('refresh');
+        toast(t('toast.deleted'));
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
     async actuallyStartAttempt() {
       this.confirmNewAttempt = false;
       try {
@@ -785,9 +826,10 @@ const SettingsModal = {
     return {
       tab: 'servers',
       editServer: null,
-      newPw: '', oldPw: '', enableForm: { username: '', password: '' },
+      newPw: '', oldPw: '',
       oss: {}, ossNewSecret: '',
       tags: [], tagEdit: null,
+      userForm: { username: '', password: '', is_admin: false },
     };
   },
   computed: {
@@ -795,6 +837,9 @@ const SettingsModal = {
     preferences() { return this.$root.state.preferences; },
     settings() { return this.$root.state.settings; },
     auth() { return this.$root.state.auth; },
+    me() { return this.$root.state.auth.user || {}; },
+    isAdmin() { return !!this.me.is_admin; },
+    users() { return this.$root.state.users || []; },
   },
   mounted() {
     this.oss = Object.assign({
@@ -809,7 +854,7 @@ const SettingsModal = {
         <div class="modal-header">
           <h2>{{ $t('action.settings') }}</h2>
           <div class="modal-header-actions">
-            <button @click="reloadConfig">{{ $t('action.reload_config') }}</button>
+            <button v-if="isAdmin" @click="reloadConfig">{{ $t('action.reload_config') }}</button>
             <button class="ghost" @click="$emit('close')">✕</button>
           </div>
         </div>
@@ -817,12 +862,13 @@ const SettingsModal = {
           <div class="settings-grid">
             <div class="settings-nav">
               <button :class="{active: tab==='servers'}" @click="tab='servers'">{{ $t('settings.nav.servers') }}</button>
-              <button :class="{active: tab==='global'}" @click="tab='global'">{{ $t('settings.nav.global') }}</button>
+              <button v-if="isAdmin" :class="{active: tab==='global'}" @click="tab='global'">{{ $t('settings.nav.global') }}</button>
               <button :class="{active: tab==='access'}" @click="tab='access'">{{ $t('settings.nav.access') }}</button>
+              <button v-if="isAdmin" :class="{active: tab==='users'}" @click="tab='users'">{{ $t('settings.nav.users') }}</button>
               <button :class="{active: tab==='preferences'}" @click="tab='preferences'">{{ $t('settings.nav.preferences') }}</button>
-              <button :class="{active: tab==='integrations'}" @click="tab='integrations'">{{ $t('settings.nav.integrations') }}</button>
+              <button v-if="isAdmin" :class="{active: tab==='integrations'}" @click="tab='integrations'">{{ $t('settings.nav.integrations') }}</button>
               <button :class="{active: tab==='tags'}" @click="tab='tags'">{{ $t('settings.nav.tags') }}</button>
-              <button :class="{active: tab==='archive'}" @click="tab='archive'">{{ $t('settings.nav.archive') }}</button>
+              <button v-if="isAdmin" :class="{active: tab==='archive'}" @click="tab='archive'">{{ $t('settings.nav.archive') }}</button>
             </div>
             <div class="settings-content">
               <!-- Servers -->
@@ -832,7 +878,8 @@ const SettingsModal = {
                 <table class="tbl">
                   <thead><tr>
                     <th>ID</th><th>{{ $t('th.name') }}</th><th>{{ $t('th.base_url') }}</th>
-                    <th>{{ $t('th.models') }}</th><th>{{ $t('th.default') }}</th><th></th>
+                    <th>{{ $t('th.models') }}</th><th>{{ $t('th.default') }}</th>
+                    <th>{{ $t('th.shared') }}</th><th></th>
                   </tr></thead>
                   <tbody>
                     <tr v-for="s in servers" :key="s.id">
@@ -841,10 +888,11 @@ const SettingsModal = {
                       <td><code>{{ s.base_url }}</code></td>
                       <td>{{ (s.models||[]).map(m=>m.name).join(', ') }}</td>
                       <td>{{ s.is_default ? '✓' : '' }}</td>
+                      <td>{{ s.shared ? '✓' : '' }}<span v-if="!s.mine" class="muted"> ({{ $t('field.shared_by_other') }})</span></td>
                       <td>
-                        <button @click="editServerInit(s)">{{ $t('action.edit') }}</button>
+                        <button v-if="s.mine" @click="editServerInit(s)">{{ $t('action.edit') }}</button>
                         <button @click="testServer(s.id)">{{ $t('action.test_connection') }}</button>
-                        <button class="danger" @click="delServer(s.id)">✕</button>
+                        <button v-if="s.mine" class="danger" @click="delServer(s.id)">✕</button>
                       </td>
                     </tr>
                   </tbody>
@@ -858,7 +906,10 @@ const SettingsModal = {
                   <div class="form-row"><label>{{ $t('th.base_url') }}</label><input type="text" v-model="editServer.base_url"></div>
                   <div class="form-row"><label>API Key (Hermes <code>API_SERVER_KEY</code>)</label><input type="password" v-model="editServer.api_key" :placeholder="$t('field.api_key_placeholder')"></div>
                   <div class="form-row"><label>{{ $t('settings.max_concurrent_server') }}</label><input type="number" v-model.number="editServer.max_concurrent"></div>
-                  <div class="form-row"><label><input type="checkbox" v-model="editServer.is_default"> {{ $t('settings.default_server') }}</label></div>
+                  <div v-if="isAdmin" class="form-row"><label><input type="checkbox" v-model="editServer.is_default"> {{ $t('settings.default_server') }}</label></div>
+                  <div class="form-row"><label><input type="checkbox" v-model="editServer.shared"> {{ $t('field.shared_label') }}</label>
+                    <div class="desc-hint">{{ $t('field.shared_hint_server') }}</div>
+                  </div>
 
                   <h4>{{ $t('settings.models_title') }}</h4>
                   <p class="helper">{{ $t('settings.models_helper') }}</p>
@@ -917,25 +968,47 @@ API_SERVER_PORT=8642</pre>
                 <button class="primary" @click="saveSettings">{{ $t('action.save') }}</button>
               </div>
 
-              <!-- Access -->
+              <!-- Access: change password (every user) -->
               <div v-if="tab==='access'" class="settings-section">
                 <h3>{{ $t('settings.nav.access') }}</h3>
-                <div v-if="!auth.enabled">
-                  <p>{{ $t('settings.auth_intro_off') }}</p>
-                  <div class="form-row"><label>{{ $t('field.username') }}</label><input type="text" v-model="enableForm.username"></div>
-                  <div class="form-row"><label>{{ $t('field.password') }}</label><input type="password" v-model="enableForm.password"></div>
-                  <button class="primary" @click="enableAuth">{{ $t('action.enable_auth') }}</button>
-                </div>
-                <div v-else>
-                  <p>{{ $t('settings.auth_intro_on', { u: auth.username }) }}</p>
-                  <h4>{{ $t('action.change_password') }}</h4>
-                  <div class="form-row"><label>{{ $t('field.old_password') }}</label><input type="password" v-model="oldPw"></div>
-                  <div class="form-row"><label>{{ $t('field.new_password') }}</label><input type="password" v-model="newPw"></div>
-                  <button class="primary" @click="changePw">{{ $t('action.change_password') }}</button>
-                  <hr>
-                  <div class="form-row"><label>{{ $t('field.current_password') }}</label><input type="password" v-model="oldPw"></div>
-                  <button class="danger" @click="disableAuth">{{ $t('action.disable_auth') }}</button>
-                </div>
+                <p class="helper">{{ $t('settings.change_password_intro', { u: me.username }) }}</p>
+                <div class="form-row"><label>{{ $t('field.old_password') }}</label><input type="password" v-model="oldPw"></div>
+                <div class="form-row"><label>{{ $t('field.new_password') }}</label><input type="password" v-model="newPw"></div>
+                <button class="primary" @click="changePw">{{ $t('action.change_password') }}</button>
+              </div>
+
+              <!-- Users (admin only) -->
+              <div v-if="tab==='users' && isAdmin" class="settings-section">
+                <h3>{{ $t('settings.nav.users') }}</h3>
+                <p class="helper">{{ $t('settings.users_helper') }}</p>
+                <table class="tbl">
+                  <thead><tr>
+                    <th>{{ $t('field.username') }}</th>
+                    <th>{{ $t('field.role') }}</th>
+                    <th>{{ $t('field.status') }}</th>
+                    <th></th>
+                  </tr></thead>
+                  <tbody>
+                    <tr v-for="u in users" :key="u.id">
+                      <td>{{ u.username }}</td>
+                      <td>{{ u.is_admin ? $t('field.role_admin') : $t('field.role_user') }}</td>
+                      <td>{{ u.disabled ? $t('field.status_disabled') : $t('field.status_active') }}</td>
+                      <td>
+                        <button @click="resetUserPw(u)">{{ $t('action.reset_password') }}</button>
+                        <button v-if="u.username !== me.username" @click="toggleUserDisabled(u)">
+                          {{ u.disabled ? $t('action.enable_user') : $t('action.disable_user') }}
+                        </button>
+                        <button v-if="u.username !== me.username" class="danger" @click="deleteUser(u)">✕</button>
+                      </td>
+                    </tr>
+                    <tr v-if="!users.length"><td colspan="4" class="empty">{{ $t('settings.users_empty') }}</td></tr>
+                  </tbody>
+                </table>
+                <h4>{{ $t('action.new_user') }}</h4>
+                <div class="form-row"><label>{{ $t('field.username') }}</label><input type="text" v-model="userForm.username"></div>
+                <div class="form-row"><label>{{ $t('field.password') }}</label><input type="password" v-model="userForm.password"></div>
+                <div class="form-row"><label><input type="checkbox" v-model="userForm.is_admin"> {{ $t('field.is_admin') }}</label></div>
+                <button class="primary" @click="createUser">{{ $t('action.create_user') }}</button>
               </div>
 
               <!-- Preferences -->
@@ -1000,6 +1073,7 @@ API_SERVER_PORT=8642</pre>
                   <thead><tr>
                     <th>{{ $t('th.name') }}</th>
                     <th>{{ $t('tag.system_prompt_col') }}</th>
+                    <th>{{ $t('th.shared') }}</th>
                     <th></th>
                   </tr></thead>
                   <tbody>
@@ -1009,12 +1083,13 @@ API_SERVER_PORT=8642</pre>
                         <span v-if="t.system_prompt" class="sys-prompt-preview">{{ t.system_prompt }}</span>
                         <span v-else class="muted">—</span>
                       </td>
+                      <td>{{ t.shared ? '✓' : '' }}<span v-if="!tagIsMine(t)" class="muted"> ({{ $t('field.shared_by_other') }})</span></td>
                       <td class="tag-actions">
-                        <button @click="tagEditInit(t)">{{ $t('action.edit') }}</button>
-                        <button class="danger small" @click="delTag(t.name)">✕</button>
+                        <button v-if="tagIsMine(t)" @click="tagEditInit(t)">{{ $t('action.edit') }}</button>
+                        <button v-if="tagIsMine(t)" class="danger small" @click="delTag(t.name)">✕</button>
                       </td>
                     </tr>
-                    <tr v-if="!tags.length"><td colspan="3" class="empty">{{ $t('settings.tags_empty') }}</td></tr>
+                    <tr v-if="!tags.length"><td colspan="4" class="empty">{{ $t('settings.tags_empty') }}</td></tr>
                   </tbody>
                 </table>
                 <button class="primary" @click="tagEditInit(null)" style="margin-top:10px">+ {{ $t('action.new_tag') }}</button>
@@ -1033,6 +1108,10 @@ API_SERVER_PORT=8642</pre>
                     <textarea v-model="tagEdit.system_prompt" rows="6"
                               :placeholder="$t('tag.system_prompt_placeholder')"></textarea>
                     <div class="desc-hint">{{ $t('tag.system_prompt_hint') }}</div>
+                  </div>
+                  <div class="form-row">
+                    <label><input type="checkbox" v-model="tagEdit.shared"> {{ $t('field.shared_label') }}</label>
+                    <div class="desc-hint">{{ $t('field.shared_hint_tag') }}</div>
                   </div>
                   <div class="edit-actions">
                     <button @click="tagEdit = null">{{ $t('action.cancel') }}</button>
@@ -1060,7 +1139,14 @@ API_SERVER_PORT=8642</pre>
     },
     tagEditInit(tag) {
       if (tag) this.tagEdit = { ...tag, __edit: true };
-      else this.tagEdit = { name: '', color: '', system_prompt: '' };
+      else this.tagEdit = { name: '', color: '', system_prompt: '', shared: false };
+    },
+    tagIsMine(tag) {
+      // Backend now flags ownership explicitly: viewer's own tags come
+      // through with mine=true, shared tags from other users come
+      // through with mine=false. Admins are no longer a cross-user
+      // bypass — to touch another user's tag, log in as them.
+      return !!(tag && tag.mine);
     },
     async saveTag() {
       if (!this.tagEdit.name.trim()) { toast(t('tag.name_required'), 'error'); return; }
@@ -1069,6 +1155,7 @@ API_SERVER_PORT=8642</pre>
           name: this.tagEdit.name.trim(),
           color: this.tagEdit.color || '',
           system_prompt: this.tagEdit.system_prompt || '',
+          shared: !!this.tagEdit.shared,
         }});
         this.tagEdit = null;
         await this.reloadTags();
@@ -1121,7 +1208,8 @@ API_SERVER_PORT=8642</pre>
       } else {
         this.editServer = {
           id: '', name: '', base_url: 'http://127.0.0.1:8642',
-          api_key: '', is_default: this.servers.length === 0, max_concurrent: 10,
+          api_key: '', is_default: false, max_concurrent: 10,
+          shared: false,
           models: [{ name: 'hermes-agent', is_default: true, max_concurrent: 5 }],
         };
       }
@@ -1133,6 +1221,7 @@ API_SERVER_PORT=8642</pre>
           id: s.id, name: s.name, base_url: s.base_url,
           api_key: s.api_key || '', is_default: !!s.is_default,
           max_concurrent: s.max_concurrent || 10,
+          shared: !!s.shared,
           models: (s.models || []).filter((m) => m.name),
         };
         if (s.__edit) await api('/api/servers/' + s.id, { method: 'PATCH', body: payload });
@@ -1180,19 +1269,43 @@ API_SERVER_PORT=8642</pre>
       try { await api('/api/config/reload', { method: 'POST' }); await refreshAll(); toast(t('toast.saved')); }
       catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
-    async enableAuth() {
-      try { await api('/api/auth/enable', { method: 'POST', body: this.enableForm }); await refreshAuth(); toast(t('toast.saved')); }
-      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
-    },
-    async disableAuth() {
-      try { await api('/api/auth/disable', { method: 'POST', body: { password: this.oldPw } }); await refreshAuth(); toast(t('toast.saved')); }
-      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
-    },
     async changePw() {
       try {
         await api('/api/auth/change', { method: 'POST', body: { old_password: this.oldPw, new_password: this.newPw } });
         this.oldPw = ''; this.newPw = ''; toast(t('toast.saved'));
       } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+    async createUser() {
+      if (!this.userForm.username.trim() || this.userForm.password.length < 8) {
+        toast(t('toast.user_form_invalid'), 'error'); return;
+      }
+      try {
+        await api('/api/users', { method: 'POST', body: {
+          username: this.userForm.username.trim(),
+          password: this.userForm.password,
+          is_admin: !!this.userForm.is_admin,
+        }});
+        this.userForm = { username: '', password: '', is_admin: false };
+        await refreshUsers();
+        toast(t('toast.saved'));
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+    async resetUserPw(u) {
+      const pw = prompt(t('prompt.new_password_for', { u: u.username }));
+      if (!pw) return;
+      try { await api('/api/users/' + encodeURIComponent(u.username) + '/password', { method: 'POST', body: { password: pw } }); toast(t('toast.saved')); }
+      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+    async toggleUserDisabled(u) {
+      try {
+        await api('/api/users/' + encodeURIComponent(u.username) + '/disabled', { method: 'PATCH', body: { disabled: !u.disabled } });
+        await refreshUsers();
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+    async deleteUser(u) {
+      if (!confirm(t('confirm.delete_user', { u: u.username }))) return;
+      try { await api('/api/users/' + encodeURIComponent(u.username), { method: 'DELETE' }); await refreshUsers(); }
+      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
   },
 };
@@ -1321,6 +1434,7 @@ const App = {
     themeIsLight() { return state.preferences.theme === 'light'; },
     langLabel() { return currentLang.value === 'zh-CN' ? '中' : 'EN'; },
     appVersion() { return APP_VERSION; },
+    currentUser() { return state.auth.user; },
   },
   template: `
     <div v-if="isLogin"><login></login></div>
@@ -1336,7 +1450,10 @@ const App = {
           🌐 <span class="topbar-btn-label">{{ langLabel }}</span>
         </button>
         <button class="icon" :title="$t('action.settings')" @click="openSettings">⚙ <span class="topbar-btn-label">{{ $t('action.settings') }}</span></button>
-        <button v-if="state.auth.enabled && state.auth.logged_in" class="topbar-btn-label-only" @click="logout">{{ $t('action.logout') }}</button>
+        <span v-if="currentUser" class="topbar-user" :title="currentUser.is_admin ? $t('field.role_admin') : $t('field.role_user')">
+          {{ currentUser.username }}<span v-if="currentUser.is_admin" class="topbar-admin-badge">★</span>
+        </span>
+        <button v-if="state.auth.logged_in" class="topbar-btn-label-only" @click="logout">{{ $t('action.logout') }}</button>
       </div>
 
       <div class="board-tabs" v-if="isMobile">

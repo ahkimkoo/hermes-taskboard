@@ -3,6 +3,70 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-23 — v0.3.0
+
+### Multi-user support with folder-level data isolation
+
+Every user now has their own directory under `data/` containing *everything* that belongs to them — password, preferences, Hermes servers, tags, tasks, attempts, schedules. There is no shared central DB anymore. The layout:
+
+```
+data/
+  config.yaml                 # global: listen, scheduler, archive, OSS, session_secret
+  admin/
+    config.yaml               # per-user: id, password_hash, is_admin, preferences, hermes_servers[], tags[]
+    disabled                  # sentinel file — presence means the account is disabled
+    db/taskboard.db           # this user's tasks, attempts, deps, schedules
+    task/{task-id}.json
+    attempt/{attempt-id}/
+  tony/
+    config.yaml
+    db/…
+    task/…
+    attempt/…
+```
+
+This satisfies the stated design goal — **folder-level pluggability**: wiping one user is `rm -rf data/{username}/` with zero DB cleanup needed. Nothing leaks between users because the SQL layer never sees two users at once; each HTTP request resolves its per-user `*sql.DB` from a small registry keyed by authenticated username.
+
+**Login is now always on.** The board ships with a default `admin` / `admin123` on first boot — change it immediately in **Settings → Access control**. Forgot it? Stop the server and run `./taskboard -data ./data --reset-admin` to reset the admin password and clear any disabled flag.
+
+**No cross-user view even for admin.** Admins see only their own tasks on the board. To work as another user, log out and log back in with that user's password — there is no impersonation. Admins do get extra panels that regular users don't see: **Users** (invite, reset password, disable/enable, delete), **Global / Scheduler**, **Integrations (OSS)**, **Archive**, and the **Reload config from file** button.
+
+**Shared Hermes servers + tags.** Creating either with the "Shared" checkbox ticked makes it read-only-visible to every other user — they can see it and use it, but cannot edit or delete.
+
+**Disabled sentinel.** Admin → Users → Disable writes an empty `data/{username}/disabled` file. Existing sessions for that user fail the very next request with 401; login attempts return `account disabled`. Re-enable removes the sentinel.
+
+**One-shot migration from the single-DB layout.** When the new binary detects a legacy `data/db/taskboard.db` or a `hermes_servers` field in the global `data/config.yaml`, it runs once on startup:
+
+1. Reassigns every task, attempt, dependency, tag link, and schedule to the `admin` user (copied into `data/admin/db/taskboard.db`).
+2. Pulls `hermes_servers` out of the global config and inlines them into `data/admin/config.yaml` with API keys re-encrypted under the same `data/db/.secret` AEAD key.
+3. Moves `data/task/` → `data/admin/task/` and `data/attempt/` → `data/admin/attempt/`.
+4. Archives the old `data/db/` to `data/_migrated-YYYYMMDD-HHMMSS/db/` so nothing is destroyed.
+5. Rewrites `data/config.yaml` stripped of the per-user fields.
+
+### Delete individual attempts
+
+The task modal now has a "✕" button next to each attempt in the list (with an inline 2-click confirm). Deleting an attempt removes the SQL row + its filesystem event log. Running / needs-input attempts must be cancelled first (the UI gates the button until state is terminal). Deleting a task still cascade-deletes every attempt belonging to it.
+
+### API / storage changes — things that moved
+
+Most of these are invisible after migration; listed for operators who manage the files by hand:
+
+| Before | After |
+|---|---|
+| `data/config.yaml: auth.enabled / username / password_hash` | removed — per-user `config.yaml` + bcrypt |
+| `data/config.yaml: hermes_servers[]` | `data/{username}/config.yaml: hermes_servers[]` |
+| `data/config.yaml: preferences` | `data/{username}/config.yaml: preferences` |
+| central `tasks.owner_id` column | dropped — one SQLite DB per user |
+| central `tags` SQL table | removed — tags live in user config.yaml |
+| `users` table in DB | removed — users are directories |
+| `POST /api/auth/enable` / `/disable` | removed — login is always on |
+| `DELETE /api/users/{id}` | `DELETE /api/users/{username}` |
+| `PATCH /api/users/{id}/disabled` | `PATCH /api/users/{username}/disabled` |
+| `POST /api/users/{id}/password` | `POST /api/users/{username}/password` |
+| `DELETE /api/attempts/{id}` | **new** — delete a terminal attempt |
+
+Session cookies now carry `username` instead of a UUID; existing cookies from older builds are rejected on next request (users just log in again).
+
 ## 2026-04-21 — v0.2.0
 
 ### `previous_response_id` no longer 404s after the user hits Stop

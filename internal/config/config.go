@@ -1,3 +1,8 @@
+// Package config holds the GLOBAL taskboard configuration — knobs that
+// apply to the board as a whole and are admin-only. Per-user state
+// (passwords, preferences, hermes servers, tags) lives under
+// internal/userdir. HTTP-listen + session secret + scheduler +
+// archive + OSS integration are the things that stay here.
 package config
 
 import (
@@ -10,22 +15,40 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Config is the full app configuration persisted in data/config.yaml.
+// Config is the full GLOBAL configuration persisted in data/config.yaml.
 type Config struct {
-	Auth           Auth           `yaml:"auth"`
-	Server         Server         `yaml:"server"`
-	HermesServers  []HermesServer `yaml:"hermes_servers"`
-	Scheduler      Scheduler      `yaml:"scheduler"`
-	Archive        Archive        `yaml:"archive"`
-	Preferences    Preferences    `yaml:"preferences"`
-	OSS            OSS            `yaml:"oss"`
+	Auth      Auth      `yaml:"auth"`
+	Server    Server    `yaml:"server"`
+	Scheduler Scheduler `yaml:"scheduler"`
+	Archive   Archive   `yaml:"archive"`
+	OSS       OSS       `yaml:"oss"`
+}
+
+// Auth holds only the bits that are global: cookie signing + TTL.
+// Per-user credentials live in data/{username}/config.yaml.
+type Auth struct {
+	SessionSecret   string `yaml:"session_secret"`
+	SessionTTLHours int    `yaml:"session_ttl_hours"`
+}
+
+type Server struct {
+	Listen      string   `yaml:"listen" json:"listen"`
+	CorsOrigins []string `yaml:"cors_origins" json:"cors_origins"`
+}
+
+type Scheduler struct {
+	ScanIntervalSeconds int `yaml:"scan_interval_seconds" json:"scan_interval_seconds"`
+	GlobalMaxConcurrent int `yaml:"global_max_concurrent" json:"global_max_concurrent"`
+}
+
+type Archive struct {
+	AutoPurgeDays int `yaml:"auto_purge_days" json:"auto_purge_days"`
 }
 
 // OSS is the optional Aliyun OSS image-hosting config.
@@ -55,86 +78,14 @@ func (o *OSS) DecryptedAccessKeySecret(secret []byte) string {
 	return plain
 }
 
-type Auth struct {
-	Enabled         bool   `yaml:"enabled"`
-	Username        string `yaml:"username"`
-	PasswordHash    string `yaml:"password_hash"`
-	SessionSecret   string `yaml:"session_secret"`
-	SessionTTLHours int    `yaml:"session_ttl_hours"`
-}
-
-type Server struct {
-	Listen      string   `yaml:"listen" json:"listen"`
-	CorsOrigins []string `yaml:"cors_origins" json:"cors_origins"`
-}
-
-type HermesServer struct {
-	ID            string        `yaml:"id"`
-	Name          string        `yaml:"name"`
-	BaseURL       string        `yaml:"base_url"`
-	APIKey        string        `yaml:"api_key,omitempty"`      // plaintext convenience — auto-encrypted on save
-	APIKeyEnc     string        `yaml:"api_key_enc,omitempty"`  // encrypted storage form
-	IsDefault     bool          `yaml:"is_default"`
-	MaxConcurrent int           `yaml:"max_concurrent"`
-	Models        []HermesModel `yaml:"models"`
-}
-
-type HermesModel struct {
-	Name          string `yaml:"name"`
-	IsDefault     bool   `yaml:"is_default"`
-	MaxConcurrent int    `yaml:"max_concurrent"`
-}
-
-type Scheduler struct {
-	ScanIntervalSeconds int `yaml:"scan_interval_seconds" json:"scan_interval_seconds"`
-	GlobalMaxConcurrent int `yaml:"global_max_concurrent" json:"global_max_concurrent"`
-}
-
-type Archive struct {
-	AutoPurgeDays int `yaml:"auto_purge_days" json:"auto_purge_days"`
-}
-
-type Preferences struct {
-	Language string `yaml:"language" json:"language"`
-	Theme    string `yaml:"theme" json:"theme"` // "dark" | "light" | "" (auto)
-	Sound    Sound  `yaml:"sound" json:"sound"`
-}
-
-type Sound struct {
-	Enabled bool        `yaml:"enabled" json:"enabled"`
-	Volume  float64     `yaml:"volume" json:"volume"`
-	Events  SoundEvents `yaml:"events" json:"events"`
-}
-
-type SoundEvents struct {
-	ExecuteStart bool `yaml:"execute_start" json:"execute_start"`
-	NeedsInput   bool `yaml:"needs_input" json:"needs_input"`
-	Done         bool `yaml:"done" json:"done"`
-}
-
-// DecryptedAPIKey returns the plaintext key for a server; empty if none.
-func (h *HermesServer) DecryptedAPIKey(secret []byte) string {
-	if h.APIKey != "" {
-		return h.APIKey
-	}
-	if h.APIKeyEnc == "" {
-		return ""
-	}
-	plain, err := aesGCMDecrypt(secret, h.APIKeyEnc)
-	if err != nil {
-		return ""
-	}
-	return plain
-}
-
 // Store wraps an atomic *Config pointer with persistence.
 type Store struct {
-	path       string
-	secret     []byte
-	cur        atomic.Pointer[Config]
-	mu         sync.Mutex // serialize writes
-	hooks      []func(old, new *Config)
-	hooksMu    sync.RWMutex
+	path    string
+	secret  []byte
+	cur     atomic.Pointer[Config]
+	mu      sync.Mutex // serialize writes
+	hooks   []func(old, new *Config)
+	hooksMu sync.RWMutex
 }
 
 // NewStore loads the config file (creating defaults if missing) and returns a Store.
@@ -145,7 +96,6 @@ func NewStore(path string, secretPath string) (*Store, error) {
 	}
 	s := &Store{path: path, secret: secret}
 	if err := s.Reload(); err != nil {
-		// file missing → write defaults
 		if errors.Is(err, os.ErrNotExist) {
 			def := DefaultConfig()
 			s.cur.Store(def)
@@ -162,7 +112,7 @@ func NewStore(path string, secretPath string) (*Store, error) {
 // Snapshot returns an immutable reference to the current config.
 func (s *Store) Snapshot() *Config { return s.cur.Load() }
 
-// Secret exposes the encryption secret (for decrypting api keys).
+// Secret exposes the encryption secret (used by userdir for api-key AEAD).
 func (s *Store) Secret() []byte { return s.secret }
 
 // AddHook registers a callback fired after every successful swap with (old, new).
@@ -208,40 +158,15 @@ func (s *Store) Reload() error {
 	if err := s.normalizeAndValidate(cfg); err != nil {
 		return err
 	}
-	// If user hand-wrote plaintext api_key, re-persist so it encrypts.
-	needsPersist := false
-	for i := range cfg.HermesServers {
-		if cfg.HermesServers[i].APIKey != "" {
-			needsPersist = true
-		}
-	}
-	if needsPersist {
-		if err := s.persist(cfg); err != nil {
-			return err
-		}
-	}
 	old := s.cur.Load()
 	s.cur.Store(cfg)
 	s.fireHooks(old, cfg)
 	return nil
 }
 
-// persist writes the config to disk atomically, encrypting any plaintext api_key.
+// persist writes the config to disk atomically, encrypting any plaintext OSS secret.
 func (s *Store) persist(cfg *Config) error {
 	cpy := deepCopy(cfg)
-	// Encrypt plaintext api_key fields.
-	for i := range cpy.HermesServers {
-		sv := &cpy.HermesServers[i]
-		if sv.APIKey != "" {
-			enc, err := aesGCMEncrypt(s.secret, sv.APIKey)
-			if err != nil {
-				return fmt.Errorf("encrypt api key: %w", err)
-			}
-			sv.APIKeyEnc = enc
-			sv.APIKey = ""
-		}
-	}
-	// Encrypt OSS access_key_secret.
 	if cpy.OSS.AccessKeySecret != "" {
 		enc, err := aesGCMEncrypt(s.secret, cpy.OSS.AccessKeySecret)
 		if err != nil {
@@ -279,14 +204,6 @@ func (s *Store) persist(cfg *Config) error {
 	if err := os.Rename(tmp, s.path); err != nil {
 		return err
 	}
-	// Sync the in-memory cfg too (strip plaintext, install enc).
-	for i := range cfg.HermesServers {
-		sv := &cfg.HermesServers[i]
-		if sv.APIKey != "" {
-			sv.APIKeyEnc = cpy.HermesServers[i].APIKeyEnc
-			sv.APIKey = ""
-		}
-	}
 	if cfg.OSS.AccessKeySecret != "" {
 		cfg.OSS.AccessKeySecretEnc = cpy.OSS.AccessKeySecretEnc
 		cfg.OSS.AccessKeySecret = ""
@@ -320,67 +237,19 @@ func (s *Store) normalizeAndValidate(c *Config) error {
 	if c.Auth.SessionTTLHours <= 0 {
 		c.Auth.SessionTTLHours = 168
 	}
-	// Ensure at most one default server; if none, mark first as default.
-	defaultCount := 0
-	for i := range c.HermesServers {
-		sv := &c.HermesServers[i]
-		if sv.ID == "" {
-			return fmt.Errorf("hermes_servers[%d]: id required", i)
-		}
-		if sv.MaxConcurrent <= 0 {
-			sv.MaxConcurrent = 10
-		}
-		if sv.IsDefault {
-			defaultCount++
-		}
-		modelDefault := 0
-		for j := range sv.Models {
-			m := &sv.Models[j]
-			if m.Name == "" {
-				return fmt.Errorf("hermes_servers[%s].models[%d]: name required", sv.ID, j)
-			}
-			if m.MaxConcurrent <= 0 {
-				m.MaxConcurrent = 5
-			}
-			if m.IsDefault {
-				modelDefault++
-			}
-		}
-		if modelDefault > 1 {
-			return fmt.Errorf("hermes_servers[%s]: only one default model allowed", sv.ID)
-		}
-		if modelDefault == 0 && len(sv.Models) > 0 {
-			sv.Models[0].IsDefault = true
-		}
-	}
-	if defaultCount > 1 {
-		return errors.New("only one hermes_server may be is_default: true")
-	}
-	if defaultCount == 0 && len(c.HermesServers) > 0 {
-		c.HermesServers[0].IsDefault = true
-	}
 	return nil
 }
 
 // DefaultConfig returns a sensible empty config.
 func DefaultConfig() *Config {
 	return &Config{
-		Auth:   Auth{Enabled: false, SessionTTLHours: 168},
+		Auth:   Auth{SessionTTLHours: 168},
 		Server: Server{Listen: "0.0.0.0:1900"},
 		Scheduler: Scheduler{
 			ScanIntervalSeconds: 5,
 			GlobalMaxConcurrent: 50,
 		},
 		Archive: Archive{AutoPurgeDays: 30},
-		Preferences: Preferences{
-			Language: "",
-			Theme:    "dark",
-			Sound: Sound{
-				Enabled: true,
-				Volume:  0.7,
-				Events:  SoundEvents{ExecuteStart: true, NeedsInput: true, Done: true},
-			},
-		},
 	}
 }
 
@@ -396,11 +265,9 @@ func deepCopy(c *Config) *Config {
 // loadOrCreateSecret loads the 32-byte AES key from secretPath, creating it if missing.
 func loadOrCreateSecret(path string) ([]byte, error) {
 	if env := os.Getenv("APP_SECRET"); env != "" {
-		// hex or base64; accept any 32+ byte decode
 		if b, err := base64.StdEncoding.DecodeString(env); err == nil && len(b) >= 32 {
 			return b[:32], nil
 		}
-		// fall back to raw bytes (padded/truncated)
 		b := []byte(env)
 		if len(b) < 32 {
 			pad := make([]byte, 32-len(b))
@@ -471,88 +338,8 @@ func aesGCMDecrypt(key []byte, enc string) (string, error) {
 	return string(pt), nil
 }
 
-// DefaultServer returns the hermes_servers entry marked is_default (or first).
-func (c *Config) DefaultServer() *HermesServer {
-	if c == nil {
-		return nil
-	}
-	for i := range c.HermesServers {
-		if c.HermesServers[i].IsDefault {
-			return &c.HermesServers[i]
-		}
-	}
-	if len(c.HermesServers) > 0 {
-		return &c.HermesServers[0]
-	}
-	return nil
-}
-
-// FindServer looks up by id.
-func (c *Config) FindServer(id string) *HermesServer {
-	if c == nil {
-		return nil
-	}
-	for i := range c.HermesServers {
-		if c.HermesServers[i].ID == id {
-			return &c.HermesServers[i]
-		}
-	}
-	return nil
-}
-
-// HermesDefaultAgent is the profile name Hermes Agent itself ships as the
-// built-in default (see docs/requirements.md and the upstream API-server
-// reference). We use it as the last-resort fallback when a server entry has
-// no Models configured, so a task targeting such a server still dispatches
-// instead of silently sitting in Plan forever.
+// HermesDefaultAgent is the profile name Hermes Agent itself ships as
+// the built-in default. We keep it in this package to avoid introducing
+// a cycle with userdir: both packages may fall back to this name when
+// a user-defined server has no explicit models listed.
 const HermesDefaultAgent = "hermes-agent"
-
-// DefaultModel returns the server's default model name. Priority:
-//
-//  1. the model explicitly marked IsDefault
-//  2. the first model listed
-//  3. HermesDefaultAgent — the built-in Hermes default profile
-//
-// (3) exists because an operator can accidentally save a server with no
-// models (e.g. by clearing the UI prefill), and that used to leave every
-// auto-triggered task stuck in Plan with `no model resolvable`. Falling
-// back to the documented Hermes default turns that silent-skip failure
-// mode into a visible dispatch that either succeeds or fails loudly at
-// the Hermes side.
-func (h *HermesServer) DefaultModel() string {
-	if h == nil {
-		return ""
-	}
-	for _, m := range h.Models {
-		if m.IsDefault {
-			return m.Name
-		}
-	}
-	if len(h.Models) > 0 {
-		return h.Models[0].Name
-	}
-	return HermesDefaultAgent
-}
-
-// ResolveServerModel returns the effective server and model for a task.
-// If preferred is empty / missing, falls back to default.
-func (c *Config) ResolveServerModel(preferredServer, preferredModel string) (*HermesServer, string) {
-	var sv *HermesServer
-	if preferredServer != "" {
-		sv = c.FindServer(preferredServer)
-	}
-	if sv == nil {
-		sv = c.DefaultServer()
-	}
-	if sv == nil {
-		return nil, ""
-	}
-	if preferredModel != "" {
-		for _, m := range sv.Models {
-			if strings.EqualFold(m.Name, preferredModel) {
-				return sv, m.Name
-			}
-		}
-	}
-	return sv, sv.DefaultModel()
-}

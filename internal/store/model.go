@@ -44,6 +44,8 @@ type TaskDep struct {
 }
 
 // Task is the SQL row + enriched tags/deps (description loaded separately via fsstore).
+// Ownership is implicit — tasks live in a per-user DB, so every row in the
+// local DB is owned by the same user. No owner_id column.
 type Task struct {
 	ID                 string      `json:"id"`
 	Title              string      `json:"title"`
@@ -53,7 +55,7 @@ type Task struct {
 	TriggerMode        TriggerMode `json:"trigger_mode"`
 	PreferredServer    string      `json:"preferred_server,omitempty"`
 	PreferredModel     string      `json:"preferred_model,omitempty"`
-	Position           int64       `json:"position"` // user-controlled order within a status column
+	Position           int64       `json:"position"`
 	CreatedAt          time.Time   `json:"created_at"`
 	UpdatedAt          time.Time   `json:"updated_at"`
 	DescriptionExcerpt string      `json:"description_excerpt,omitempty"`
@@ -62,12 +64,6 @@ type Task struct {
 	AttemptCount        int       `json:"attempt_count"`
 	ActiveAttempts      int       `json:"active_attempts"`       // queued + running + needs_input
 	NeedsInputAttempts  int       `json:"needs_input_attempts"`  // subset of ActiveAttempts
-}
-
-type Tag struct {
-	Name         string `json:"name"`
-	Color        string `json:"color"`
-	SystemPrompt string `json:"system_prompt"`
 }
 
 // ScheduleKind is retained for DB column symmetry but only one value is
@@ -101,7 +97,7 @@ type Attempt struct {
 	EndedAt   *time.Time   `json:"ended_at,omitempty"`
 }
 
-// AttemptMeta is the JSON stored at data/attempt/{id}/meta.json.
+// AttemptMeta is the JSON stored at data/{username}/attempt/{id}/meta.json.
 type AttemptMeta struct {
 	ID       string          `json:"id"`
 	TaskID   string          `json:"task_id"`

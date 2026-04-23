@@ -69,7 +69,7 @@ Backend:
 | ![Attempt live](docs/screenshots/attempt-live.png) | ![Settings](docs/screenshots/settings-servers.png) |
 | Live SSE stream from a running Hermes attempt | Hermes Servers settings page |
 | ![Mobile](docs/screenshots/board-mobile.png) | ![Login](docs/screenshots/login.png) |
-| Phone layout: one column at a time, status tabs on top | Optional password login page |
+| Phone layout: one column at a time, status tabs on top | Login page (default admin: admin / admin123) |
 
 ### Quick start (download a release)
 
@@ -88,7 +88,33 @@ API_SERVER_ENABLED=true API_SERVER_KEY=your-strong-key hermes gateway run
 # then open http://127.0.0.1:1900 in your browser
 ```
 
-On first visit, click **⚙ Settings → Hermes Servers → New server**, point `base_url` at `http://127.0.0.1:8642` and paste the same `API_SERVER_KEY`. Hit **Test Connection** — green means you're good. Back on the board, create a task and click **▶ Start**.
+On first visit you'll land on the login page. The board ships with a default admin — **username `admin` / password `admin123`**. Log in, then immediately change the password via **⚙ Settings → Access control**. Forgot it? Stop the server and run `./hermes-taskboard -data ./data --reset-admin` to put the admin account back to the default.
+
+Once logged in, click **⚙ Settings → Hermes Servers → New server**, point `base_url` at `http://127.0.0.1:8642` and paste the same `API_SERVER_KEY`. Hit **Test Connection** — green means you're good. Back on the board, create a task and click **▶ Start**.
+
+#### Multi-user (folder-level pluggability)
+
+The board keeps every user's data in its own directory — you can `rm -rf data/{username}/` to wipe a user cleanly without touching anyone else's work. The on-disk layout is:
+
+```
+data/
+  config.yaml                 # global: server listen, scheduler, archive, OSS, session
+  admin/
+    config.yaml               # per-user: password hash, is_admin, preferences, hermes_servers[], tags[]
+    disabled                  # sentinel file — presence means the account is disabled
+    db/taskboard.db           # this user's tasks, attempts, deps, schedules
+    task/{task-id}.json       # task descriptions
+    attempt/{attempt-id}/     # attempt event logs
+  tony/
+    config.yaml               # every field scoped to Tony
+    db/…
+    task/…
+    attempt/…
+```
+
+Each user only sees their own board. To work as another user, log out and log in as them — there is no admin impersonation. From **⚙ Settings → Users** (admin-only) admins can invite new users, reset passwords, disable accounts (`disabled` sentinel), or grant admin privileges. Tags and Hermes servers can be marked **Shared**: shared entries show up in other users' lists read-only (visible + usable, but not editable). Only admins can configure global options: scheduler, OSS integration, archive retention, and "Reload config from file".
+
+When an older single-DB install boots against this binary for the first time, a one-shot migration reassigns every task / tag / Hermes server to `admin` and moves them into `data/admin/`. The old `data/db/` is archived to `data/_migrated-YYYYMMDD-HHMMSS/db/` so nothing is destroyed.
 
 ### Set up Hermes for this board
 
@@ -153,7 +179,7 @@ docker run -d --name taskboard \
 
 In the app's **Settings → Hermes Servers**, set `base_url` to `http://host.docker.internal:8642` (Hermes runs on the host, not inside the container).
 
-> **Security note**: When taskboard and Hermes share an OS user (typical local-dev setup), the Hermes agent — through its `terminal` / `execute_code` tools — has filesystem read access to `data/db/taskboard.db`. The encrypted API keys are safe at rest, but tag system prompts and task descriptions are plain text. For production, sandbox Hermes (separate container / OS user) so it can't reach taskboard's data dir.
+> **Security note**: When taskboard and Hermes share an OS user (typical local-dev setup), the Hermes agent — through its `terminal` / `execute_code` tools — has filesystem read access to `data/{username}/db/taskboard.db`. The encrypted API keys are safe at rest, but tag system prompts and task descriptions are plain text. For production, sandbox Hermes (separate container / OS user) so it can't reach taskboard's data dir.
 
 ### Architecture
 
@@ -265,7 +291,7 @@ Hermes Agent 本身负责调用工具、编辑文件、执行 shell 命令。本
 | ![执行面板](docs/screenshots/attempt-live.png) | ![设置页](docs/screenshots/settings-servers.png) |
 | 真实 Hermes 调用中的 SSE 事件流 | Hermes Servers 管理页 |
 | ![手机端](docs/screenshots/board-mobile.png) | ![登录页](docs/screenshots/login.png) |
-| 手机端一次展示一列，顶部状态 tab 切换 | 可选开启的账号密码登录页 |
+| 手机端一次展示一列，顶部状态 tab 切换 | 登录页（默认管理员 admin / admin123） |
 
 ### 普通用户快速上手（下载 release 包运行）
 
@@ -284,7 +310,33 @@ API_SERVER_ENABLED=true API_SERVER_KEY=你的强密钥 hermes gateway run
 # 然后在浏览器里打开 http://127.0.0.1:1900
 ```
 
-首次打开页面后，点 **⚙ 设置 → Hermes Servers → 新增 server**，把 `base_url` 填成 `http://127.0.0.1:8642`，`api_key` 填刚才那个强密钥，点 **测试连接**，绿了就 OK。回到看板，新建一张任务，点 **▶ 开始** 即可。
+首次打开页面会直接进到登录页。系统内置默认管理员 —— **用户名 `admin` / 密码 `admin123`**。登录后请立刻在 **⚙ 设置 → 访问控制** 里改掉密码；万一忘记密码，停掉服务后执行 `./hermes-taskboard -data ./data --reset-admin` 即可把 admin 重置回默认密码。
+
+登录后点 **⚙ 设置 → Hermes Servers → 新增 server**，把 `base_url` 填成 `http://127.0.0.1:8642`，`api_key` 填刚才那个强密钥，点 **测试连接**，绿了就 OK。回到看板，新建一张任务，点 **▶ 开始** 即可。
+
+#### 多用户支持（目录级别可插拔）
+
+每个用户的数据都独立放在自己的目录下,清理一个用户的资料只要 `rm -rf data/{用户名}/`,不会影响别人。磁盘布局是:
+
+```
+data/
+  config.yaml                 # 全局配置:监听地址、调度、归档、OSS、session
+  admin/
+    config.yaml               # 用户级:密码哈希、是否管理员、偏好、hermes_servers[]、tags[]
+    disabled                  # 哨兵文件,存在则代表此账号被禁用
+    db/taskboard.db           # 这个用户的 tasks / attempts / deps / schedules
+    task/{task-id}.json       # 任务描述
+    attempt/{attempt-id}/     # 尝试的事件日志
+  tony/
+    config.yaml               # Tony 的全部数据隔离在他自己目录下
+    db/…
+    task/…
+    attempt/…
+```
+
+每个人只能看到自己的看板。要切到另一个用户的视角,退出登录再用对方的账号密码登入即可 —— 管理员不支持假扮他人浏览。管理员可在 **⚙ 设置 → 用户管理**(仅管理员可见)新增用户、重置密码、禁用/启用账号、或将其他用户升级为管理员。标签和 Hermes server 支持 **共享**:勾选共享后,其他用户可以在自己列表里看到并使用(但不能编辑 / 删除)。只有管理员能修改系统级选项:全局调度、OSS 集成、归档策略、"从文件重新加载配置"。
+
+如果旧版看板(单一 DB 的布局)第一次用新二进制启动,会触发一次性迁移,把全部任务 / 标签 / Hermes server 转到 `admin` 用户名下,搬进 `data/admin/`。原来的 `data/db/` 会被归档到 `data/_migrated-YYYYMMDD-HHMMSS/db/`,不会破坏原数据。
 
 ### Hermes 侧配置
 
@@ -349,7 +401,7 @@ docker run -d --name taskboard \
 
 然后在设置里把 Hermes Server 的 `base_url` 填成 `http://host.docker.internal:8642` —— 因为 Hermes 跑在宿主机上，不在容器里。
 
-> **安全提示**：当 taskboard 和 Hermes 跑在同一个 OS 用户下（典型本地开发场景）时，Hermes agent 通过 `terminal` / `execute_code` 工具有读取 `data/db/taskboard.db` 的能力。API key 是加密存的，但任务描述和标签 system prompt 是明文。生产环境请把 Hermes 隔离到独立容器/独立用户,使其无法访问 taskboard 的数据目录。
+> **安全提示**：当 taskboard 和 Hermes 跑在同一个 OS 用户下（典型本地开发场景）时，Hermes agent 通过 `terminal` / `execute_code` 工具有读取 `data/{username}/db/taskboard.db` 的能力。API key 是加密存的，但任务描述和标签 system prompt 是明文。生产环境请把 Hermes 隔离到独立容器/独立用户,使其无法访问 taskboard 的数据目录。
 
 ### 架构概览
 
