@@ -537,6 +537,32 @@ body.dragging-active * { cursor: grabbing !important; }
 .tbl input[type="text"], .tbl input[type="number"] { width: 100%; }
 .server-edit { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
 .server-edit h4 { margin-bottom: 6px; }
+.server-edit h5 { margin-top: 12px; margin-bottom: 6px; font-size: 13px; color: var(--text-dim); }
+
+.setup-guide {
+  margin: 10px 0;
+  padding: 10px 14px;
+  background: rgba(0,0,0,0.12);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.setup-guide summary { cursor: pointer; padding: 2px 0; user-select: none; }
+.setup-guide ol, .setup-guide ul { margin: 8px 0; padding-left: 22px; }
+.setup-guide li { margin: 6px 0; }
+.setup-guide pre {
+  background: rgba(0,0,0,0.35);
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  margin: 4px 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+.copy-block { position: relative; }
+.copy-block .copy-btn {
+  position: absolute; top: 6px; right: 6px;
+  font-size: 11px; padding: 3px 8px;
+}
 
 /* ---------- TagInput ---------- */
 .tag-input {

@@ -67,6 +67,32 @@ Attempt 跑起来后:
 
 ---
 
+## 3.1 在任务消息里使用 Hermes 指令
+
+任务卡片的聊天输入里（或者任务描述里）可以直接输入 Hermes 的 **slash 指令**，Hermes 会在进入 agent loop 之前先处理。适合"我想让 agent 停下 / 重试 / 换模型"这类微调，不用写一整段正文。
+
+从 taskboard 常用的：
+
+| 指令 | 作用 |
+|---|---|
+| `/stop` | 打断正在跑的 turn 并释放 session 锁。比直接关卡片干净 —— 正在执行的 tool call 会被优雅中止。 |
+| `/reset`, `/new` | 开一个新 session —— 历史清掉，下一轮冷启动。 |
+| `/status` | 打印当前 session 信息（轮数、token 数、模型）。 |
+| `/retry` | 把上一条用户消息再发一次给 agent。回答跑偏时用。 |
+| `/undo` | 丢掉最近一轮 user + assistant 对话。比 `/reset` 温和。 |
+| `/compress` | 手动压缩会话上下文（token 快满了就用）。 |
+| `/background` | 这轮在后台跑，结果不进 session 历史。 |
+| `/btw` | 临时问一下（不影响主对话线）。 |
+| `/model <name>` | 换模型（只影响这个 session）。 |
+| `/fast`, `/reasoning`, `/verbose`, `/yolo` | 配置切换（这个 session 内有效）。 |
+| `/help`, `/commands` | 看完整指令列表和说明。 |
+
+所有指令都能通过 taskboard 用的 `POST /v1/responses` 路径生效 —— Hermes gateway 在 agent 启动前拦截处理。完整列表在任意正在跑的 Attempt 聊天里发 `/help` 就能看到。
+
+> **taskboard 会给首轮加 `[tb-xxxxxxxx]` 前缀**，这样 Hermes 主机上 `hermes sessions list` 的 Preview 列就能一眼看出哪些 session 是 taskboard 派发的。
+
+---
+
 ## 4. 标签与 System Prompt
 
 设置 → **标签** 标签页,可以维护任务标签。每个标签除了名字 / 颜色之外可以加一段 **System Prompt**。

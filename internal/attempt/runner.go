@@ -262,13 +262,23 @@ func (r *Runner) Start(ctx context.Context, taskID, serverID, model string) (*st
 		return nil, err
 	}
 
-	// Compose initial prompt.
+	// Compose initial prompt. Prefix each taskboard-originated turn with
+	// a `tb-<8-hex>` tag so `hermes sessions list` on the Hermes host
+	// shows the taskboard origin in its Preview column — easier than
+	// trying to wire api_server sessions to the CLI session store via
+	// /title (api_server responses land in Hermes's response DB, not
+	// the CLI's session DB, so /title creates an orphan session not
+	// tied to ours). The prefix is short + stable + human-readable.
 	doc, _ := r.FS.LoadTaskDoc(taskID)
 	var desc string
 	if doc != nil {
 		desc = doc.Description
 	}
-	initialInput := fmt.Sprintf("# Task\n%s\n\n%s", task.Title, desc)
+	idPrefix := attemptID
+	if len(idPrefix) > 8 {
+		idPrefix = idPrefix[:8]
+	}
+	initialInput := fmt.Sprintf("[tb-%s] # Task\n%s\n\n%s", idPrefix, task.Title, desc)
 
 	// Move card into Execute (auto) if it isn't already. Verify is included
 	// so that "Run again" on a reviewed task pulls the card back out of the

@@ -69,6 +69,32 @@ Once an Attempt is running:
 
 ---
 
+## 3.1 Hermes slash commands in the chat input
+
+You can type any of Hermes's **slash commands** into the task's chat input (or into the initial task description) and Hermes will process them before the normal agent loop. Useful when an Attempt needs steering without sending a full instruction prompt.
+
+Commonly useful from taskboard:
+
+| Command | What it does |
+|---|---|
+| `/stop` | Interrupt the running turn and release the session lock. Safer than closing the card — stops in-flight tool calls cleanly. |
+| `/reset`, `/new` | Start a fresh session — history cleared, next turn is a cold start. |
+| `/status` | Print current session info (turn count, tokens, model). |
+| `/retry` | Re-send the last user message to the agent. Use when an answer went off the rails. |
+| `/undo` | Drop the last user + assistant exchange from history. Quieter than `/reset`. |
+| `/compress` | Manually compact conversation context when approaching the model's token limit. |
+| `/background` | Run this prompt in the background without persisting the result in session history. |
+| `/btw` | Ephemeral side-question (doesn't affect the main conversation thread). |
+| `/model <name>` | Switch model for this session. |
+| `/fast`, `/reasoning`, `/verbose`, `/yolo` | Config toggles for the rest of the session. |
+| `/help`, `/commands` | List available commands with their descriptions. |
+
+All commands work through the `POST /v1/responses` path taskboard uses; Hermes's gateway intercepts them before the agent starts. For the full list, type `/help` into any running Attempt's chat input.
+
+> **Taskboard tags the first turn with `[tb-xxxxxxxx]`** so that `hermes sessions list` on the Hermes host shows taskboard-owned sessions with a recognisable prefix in the Preview column.
+
+---
+
 ## 4. Tags & System Prompts
 
 Settings → **Tags** lets you maintain the tag library. Beyond name and color, each tag can carry a **System Prompt**.

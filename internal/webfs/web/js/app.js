@@ -874,6 +874,33 @@ const SettingsModal = {
                     </tbody>
                   </table>
                   <button @click="editServer.models.push({ name: '', max_concurrent: 5 })">+ {{ $t('settings.add_profile') }}</button>
+
+                  <details class="setup-guide" open style="margin-top:16px">
+                    <summary><strong>🛠 How to set this up on the Hermes side</strong></summary>
+                    <p class="helper">Taskboard calls Hermes's OpenAI-compatible API server on port 8642. On the Hermes host, do one of the two below.</p>
+                    <h5>A. Do it yourself (manual)</h5>
+                    <ol>
+                      <li>Generate an API key: <code>openssl rand -hex 20</code></li>
+                      <li>Add to <code>~/.hermes/.env</code>:
+<pre>API_SERVER_ENABLED=true
+API_SERVER_KEY=&lt;the key above&gt;
+API_SERVER_HOST=0.0.0.0
+API_SERVER_PORT=8642</pre>
+                      </li>
+                      <li>Restart Hermes: <code>hermes gateway restart</code> (or <code>hermes gateway start</code> if not running)</li>
+                      <li>Check: <code>curl -H "Authorization: Bearer &lt;key&gt;" http://127.0.0.1:8642/health</code> → <code>{"status":"ok"}</code></li>
+                      <li>Back here, fill <strong>Base URL</strong> = <code>http://&lt;hermes-host&gt;:8642</code> and <strong>API Key</strong> = the key you generated. Save.</li>
+                    </ol>
+                    <h5>B. Let Hermes do it (paste this into any running Hermes chat)</h5>
+                    <div class="copy-block">
+                      <button class="copy-btn" @click="copyHermesPrompt">📋 Copy prompt</button>
+                      <pre>{{ hermesSetupPrompt() }}</pre>
+                    </div>
+                    <p class="helper" style="margin-top:8px">
+                      <strong>Tip</strong>: if other machines on your LAN need to reach Hermes, keep <code>API_SERVER_HOST=0.0.0.0</code> and use a key ≥ 8 chars — Hermes refuses an empty key with a network-bound host.
+                    </p>
+                  </details>
+
                   <div class="edit-actions">
                     <button @click="editServer = null">{{ $t('action.cancel') }}</button>
                     <button class="primary" @click="saveServer">{{ $t('action.save') }}</button>
@@ -1066,6 +1093,27 @@ const SettingsModal = {
       playSound(kind);
       // Restore real prefs after the short tone finishes (~0.3 s).
       setTimeout(() => setSoundPrefs(draft), 500);
+    },
+    hermesSetupPrompt() {
+      return `Help me enable Hermes's API server so taskboard can reach this host.
+
+1. Generate a random API key: run \`openssl rand -hex 20\` and remember the output.
+2. Open ~/.hermes/.env and add (or update) these four lines:
+     API_SERVER_ENABLED=true
+     API_SERVER_KEY=<the key from step 1>
+     API_SERVER_HOST=0.0.0.0
+     API_SERVER_PORT=8642
+3. Restart Hermes: \`hermes gateway restart\` (or \`hermes gateway start\` if it wasn't running).
+4. Verify: \`curl -s -H "Authorization: Bearer <key>" http://127.0.0.1:8642/health\` should print \`{"status":"ok","platform":"hermes-agent"}\`.
+5. Report back: (a) the base URL other hosts can reach (e.g. http://<this-host-ip>:8642), and (b) the API key you generated. I'll paste them into taskboard.`;
+    },
+    async copyHermesPrompt() {
+      try {
+        await navigator.clipboard.writeText(this.hermesSetupPrompt());
+        toast('Prompt copied — paste into a Hermes chat.');
+      } catch (e) {
+        toast('Copy failed: ' + e.message, 'error');
+      }
     },
     editServerInit(s) {
       if (s) {
