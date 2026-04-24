@@ -195,13 +195,14 @@ services:
     restart: unless-stopped
 ```
 
-First run (one-time): create the host folder and make it writable by the container's non-root user (distroless images run as UID 65532):
+First run — nothing to prep beyond creating the host folder:
 
 ```bash
 mkdir -p taskboard-data
-sudo chown 65532:65532 taskboard-data
 docker compose up -d
 ```
+
+The container starts as root just long enough to `chown` the bind-mounted `/data` to its internal `taskboard` user (UID 1000), then drops privileges via `su-exec`. You don't need `sudo` or a `chown` on the host.
 
 After that, everything — `data/config.yaml`, per-user dirs, the SQLite databases, attempt logs — lives in `./taskboard-data/` on the host. `rm -rf taskboard-data/{username}/` wipes a single user cleanly (see the [multi-user section](#multi-user-folder-level-pluggability)); `docker compose down && rm -rf taskboard-data` wipes everything.
 
@@ -456,13 +457,14 @@ services:
     restart: unless-stopped
 ```
 
-首次启动(一次性操作):先建好宿主机目录,并把属主改成容器里运行的非 root 用户(distroless 镜像里运行的 UID 是 65532):
+首次启动 —— 宿主机上只需要建个空目录就够了:
 
 ```bash
 mkdir -p taskboard-data
-sudo chown 65532:65532 taskboard-data
 docker compose up -d
 ```
+
+容器启动时以 root 身份先把挂进来的 `/data` chown 给内部的 `taskboard` 用户(UID 1000),然后通过 `su-exec` 降权运行 —— 宿主机上不需要 `sudo chown`。
 
 之后所有东西 —— `data/config.yaml`、各用户目录、SQLite 数据库、attempt 事件日志 —— 都落在 `./taskboard-data/` 里。清掉某个用户只需 `rm -rf taskboard-data/{用户名}/`(参见 [多用户支持(目录级别可插拔)](#多用户支持目录级别可插拔) 一节);整体清空则 `docker compose down && rm -rf taskboard-data`。
 

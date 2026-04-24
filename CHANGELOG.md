@@ -3,6 +3,24 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.2
+
+### Docker: bind-mounted `/data` now works without a host-side `chown`
+
+v0.3.0 / v0.3.1 shipped a distroless image that ran as UID 65532 and required operators to `sudo chown 65532:65532 taskboard-data` on the host folder before `docker compose up`. Anyone who skipped that step hit:
+
+```
+taskboard  | level=ERROR msg="load config" err="load secret: mkdir /data/db: permission denied"
+```
+
+Switched the final image to `alpine:3.20` + `su-exec` + `tini`, and added a tiny `docker-entrypoint.sh` that runs at container start:
+
+1. Starts as root just long enough to `chown -R taskboard:taskboard /data` (uid/gid 1000 inside the container).
+2. `exec`s the Go binary via `su-exec` so the server actually runs unprivileged.
+3. `tini` sits at PID 1 so `docker compose down` gets a clean shutdown.
+
+Operators only need `mkdir taskboard-data && docker compose up -d` now — no `sudo`, no pre-flight chown. The `chown` on an already-fixed folder is a no-op, so restarts are cheap. README (EN + ZH) updated to remove the old chown step.
+
 ## 2026-04-24 — v0.3.1
 
 ### Legacy migration no longer leaves an archive directory

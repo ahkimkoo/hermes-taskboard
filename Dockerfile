@@ -1,5 +1,9 @@
 # syntax=docker/dockerfile:1.6
-# Multi-stage: build a static binary in golang, then drop into a minimal image.
+# Build a static Go binary, then package it in alpine with a small
+# entrypoint script so bind-mounted /data works regardless of its host
+# ownership. The previous distroless layout required operators to
+# manually `chown 65532:65532 taskboard-data` before `docker compose
+# up` — this version chowns on boot instead.
 
 FROM golang:1.25-alpine AS build
 WORKDIR /src
@@ -11,22 +15,31 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags "-s -w -X main.Version=${VERSION}" \
     -o /out/hermes-taskboard ./cmd/taskboard
-# Seed an empty /data skeleton so the distroless stage can COPY --chown it
-# in — distroless has no shell, so a RUN mkdir+chown at the final stage isn't
-# possible and a bare VOLUME directive leaves /data owned by root.
-RUN mkdir -p /skel-data
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM alpine:3.20
 LABEL org.opencontainers.image.title="hermes-taskboard" \
       org.opencontainers.image.source="https://github.com/ahkimkoo/hermes-taskboard" \
       org.opencontainers.image.licenses="MIT"
+
+# su-exec drops privileges after the entrypoint fixes /data ownership.
+# tini makes PID 1 a real init so SIGTERM propagates cleanly to the Go
+# binary on `docker compose down`.
+RUN apk add --no-cache su-exec tini ca-certificates tzdata \
+    && addgroup -S -g 1000 taskboard \
+    && adduser -S -u 1000 -G taskboard -s /sbin/nologin taskboard
+
 WORKDIR /app
 COPY --from=build /out/hermes-taskboard /app/hermes-taskboard
-# distroless/nonroot is UID/GID 65532. Pre-owning /data means both named
-# volumes and bind mounts (when the host path is world-writable) let the
-# binary mkdir its subdirs without a host-side chown step.
-COPY --from=build --chown=65532:65532 /skel-data /data
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Seed /data with the right owner so a named volume (which initialises
+# from the image) comes up writable out of the box. Bind mounts get
+# fixed at container start by the entrypoint.
+RUN mkdir -p /data && chown -R taskboard:taskboard /data
+
 VOLUME ["/data"]
 EXPOSE 1900
-USER nonroot:nonroot
-ENTRYPOINT ["/app/hermes-taskboard", "-data", "/data"]
+
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+CMD ["/app/hermes-taskboard", "-data", "/data"]
