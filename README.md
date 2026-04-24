@@ -56,7 +56,7 @@ Backend:
 - **Three-level concurrency gates** — global, per-server, per-(server, profile).
 - **Resume orphan attempts** — taskboard restart reconnects to mid-flight Hermes runs via `/v1/runs/{id}/events`; only attempts whose remote run is genuinely gone get marked failed.
 - **Tag prompt injection** — sent as `instructions` (the Hermes equivalent of a `role=system` message) on every turn.
-- **Encrypted API key storage** (AEAD with `data/db/.secret`).
+- **Encrypted API key storage** (AEAD with `data/.secret`).
 - **Filesystem reaper** — purges `data/attempt/{id}/` directories older than the configured retention.
 - **Network-first service worker + `Cache-Control: no-cache`** so deploys propagate without forcing users to clear caches.
 
@@ -114,7 +114,7 @@ data/
 
 Each user only sees their own board. To work as another user, log out and log in as them — there is no admin impersonation. From **⚙ Settings → Users** (admin-only) admins can invite new users, reset passwords, disable accounts (`disabled` sentinel), or grant admin privileges. Tags and Hermes servers can be marked **Shared**: shared entries show up in other users' lists read-only (visible + usable, but not editable). Only admins can configure global options: scheduler, OSS integration, archive retention, and "Reload config from file".
 
-When an older single-DB install boots against this binary for the first time, a one-shot migration reassigns every task / tag / Hermes server to `admin` and moves them into `data/admin/`. The old `data/db/taskboard.db` is removed once the rows have been copied (the AEAD key at `data/db/.secret` stays put — it's still used at runtime). **Back up `data/` externally before upgrading** if you want a safety net; the migration does not keep one for you.
+When an older single-DB install boots against this binary for the first time, a one-shot migration reassigns every task / tag / Hermes server to `admin` and moves them into `data/admin/`. The old `data/db/taskboard.db` is removed once the rows have been copied (the AEAD key at `data/.secret` stays put — it's still used at runtime). **Back up `data/` externally before upgrading** if you want a safety net; the migration does not keep one for you.
 
 ### Set up Hermes for this board
 
@@ -318,7 +318,7 @@ Hermes Agent 本身负责调用工具、编辑文件、执行 shell 命令。本
 - **三层并发闸门** —— 全局、单个 Server、单个 (server, profile) 三级独立配额。
 - **重连孤儿 Attempt** —— taskboard 重启后自动通过 `/v1/runs/{id}/events` 重连进行中的 Hermes run；只有 Hermes 那边确实结束的才标 failed。
 - **标签 Prompt 注入** —— 每轮都通过 `instructions`（Hermes 上等价于 `role=system`）发出。
-- **API key 加密存储**（AEAD + `data/db/.secret`）。
+- **API key 加密存储**（AEAD + `data/.secret`）。
 - **文件清扫** —— 超过保留期的 `data/attempt/{id}/` 目录自动清掉。
 - **Network-first SW + `Cache-Control: no-cache`** —— 部署后用户刷新就拿新代码，不用清缓存。
 
@@ -376,7 +376,7 @@ data/
 
 每个人只能看到自己的看板。要切到另一个用户的视角,退出登录再用对方的账号密码登入即可 —— 管理员不支持假扮他人浏览。管理员可在 **⚙ 设置 → 用户管理**(仅管理员可见)新增用户、重置密码、禁用/启用账号、或将其他用户升级为管理员。标签和 Hermes server 支持 **共享**:勾选共享后,其他用户可以在自己列表里看到并使用(但不能编辑 / 删除)。只有管理员能修改系统级选项:全局调度、OSS 集成、归档策略、"从文件重新加载配置"。
 
-如果旧版看板(单一 DB 的布局)第一次用新二进制启动,会触发一次性迁移,把全部任务 / 标签 / Hermes server 转到 `admin` 用户名下,搬进 `data/admin/`。旧 `data/db/taskboard.db` 在行被复制完之后会被删掉(AEAD 密钥 `data/db/.secret` 保留,运行时还要用)。**需要安全兜底的话请在升级前自己备份一下整个 `data/` 目录**,迁移过程不会替你留副本。
+如果旧版看板(单一 DB 的布局)第一次用新二进制启动,会触发一次性迁移,把全部任务 / 标签 / Hermes server 转到 `admin` 用户名下,搬进 `data/admin/`。旧 `data/db/taskboard.db` 在行被复制完之后会被删掉(AEAD 密钥 `data/.secret` 保留,运行时还要用)。**需要安全兜底的话请在升级前自己备份一下整个 `data/` 目录**,迁移过程不会替你留副本。
 
 ### Hermes 侧配置
 

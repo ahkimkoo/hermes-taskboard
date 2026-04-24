@@ -106,25 +106,29 @@ func MigrateLegacy(dataDir string, cfgStore *config.Store, secret []byte, logger
 		}
 	}
 
-	// Delete the legacy DB now that its rows have been copied into
-	// admin's per-user DB. Previously we archived it to
-	// data/_migrated-{timestamp}/db/, but operators found having a
-	// second taskboard.db sitting in the data directory confusing —
-	// easy to mistake for the live DB. Anyone who wants a safety net
-	// should back up `data/` externally before upgrading. We keep
-	// data/db/.secret in place because it's the AEAD key the new
-	// layout still reads at runtime.
+	// Delete the legacy taskboard.db + WAL/SHM files now that their
+	// rows have been copied into admin's per-user DB. The AEAD key
+	// used to live at data/db/.secret; main.relocateLegacySecret
+	// moves it to data/.secret before this function runs, so by the
+	// time we get here data/db/ should contain only DB files and we
+	// can rmdir the whole directory afterwards. If anything unexpected
+	// is still there, log + leave it rather than delete operator data.
 	if fileExists(legacyDB) {
 		oldDir := filepath.Join(dataDir, "db")
 		entries, _ := os.ReadDir(oldDir)
 		for _, e := range entries {
 			name := e.Name()
 			if name == ".secret" {
-				continue
+				continue // still handled by relocateLegacySecret
 			}
 			if err := os.RemoveAll(filepath.Join(oldDir, name)); err != nil {
 				logger.Warn("remove legacy db artefact", "name", name, "err", err)
 			}
+		}
+		// Remove the now-empty data/db/ so fresh-boot tree shows only
+		// data/config.yaml + data/{username}/ + data/.secret.
+		if rest, _ := os.ReadDir(oldDir); len(rest) == 0 {
+			_ = os.Remove(oldDir)
 		}
 	}
 

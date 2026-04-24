@@ -53,7 +53,17 @@ func main() {
 		os.Exit(1)
 	}
 	cfgPath := filepath.Join(*dataDir, "config.yaml")
-	secretPath := filepath.Join(*dataDir, "db", ".secret")
+	secretPath := filepath.Join(*dataDir, ".secret")
+
+	// Relocate the legacy AEAD key from data/db/.secret into data/.secret
+	// so the top-level `db/` directory can go away — in the per-user
+	// layout, databases live under data/{username}/db/, and a leftover
+	// empty `data/db/` just holding a dotfile is confusing. Idempotent:
+	// skips when the new path already exists or the old one is missing.
+	if err := relocateLegacySecret(*dataDir, logger); err != nil {
+		logger.Error("relocate legacy secret", "err", err)
+		os.Exit(1)
+	}
 
 	cfgStore, err := config.NewStore(cfgPath, secretPath)
 	if err != nil {
@@ -163,6 +173,34 @@ func main() {
 	}
 	sched.Stop()
 	logger.Info("bye")
+}
+
+// relocateLegacySecret moves the AEAD key from its legacy home at
+// data/db/.secret to data/.secret, then removes the now-empty
+// data/db/ directory. No-op when the new path already exists (fresh
+// install or already-relocated) or the old one doesn't (fresh install).
+func relocateLegacySecret(dataDir string, logger *slog.Logger) error {
+	newPath := filepath.Join(dataDir, ".secret")
+	oldPath := filepath.Join(dataDir, "db", ".secret")
+	if _, err := os.Stat(newPath); err == nil {
+		return nil
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		return nil
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return fmt.Errorf("rename .secret: %w", err)
+	}
+	// Best-effort: remove the now-empty db/ dir. If something else
+	// put unexpected files there (legacy backups, manual dumps), leave
+	// it alone rather than risk deleting operator data.
+	oldDir := filepath.Join(dataDir, "db")
+	entries, err := os.ReadDir(oldDir)
+	if err == nil && len(entries) == 0 {
+		_ = os.Remove(oldDir)
+	}
+	logger.Info("relocated AEAD secret", "from", oldPath, "to", newPath)
+	return nil
 }
 
 // ensureDefaultAdmin creates data/admin/ with admin/admin123 when the

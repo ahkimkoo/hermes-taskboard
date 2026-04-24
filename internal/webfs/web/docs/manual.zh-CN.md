@@ -131,7 +131,7 @@ Attempt 跑起来后:
 
 - **ID / 名称** — 内部标识符 + 显示名
 - **Base URL** — 例如 `http://127.0.0.1:8642`(本机)或远程 IP
-- **API Key** — Hermes API 鉴权,**保存时本地用 AEAD 加密**(`data/db/.secret` 是密钥)
+- **API Key** — Hermes API 鉴权,**保存时本地用 AEAD 加密**(`data/.secret` 是密钥)
 - **作为默认 Server** — 任务没指定 server 时用这个
 - **Server 级最大并发** — 这个 server 同时跑多少 attempt
 - **Models (agent profile)**:server 下面的 agent profile 列表

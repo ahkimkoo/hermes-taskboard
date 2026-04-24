@@ -133,7 +133,7 @@ Connections to Hermes Gateway instances.
 
 - **ID / Name** — internal identifier + display label
 - **Base URL** — e.g. `http://127.0.0.1:8642` (local) or remote IP
-- **API Key** — Hermes API authentication; **encrypted at rest** with AEAD using the key in `data/db/.secret`
+- **API Key** — Hermes API authentication; **encrypted at rest** with AEAD using the key in `data/.secret`
 - **Default server** — used when a task doesn't specify one
 - **Server max concurrent** — cap on simultaneous Attempts against this server
 - **Models (agent profiles)** — list of agent profiles the server offers

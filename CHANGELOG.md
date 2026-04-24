@@ -3,6 +3,31 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.3
+
+### AEAD key moves to `data/.secret` — `data/db/` is gone
+
+In the per-user layout, every SQLite database lives under `data/{username}/db/taskboard.db`. The top-level `data/db/` directory served no purpose except to hold the AEAD master key (`.secret`), which was easy to mistake for "where the database is" and caused the reported `load secret: mkdir /data/db: permission denied` error because the binary was still trying to create that legacy directory on boot.
+
+v0.3.3 relocates the key:
+
+- **New location:** `data/.secret` (top-level dotfile, same 0600 perms).
+- **Idempotent auto-migration:** on every boot, if `data/db/.secret` exists and `data/.secret` doesn't, the binary renames it and rmdir's the now-empty `data/db/`. A fresh install never creates `data/db/` at all.
+- **Legacy migration updated:** the one-shot migration that turns a pre-v0.3.0 install into the per-user layout no longer has a special "keep `data/db/.secret`" clause — the relocation step handles it, and migration now wipes the whole `data/db/` dir when it finishes.
+
+Post-upgrade tree on a clean install:
+
+```
+data/
+  .secret                  # AEAD key (was data/db/.secret)
+  config.yaml              # global config
+  admin/
+    config.yaml
+    db/taskboard.db        # per-user DB
+```
+
+README + operator manual updated in both languages to reference the new `data/.secret` path.
+
 ## 2026-04-24 — v0.3.2
 
 ### Docker: bind-mounted `/data` now works without a host-side `chown`
@@ -25,7 +50,7 @@ Operators only need `mkdir taskboard-data && docker compose up -d` now — no `s
 
 ### Legacy migration no longer leaves an archive directory
 
-v0.3.0's migration path moved the old central DB into `data/_migrated-YYYYMMDD-HHMMSS/db/` as a safety copy. In practice operators found the leftover `taskboard.db` sitting next to `data/admin/db/taskboard.db` confusing — easy to mistake for the live database. v0.3.1 removes the legacy DB files after the rows have been copied into admin's per-user store. The AEAD key at `data/db/.secret` stays put because it's still the runtime encryption key for API credentials.
+v0.3.0's migration path moved the old central DB into `data/_migrated-YYYYMMDD-HHMMSS/db/` as a safety copy. In practice operators found the leftover `taskboard.db` sitting next to `data/admin/db/taskboard.db` confusing — easy to mistake for the live database. v0.3.1 removes the legacy DB files after the rows have been copied into admin's per-user store. The AEAD key at `data/.secret` stays put because it's still the runtime encryption key for API credentials.
 
 **If you want a pre-migration safety net, back up the host `data/` directory yourself before upgrading** — e.g. `tar czf taskboard-data.backup.tar.gz taskboard-data`. The migration is one-way.
 
@@ -66,9 +91,9 @@ This satisfies the stated design goal — **folder-level pluggability**: wiping 
 **One-shot migration from the single-DB layout.** When the new binary detects a legacy `data/db/taskboard.db` or a `hermes_servers` field in the global `data/config.yaml`, it runs once on startup:
 
 1. Reassigns every task, attempt, dependency, tag link, and schedule to the `admin` user (copied into `data/admin/db/taskboard.db`).
-2. Pulls `hermes_servers` out of the global config and inlines them into `data/admin/config.yaml` with API keys re-encrypted under the same `data/db/.secret` AEAD key.
+2. Pulls `hermes_servers` out of the global config and inlines them into `data/admin/config.yaml` with API keys re-encrypted under the same `data/.secret` AEAD key.
 3. Moves `data/task/` → `data/admin/task/` and `data/attempt/` → `data/admin/attempt/`.
-4. Removes the legacy `data/db/taskboard.db` (and WAL/SHM companions) after the copy succeeds. `data/db/.secret` stays put — it's still the runtime AEAD key. (In v0.3.0 the old DB was archived to `data/_migrated-YYYYMMDD-HHMMSS/db/`; v0.3.1 drops that archive because it was easy to mistake for the live DB. Back up `data/` yourself before upgrading if you want a safety net.)
+4. Removes the legacy `data/db/taskboard.db` (and WAL/SHM companions) after the copy succeeds. `data/.secret` stays put — it's still the runtime AEAD key. (In v0.3.0 the old DB was archived to `data/_migrated-YYYYMMDD-HHMMSS/db/`; v0.3.1 drops that archive because it was easy to mistake for the live DB. Back up `data/` yourself before upgrading if you want a safety net.)
 5. Rewrites `data/config.yaml` stripped of the per-user fields.
 
 ### Delete individual attempts
