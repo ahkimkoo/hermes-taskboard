@@ -121,10 +121,6 @@ Everything a phone user hit since v0.1.0 got tightened:
 
 `docs/manual.en.md` + `docs/manual.zh-CN.md` ship inside the binary. The `?` button on the Attempts pane (plus a new one in the settings drawer) opens the manual in an inline panel — the locale follows the UI's current language.
 
-### Japanese translations of user-facing docs
-
-`docs/release-notes/v0.1.0.ja-JP.md`, `docs/requirements.ja-JP.md`, and `docs/smoke.ja-JP.sh` ship alongside the English originals. UI remains English / Simplified Chinese for now; Japanese docs are read-only supplements.
-
 ## 2026-04-20
 
 ### Fallback to Hermes's built-in `hermes-agent` when a server has no `models`
