@@ -352,7 +352,7 @@ const TaskModal = {
       editing: false,
       form: {
         title: '', description: '', priority: 3, trigger_mode: 'auto',
-        preferred_server: '', preferred_model: '',
+        preferred_server: '',
         tags: [], dependencies: [],
       },
       attempts: [],
@@ -395,10 +395,11 @@ const TaskModal = {
     taskId: { immediate: true, handler: 'load' },
   },
   computed: {
-    modelsForSelected() {
+    profileForSelected() {
       const id = this.form.preferred_server;
       const s = this.$root.state.servers.find((x) => x.id === id);
-      return s ? (s.models || []) : [];
+      if (!s) return '';
+      return s.profile || 'hermes-agent';
     },
     isArchive() { return this.task && this.task.status === 'archive'; },
     canStartFirst() {
@@ -496,21 +497,14 @@ const TaskModal = {
                 </select>
               </div>
             </div>
-            <div class="form-inline">
-              <div class="form-row" style="flex:1">
-                <label>{{ $t('field.server') }} <span class="optional">({{ $t('field.optional') }})</span></label>
-                <select v-model="form.preferred_server">
-                  <option value="">{{ $t('field.default') }}</option>
-                  <option v-for="s in $root.state.servers" :key="s.id" :value="s.id">{{ s.name || s.id }}</option>
-                </select>
-              </div>
-              <div class="form-row" style="flex:1">
-                <label>{{ $t('field.model') }} <span class="optional">({{ $t('field.optional') }})</span></label>
-                <select v-model="form.preferred_model">
-                  <option value="">{{ $t('field.default') }}</option>
-                  <option v-for="m in modelsForSelected" :key="m.name" :value="m.name">{{ m.name }}</option>
-                </select>
-              </div>
+            <div class="form-row">
+              <label>{{ $t('field.server') }} <span class="optional">({{ $t('field.optional') }})</span></label>
+              <select v-model="form.preferred_server">
+                <option value="">{{ $t('field.default') }}</option>
+                <option v-for="s in $root.state.servers" :key="s.id" :value="s.id">
+                  {{ s.name || s.id }}<span v-if="s.profile"> · {{ s.profile }}</span>
+                </option>
+              </select>
             </div>
             <div class="form-row">
               <label>{{ $t('field.tags') }} <span class="optional">({{ $t('field.optional') }})</span></label>
@@ -540,10 +534,6 @@ const TaskModal = {
               <div>
                 <dt>{{ $t('field.server') }}</dt>
                 <dd>{{ serverDisplay(task.preferred_server) }}</dd>
-              </div>
-              <div>
-                <dt>{{ $t('field.model') }}</dt>
-                <dd>{{ task.preferred_model || $t('field.default') }}</dd>
               </div>
               <div v-if="task.tags && task.tags.length" class="task-meta-wide">
                 <dt>{{ $t('field.tags_short') }}</dt>
@@ -720,7 +710,6 @@ const TaskModal = {
             priority: r.task.priority,
             trigger_mode: r.task.trigger_mode,
             preferred_server: r.task.preferred_server || '',
-            preferred_model: r.task.preferred_model || '',
             tags: [...(r.task.tags || [])],
             dependencies: deps,
           };
@@ -781,7 +770,6 @@ const TaskModal = {
           priority: this.form.priority,
           trigger_mode: this.form.trigger_mode,
           preferred_server: this.form.preferred_server,
-          preferred_model: this.form.preferred_model,
           tags: this.form.tags,
           dependencies: this.form.dependencies.filter((d) => d.task_id),
         };
@@ -833,7 +821,7 @@ const TaskModal = {
       try {
         const r = await api('/api/tasks/' + this.taskId + '/attempts', {
           method: 'POST',
-          body: { server_id: this.form.preferred_server || '', model: this.form.preferred_model || '' },
+          body: { server_id: this.form.preferred_server || '' },
         });
         if (r.attempt) this.activeAttemptId = r.attempt.id;
         await this.load();
@@ -971,7 +959,7 @@ const SettingsModal = {
                 <table class="tbl">
                   <thead><tr>
                     <th>ID</th><th>{{ $t('th.name') }}</th><th>{{ $t('th.base_url') }}</th>
-                    <th>{{ $t('th.models') }}</th><th>{{ $t('th.default') }}</th>
+                    <th>{{ $t('th.profile') }}</th><th>{{ $t('th.default') }}</th>
                     <th>{{ $t('th.shared') }}</th><th></th>
                   </tr></thead>
                   <tbody>
@@ -979,7 +967,7 @@ const SettingsModal = {
                       <td>{{ s.id }}</td>
                       <td>{{ s.name }}</td>
                       <td><code>{{ s.base_url }}</code></td>
-                      <td>{{ (s.models||[]).map(m=>m.name).join(', ') }}</td>
+                      <td>{{ s.profile || 'hermes-agent' }}</td>
                       <td>{{ s.is_default ? '✓' : '' }}</td>
                       <td>{{ s.shared ? '✓' : '' }}<span v-if="!s.mine" class="muted"> ({{ $t('field.shared_by_other') }})</span></td>
                       <td>
@@ -998,26 +986,16 @@ const SettingsModal = {
                   <div class="form-row"><label>{{ $t('th.name') }}</label><input type="text" v-model="editServer.name"></div>
                   <div class="form-row"><label>{{ $t('th.base_url') }}</label><input type="text" v-model="editServer.base_url"></div>
                   <div class="form-row"><label>API Key (Hermes <code>API_SERVER_KEY</code>)</label><input type="password" v-model="editServer.api_key" :placeholder="$t('field.api_key_placeholder')"></div>
+                  <div class="form-row">
+                    <label>{{ $t('settings.profile_label') }}</label>
+                    <input type="text" v-model="editServer.profile" placeholder="hermes-agent">
+                    <div class="desc-hint">{{ $t('settings.profile_hint') }}</div>
+                  </div>
                   <div class="form-row"><label>{{ $t('settings.max_concurrent_server') }}</label><input type="number" v-model.number="editServer.max_concurrent"></div>
                   <div v-if="isAdmin" class="form-row"><label><input type="checkbox" v-model="editServer.is_default"> {{ $t('settings.default_server') }}</label></div>
                   <div class="form-row"><label><input type="checkbox" v-model="editServer.shared"> {{ $t('field.shared_label') }}</label>
                     <div class="desc-hint">{{ $t('field.shared_hint_server') }}</div>
                   </div>
-
-                  <h4>{{ $t('settings.models_title') }}</h4>
-                  <p class="helper">{{ $t('settings.models_helper') }}</p>
-                  <table class="tbl">
-                    <thead><tr><th>{{ $t('th.name') }}</th><th>{{ $t('th.default') }}</th><th>{{ $t('settings.max_concurrent_profile') }}</th><th></th></tr></thead>
-                    <tbody>
-                      <tr v-for="(m, idx) in editServer.models" :key="idx">
-                        <td><input type="text" v-model="m.name" placeholder="hermes-agent"></td>
-                        <td><input type="checkbox" v-model="m.is_default"></td>
-                        <td><input type="number" v-model.number="m.max_concurrent" style="width:80px"></td>
-                        <td><button class="danger small" @click="editServer.models.splice(idx, 1)">✕</button></td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <button @click="editServer.models.push({ name: '', max_concurrent: 5 })">+ {{ $t('settings.add_profile') }}</button>
 
                   <details class="setup-guide" open style="margin-top:16px">
                     <summary><strong>🛠 How to set this up on the Hermes side</strong></summary>
@@ -1300,13 +1278,13 @@ API_SERVER_PORT=8642</pre>
     },
     editServerInit(s) {
       if (s) {
-        this.editServer = { ...s, api_key: '', __edit: true, models: (s.models || []).map((m) => ({ ...m })) };
+        this.editServer = { ...s, api_key: '', __edit: true };
       } else {
         this.editServer = {
           id: '', name: '', base_url: 'http://127.0.0.1:8642',
           api_key: '', is_default: false, max_concurrent: 10,
+          profile: '',
           shared: false,
-          models: [{ name: 'hermes-agent', is_default: true, max_concurrent: 5 }],
         };
       }
     },
@@ -1317,8 +1295,8 @@ API_SERVER_PORT=8642</pre>
           id: s.id, name: s.name, base_url: s.base_url,
           api_key: s.api_key || '', is_default: !!s.is_default,
           max_concurrent: s.max_concurrent || 10,
+          profile: (s.profile || '').trim(),
           shared: !!s.shared,
-          models: (s.models || []).filter((m) => m.name),
         };
         if (s.__edit) await api('/api/servers/' + s.id, { method: 'PATCH', body: payload });
         else await api('/api/servers', { method: 'POST', body: payload });

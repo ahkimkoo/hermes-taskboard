@@ -382,15 +382,8 @@ func containsAll(s string, needles ...string) bool {
 }
 
 func firstNonEmptyModel(sv *userdir.HermesServer) string {
-	for _, m := range sv.Models {
-		if m.IsDefault && m.Name != "" {
-			return m.Name
-		}
-	}
-	for _, m := range sv.Models {
-		if m.Name != "" {
-			return m.Name
-		}
+	if sv.Profile != "" {
+		return sv.Profile
 	}
 	return "hermes-agent"
 }

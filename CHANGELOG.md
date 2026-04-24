@@ -3,6 +3,36 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.17
+
+### One Hermes API server = one profile (breaking data model change)
+
+Per Hermes docs ([API Server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)):
+
+> Each profile's API server automatically advertises the profile name as the model ID.
+
+That is, a Hermes `/v1/models` response carries exactly one entry — either the profile name you booted, or `hermes-agent` for the default profile. Multi-profile deployments require one gateway per profile on distinct ports.
+
+The taskboard data model had allowed a single server entry to list several "models" (profiles), with their own `is_default` and `max_concurrent` caps. That's structurally wrong and could never match a real Hermes install. Collapsed to a single `profile` field on each server.
+
+**Schema changes**:
+
+- `HermesServer.Models []HermesModel` → `HermesServer.Profile string` (empty falls back to `hermes-agent`). Per-profile `max_concurrent` is gone — the server-level cap is the only one that made physical sense.
+- `Task.PreferredModel` is removed. With one profile per server, `preferred_server` alone fully determines the profile used. The SQLite `tasks.preferred_model` column is dropped by an idempotent `ALTER TABLE DROP COLUMN` in the startup migration.
+- `Runner.Start(..., serverID, model string)` → `Runner.Start(..., serverID string)`. The dropped `model` arg used to pick a profile within the server's list.
+
+**Migration** (one-shot, no manual steps):
+
+- On first `Manager.LoadAll` a user config whose server carries the legacy `models:` slice is collapsed in place: pick the `is_default` model's name, fall back to the first named entry, clear the slice, and rewrite the YAML. The migrated file no longer has a `models:` key.
+- The legacy-DB migration in `internal/migrate` reads the old 11-column tasks table and drops `preferred_model` on insert into the new 10-column schema. Fresh v0.3.17 users are unaffected.
+- Per-user SQLite DBs get their `preferred_model` column dropped at boot via `columnExists + ALTER TABLE`.
+
+**UI**:
+
+- Server edit panel: the models CRUD table is gone, replaced by a single "Profile" input that defaults-hints to `hermes-agent`.
+- Task modal: the "Model" dropdown is gone. Server picker shows the chosen profile inline (e.g. `Bob's Hermes · bob-chat`).
+- Server list: the "Profiles" column becomes a single "Profile" column.
+
 ## 2026-04-24 — v0.3.16
 
 ### Taskboard restart now auto-continues orphaned attempts

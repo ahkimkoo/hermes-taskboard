@@ -123,7 +123,7 @@ func (w *Worker) tick(ctx context.Context) {
 				w.Logger.Warn("schedule update", "user", u.Username, "id", s.ID, "err", err)
 				continue
 			}
-			if _, err := w.Runner.Start(ctx, u.Username, s.TaskID, "", ""); err != nil {
+			if _, err := w.Runner.Start(ctx, u.Username, s.TaskID, ""); err != nil {
 				if _, ok := err.(*attempt.ConcurrencyErr); !ok {
 					w.Logger.Warn("schedule fire", "user", u.Username, "id", s.ID, "task", s.TaskID, "err", err)
 				}

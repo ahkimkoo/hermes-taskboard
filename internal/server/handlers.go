@@ -56,7 +56,6 @@ type createTaskReq struct {
 	Status          string            `json:"status,omitempty"`
 	TriggerMode     string            `json:"trigger_mode,omitempty"`
 	PreferredServer string            `json:"preferred_server,omitempty"`
-	PreferredModel  string            `json:"preferred_model,omitempty"`
 	Tags            []string          `json:"tags,omitempty"`
 	Dependencies    []json.RawMessage `json:"dependencies,omitempty"`
 }
@@ -120,7 +119,6 @@ func (s *Server) hCreateTask(w http.ResponseWriter, r *http.Request) {
 		Priority:           priority,
 		TriggerMode:        trig,
 		PreferredServer:    req.PreferredServer,
-		PreferredModel:     req.PreferredModel,
 		Tags:               req.Tags,
 		Dependencies:       normalizeDeps(req.Dependencies),
 		DescriptionExcerpt: truncExcerpt(req.Description, 200),
@@ -208,7 +206,6 @@ type patchTaskReq struct {
 	Priority        *int               `json:"priority,omitempty"`
 	TriggerMode     *string            `json:"trigger_mode,omitempty"`
 	PreferredServer *string            `json:"preferred_server,omitempty"`
-	PreferredModel  *string            `json:"preferred_model,omitempty"`
 	Tags            *[]string          `json:"tags,omitempty"`
 	Dependencies    *[]json.RawMessage `json:"dependencies,omitempty"`
 }
@@ -239,9 +236,6 @@ func (s *Server) hPatchTask(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	if req.PreferredServer != nil {
 		t.PreferredServer = *req.PreferredServer
-	}
-	if req.PreferredModel != nil {
-		t.PreferredModel = *req.PreferredModel
 	}
 	if req.Tags != nil {
 		t.Tags = *req.Tags
@@ -318,7 +312,7 @@ func (s *Server) hTransition(w http.ResponseWriter, r *http.Request, id string) 
 			return
 		}
 		if t.Status == store.StatusPlan || t.Status == store.StatusDraft {
-			if _, err := s.Runner.Start(r.Context(), username, id, "", ""); err != nil {
+			if _, err := s.Runner.Start(r.Context(), username, id, ""); err != nil {
 				if ce, ok := err.(*attempt.ConcurrencyErr); ok {
 					writeJSON(w, 409, map[string]any{"code": "concurrency_limit", "level": ce.Level})
 					return
@@ -348,7 +342,6 @@ func (s *Server) hTransition(w http.ResponseWriter, r *http.Request, id string) 
 
 type startAttemptReq struct {
 	ServerID string `json:"server_id,omitempty"`
-	Model    string `json:"model,omitempty"`
 }
 
 func (s *Server) hListTaskAttempts(w http.ResponseWriter, r *http.Request, id string) {
@@ -381,7 +374,7 @@ func (s *Server) hStartAttempt(w http.ResponseWriter, r *http.Request, id string
 	}
 	var req startAttemptReq
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	att, err := s.Runner.Start(r.Context(), username, id, req.ServerID, req.Model)
+	att, err := s.Runner.Start(r.Context(), username, id, req.ServerID)
 	if err != nil {
 		if ce, ok := err.(*attempt.ConcurrencyErr); ok {
 			writeJSON(w, 409, map[string]any{"code": "concurrency_limit", "level": ce.Level})
@@ -741,16 +734,16 @@ func writeSSE(w http.ResponseWriter, seq uint64, event string, data map[string]a
 // ---------------- servers (hermes) ----------------
 
 type serverDTO struct {
-	ID            string                `json:"id"`
-	Name          string                `json:"name"`
-	BaseURL       string                `json:"base_url"`
-	HasAPIKey     bool                  `json:"has_api_key"`
-	IsDefault     bool                  `json:"is_default"`
-	MaxConcurrent int                   `json:"max_concurrent"`
-	Models        []userdir.HermesModel `json:"models"`
-	Shared        bool                  `json:"shared"`
-	OwnerUsername string                `json:"owner_username"`
-	Mine          bool                  `json:"mine"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	BaseURL       string `json:"base_url"`
+	HasAPIKey     bool   `json:"has_api_key"`
+	IsDefault     bool   `json:"is_default"`
+	MaxConcurrent int    `json:"max_concurrent"`
+	Profile       string `json:"profile"`
+	Shared        bool   `json:"shared"`
+	OwnerUsername string `json:"owner_username"`
+	Mine          bool   `json:"mine"`
 }
 
 func (s *Server) hListServers(w http.ResponseWriter, r *http.Request) {
@@ -767,7 +760,7 @@ func (s *Server) hListServers(w http.ResponseWriter, r *http.Request) {
 			HasAPIKey:     v.APIKey != "" || v.APIKeyEnc != "",
 			IsDefault:     v.IsDefault,
 			MaxConcurrent: v.MaxConcurrent,
-			Models:        v.Models,
+			Profile:       v.Profile,
 			Shared:        v.Shared,
 			OwnerUsername: v.OwnerUsername,
 			Mine:          v.Mine,
@@ -777,14 +770,14 @@ func (s *Server) hListServers(w http.ResponseWriter, r *http.Request) {
 }
 
 type serverUpsertReq struct {
-	ID            string                `json:"id"`
-	Name          string                `json:"name"`
-	BaseURL       string                `json:"base_url"`
-	APIKey        string                `json:"api_key,omitempty"`
-	IsDefault     bool                  `json:"is_default"`
-	MaxConcurrent int                   `json:"max_concurrent,omitempty"`
-	Models        []userdir.HermesModel `json:"models,omitempty"`
-	Shared        bool                  `json:"shared"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key,omitempty"`
+	IsDefault     bool   `json:"is_default"`
+	MaxConcurrent int    `json:"max_concurrent,omitempty"`
+	Profile       string `json:"profile,omitempty"`
+	Shared        bool   `json:"shared"`
 }
 
 func (s *Server) hCreateServer(w http.ResponseWriter, r *http.Request) {
@@ -842,7 +835,7 @@ func (s *Server) hCreateServer(w http.ResponseWriter, r *http.Request) {
 			ID: req.ID, Name: req.Name, BaseURL: req.BaseURL,
 			APIKey: req.APIKey, IsDefault: req.IsDefault,
 			MaxConcurrent: req.MaxConcurrent,
-			Models:        req.Models,
+			Profile:       req.Profile,
 			Shared:        req.Shared,
 		})
 		return nil
@@ -927,8 +920,9 @@ func (s *Server) hUpdateServer(w http.ResponseWriter, r *http.Request, id string
 			if req.MaxConcurrent != 0 {
 				sv.MaxConcurrent = req.MaxConcurrent
 			}
-			if req.Models != nil {
-				sv.Models = req.Models
+			// Profile is a simple string; empty means "leave unchanged".
+			if req.Profile != "" {
+				sv.Profile = req.Profile
 			}
 			sv.Shared = req.Shared
 			if req.IsDefault {

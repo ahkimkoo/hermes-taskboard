@@ -243,14 +243,19 @@ type legacyFile struct {
 }
 
 type legacyServer struct {
-	ID            string                `yaml:"id"`
-	Name          string                `yaml:"name"`
-	BaseURL       string                `yaml:"base_url"`
-	APIKey        string                `yaml:"api_key,omitempty"`
-	APIKeyEnc     string                `yaml:"api_key_enc,omitempty"`
-	IsDefault     bool                  `yaml:"is_default"`
-	MaxConcurrent int                   `yaml:"max_concurrent"`
-	Models        []userdir.HermesModel `yaml:"models"`
+	ID            string        `yaml:"id"`
+	Name          string        `yaml:"name"`
+	BaseURL       string        `yaml:"base_url"`
+	APIKey        string        `yaml:"api_key,omitempty"`
+	APIKeyEnc     string        `yaml:"api_key_enc,omitempty"`
+	IsDefault     bool          `yaml:"is_default"`
+	MaxConcurrent int           `yaml:"max_concurrent"`
+	Models        []legacyModel `yaml:"models"`
+}
+
+type legacyModel struct {
+	Name      string `yaml:"name"`
+	IsDefault bool   `yaml:"is_default"`
 }
 
 func buildAdminConfigFromLegacy(legacyPath string, secret []byte) (*userdir.UserConfig, error) {
@@ -260,12 +265,29 @@ func buildAdminConfigFromLegacy(legacyPath string, secret []byte) (*userdir.User
 	}
 	servers := make([]userdir.HermesServer, 0, len(lf.HermesServers))
 	for _, s := range lf.HermesServers {
+		// Pre-v0.3.17 legacy rows carried a Models slice — collapse
+		// it to the single Profile field the new schema uses.
+		profile := ""
+		for _, m := range s.Models {
+			if m.IsDefault && m.Name != "" {
+				profile = m.Name
+				break
+			}
+		}
+		if profile == "" {
+			for _, m := range s.Models {
+				if m.Name != "" {
+					profile = m.Name
+					break
+				}
+			}
+		}
 		sv := userdir.HermesServer{
 			ID: s.ID, Name: s.Name, BaseURL: s.BaseURL,
 			APIKey: s.APIKey, APIKeyEnc: s.APIKeyEnc,
 			IsDefault:     s.IsDefault,
 			MaxConcurrent: s.MaxConcurrent,
-			Models:        s.Models,
+			Profile:       profile,
 		}
 		// If the legacy file had a plaintext api_key, encrypt it in
 		// place using the same AEAD userdir uses so the migrated file
@@ -442,7 +464,7 @@ func copyTaskRows(srcPath, dstPath string, logger *slog.Logger) error {
 	CREATE TABLE IF NOT EXISTS tasks (
 	  id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL,
 	  priority INTEGER NOT NULL, trigger_mode TEXT NOT NULL,
-	  preferred_server TEXT, preferred_model TEXT,
+	  preferred_server TEXT,
 	  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
 	  description_excerpt TEXT, position INTEGER NOT NULL DEFAULT 0
 	);
@@ -471,12 +493,9 @@ func copyTaskRows(srcPath, dstPath string, logger *slog.Logger) error {
 		return err
 	}
 
-	// Tasks — columns differ if owner_id was added mid-lifecycle; select
-	// every row as generic []any so we can cope with either shape.
-	if err := copyRows(ctx, src, dst,
-		`SELECT id,title,status,priority,trigger_mode,preferred_server,preferred_model,created_at,updated_at,description_excerpt,position FROM tasks`,
-		`INSERT OR IGNORE INTO tasks(id,title,status,priority,trigger_mode,preferred_server,preferred_model,created_at,updated_at,description_excerpt,position) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		11); err != nil {
+	// Tasks — read the legacy 11-column shape (with preferred_model)
+	// and drop that column on insert. Pre-v0.3.17 DBs always had it.
+	if err := copyTaskRowsDroppingPreferredModel(ctx, src, dst); err != nil {
 		logger.Warn("copy tasks", "err", err)
 	}
 	if err := copyRows(ctx, src, dst,
@@ -503,6 +522,45 @@ func copyTaskRows(srcPath, dstPath string, logger *slog.Logger) error {
 		`INSERT OR IGNORE INTO task_schedules(id,task_id,kind,spec,note,enabled,last_run_at,next_run_at) VALUES(?,?,?,?,?,?,?,?)`,
 		8)
 	return nil
+}
+
+// copyTaskRowsDroppingPreferredModel copies legacy task rows into the
+// v0.3.17 schema, dropping the preferred_model column. If the source
+// already lacks the column (a DB migrated while running v0.3.17+), it
+// falls back to a direct 10-column copy.
+func copyTaskRowsDroppingPreferredModel(ctx context.Context, src, dst *sql.DB) error {
+	rows, err := src.QueryContext(ctx,
+		`SELECT id,title,status,priority,trigger_mode,preferred_server,preferred_model,created_at,updated_at,description_excerpt,position FROM tasks`)
+	if err != nil {
+		return copyRows(ctx, src, dst,
+			`SELECT id,title,status,priority,trigger_mode,preferred_server,created_at,updated_at,description_excerpt,position FROM tasks`,
+			`INSERT OR IGNORE INTO tasks(id,title,status,priority,trigger_mode,preferred_server,created_at,updated_at,description_excerpt,position) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+			10)
+	}
+	defer rows.Close()
+	stmt, err := dst.PrepareContext(ctx,
+		`INSERT OR IGNORE INTO tasks(id,title,status,priority,trigger_mode,preferred_server,created_at,updated_at,description_excerpt,position) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for rows.Next() {
+		vals := make([]any, 11)
+		ptrs := make([]any, 11)
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return err
+		}
+		// Drop index 6 (preferred_model) — the column sits between
+		// preferred_server (5) and created_at (7) in the legacy order.
+		kept := append(vals[:6:6], vals[7:]...)
+		if _, err := stmt.ExecContext(ctx, kept...); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 func copyRows(ctx context.Context, src, dst *sql.DB, selectQ, insertQ string, cols int) error {

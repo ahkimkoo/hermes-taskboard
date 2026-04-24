@@ -71,22 +71,36 @@ type SoundEvents struct {
 // HermesServer is owned by a user. `Shared=true` means other users can
 // see it in their server list and use it to dispatch tasks, but cannot
 // edit or delete it.
+//
+// Hermes architecture note: each Hermes API server instance is tied
+// to exactly one profile — the profile's gateway advertises that
+// profile's name as the sole model ID on /v1/models (see Hermes docs,
+// "API Server"). A taskboard "server" therefore maps 1:1 to a profile,
+// and `Profile` carries that name. Empty Profile implies the default
+// profile, whose advertised model name is "hermes-agent".
 type HermesServer struct {
-	ID            string        `yaml:"id" json:"id"`
-	Name          string        `yaml:"name" json:"name"`
-	BaseURL       string        `yaml:"base_url" json:"base_url"`
-	APIKey        string        `yaml:"api_key,omitempty" json:"-"`         // plaintext convenience — auto-encrypted on save
-	APIKeyEnc     string        `yaml:"api_key_enc,omitempty" json:"-"`     // stored form
-	IsDefault     bool          `yaml:"is_default" json:"is_default"`
-	MaxConcurrent int           `yaml:"max_concurrent" json:"max_concurrent"`
-	Models        []HermesModel `yaml:"models" json:"models"`
-	Shared        bool          `yaml:"shared" json:"shared"`
-}
-
-type HermesModel struct {
+	ID            string `yaml:"id" json:"id"`
 	Name          string `yaml:"name" json:"name"`
+	BaseURL       string `yaml:"base_url" json:"base_url"`
+	APIKey        string `yaml:"api_key,omitempty" json:"-"`     // plaintext convenience — auto-encrypted on save
+	APIKeyEnc     string `yaml:"api_key_enc,omitempty" json:"-"` // stored form
 	IsDefault     bool   `yaml:"is_default" json:"is_default"`
 	MaxConcurrent int    `yaml:"max_concurrent" json:"max_concurrent"`
+	Profile       string `yaml:"profile,omitempty" json:"profile,omitempty"`
+	Shared        bool   `yaml:"shared" json:"shared"`
+
+	// LegacyModels is a read-only migration shim. v0.3.16 and earlier
+	// stored multiple HermesModel profiles per server; normalizeUser
+	// collapses those into `Profile` on first load and clears this
+	// slice so the next SaveUser writes the new shape. Not emitted
+	// in YAML once migrated (omitempty) and never surfaced via JSON.
+	LegacyModels []legacyHermesModel `yaml:"models,omitempty" json:"-"`
+}
+
+type legacyHermesModel struct {
+	Name          string `yaml:"name"`
+	IsDefault     bool   `yaml:"is_default"`
+	MaxConcurrent int    `yaml:"max_concurrent"`
 }
 
 // Tag is a user-owned label with an optional system prompt. Shared
@@ -167,8 +181,23 @@ func (m *Manager) LoadAll() error {
 		// disagrees (e.g. user hand-renamed the folder) we trust the
 		// directory to keep the cookie → user lookup consistent.
 		u.Username = name
+		legacyFound := false
+		for _, sv := range u.HermesServers {
+			if len(sv.LegacyModels) > 0 {
+				legacyFound = true
+				break
+			}
+		}
 		normalizeUser(&u)
 		fresh[name] = &u
+		if legacyFound {
+			// Migrate on-disk YAML into the single-Profile shape so
+			// next load doesn't repeat the work and the file reflects
+			// the real data model.
+			if err := m.persist(&u); err != nil {
+				fmt.Fprintf(os.Stderr, "userdir: persist migrated config for %s: %v\n", name, err)
+			}
+		}
 	}
 	m.users = fresh
 	return nil
@@ -621,7 +650,9 @@ func normalizeUser(u *UserConfig) {
 			Events: SoundEvents{ExecuteStart: true, NeedsInput: true, Done: true},
 		}
 	}
-	// Enforce at most one default server per user.
+	// Enforce at most one default server per user. Also collapse any
+	// legacy multi-profile server entry (see HermesServer doc) into
+	// the new single-Profile shape.
 	seenDefault := false
 	for i := range u.HermesServers {
 		sv := &u.HermesServers[i]
@@ -634,19 +665,26 @@ func normalizeUser(u *UserConfig) {
 			}
 			seenDefault = true
 		}
-		modelDefault := 0
-		for j := range sv.Models {
-			m := &sv.Models[j]
-			if m.MaxConcurrent <= 0 {
-				m.MaxConcurrent = 5
+		if sv.Profile == "" && len(sv.LegacyModels) > 0 {
+			for _, m := range sv.LegacyModels {
+				if m.IsDefault && m.Name != "" {
+					sv.Profile = m.Name
+					break
+				}
 			}
-			if m.IsDefault {
-				modelDefault++
+			if sv.Profile == "" {
+				for _, m := range sv.LegacyModels {
+					if m.Name != "" {
+						sv.Profile = m.Name
+						break
+					}
+				}
 			}
 		}
-		if modelDefault == 0 && len(sv.Models) > 0 {
-			sv.Models[0].IsDefault = true
-		}
+		// Whether migrated or always empty, never keep the legacy
+		// slice on the in-memory record so the next SaveUser emits
+		// the clean new-shape YAML.
+		sv.LegacyModels = nil
 	}
 }
 

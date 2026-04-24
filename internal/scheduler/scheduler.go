@@ -95,7 +95,7 @@ func (s *Scheduler) tickUser(ctx context.Context, username string, st *store.Sto
 		if err != nil || !ok {
 			continue
 		}
-		_, err = s.Runner.Start(ctx, username, id, "", "")
+		_, err = s.Runner.Start(ctx, username, id, "")
 		if err != nil {
 			if _, ok := err.(*attempt.ConcurrencyErr); !ok {
 				s.Logger.Info("scheduler skip", "user", username, "task", id, "reason", err)

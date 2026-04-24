@@ -54,7 +54,6 @@ type Task struct {
 	Priority           int         `json:"priority"`
 	TriggerMode        TriggerMode `json:"trigger_mode"`
 	PreferredServer    string      `json:"preferred_server,omitempty"`
-	PreferredModel     string      `json:"preferred_model,omitempty"`
 	Position           int64       `json:"position"`
 	CreatedAt          time.Time   `json:"created_at"`
 	UpdatedAt          time.Time   `json:"updated_at"`

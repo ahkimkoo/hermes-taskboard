@@ -274,7 +274,10 @@ func (r *Runner) resumeLoop(ctx context.Context, username, attemptID, runID stri
 }
 
 // Start creates a new Attempt for the given user's task and drives it.
-func (r *Runner) Start(ctx context.Context, username, taskID, serverID, model string) (*store.Attempt, error) {
+// serverID is an optional override; the chosen server's Profile
+// fully determines which Hermes profile the run targets (each API
+// server is tied to exactly one profile per Hermes docs).
+func (r *Runner) Start(ctx context.Context, username, taskID, serverID string) (*store.Attempt, error) {
 	st, err := r.Stores.Get(username)
 	if err != nil {
 		return nil, err
@@ -283,11 +286,7 @@ func (r *Runner) Start(ctx context.Context, username, taskID, serverID, model st
 	if err != nil {
 		return nil, err
 	}
-	// Resolve server + model against the userdir view (own + shared).
-	sv, effModel := r.resolveServerModel(username,
-		firstNonEmpty(serverID, task.PreferredServer),
-		firstNonEmpty(model, task.PreferredModel),
-	)
+	sv, effModel := r.resolveServerModel(username, firstNonEmpty(serverID, task.PreferredServer))
 	if sv == nil {
 		return nil, errors.New("no hermes server configured")
 	}
@@ -299,30 +298,18 @@ func (r *Runner) Start(ctx context.Context, username, taskID, serverID, model st
 
 	// Global concurrency aggregates across ALL users' DBs.
 	allUsers := r.allUsernames()
-	global, _, _, err := r.Stores.ActiveCounts(ctx, allUsers, sv.ID, effModel)
+	global, byServer, _, err := r.Stores.ActiveCounts(ctx, allUsers, sv.ID, effModel)
 	if err != nil {
 		return nil, err
 	}
 	if global >= cfg.Scheduler.GlobalMaxConcurrent {
 		return nil, Concurrency("global")
 	}
-	// Server + profile caps apply across all users too because the
-	// Hermes server itself has a single concurrency budget.
-	_, byServer, byPair, err := r.Stores.ActiveCounts(ctx, allUsers, sv.ID, effModel)
-	if err != nil {
-		return nil, err
-	}
+	// Server cap applies across all users because the Hermes server
+	// itself has a single concurrency budget. No separate per-profile
+	// cap anymore: one server = one profile, so they're equivalent.
 	if byServer >= sv.MaxConcurrent {
 		return nil, Concurrency("server")
-	}
-	var profMax = 5
-	for _, m := range sv.Models {
-		if strings.EqualFold(m.Name, effModel) {
-			profMax = m.MaxConcurrent
-		}
-	}
-	if byPair >= profMax {
-		return nil, Concurrency("profile")
 	}
 
 	attemptID := uuid.NewString()
@@ -778,8 +765,13 @@ func (r *Runner) maybeAdvance(ctx context.Context, username, attemptID string) {
 	_ = r.Board.MaybeAdvanceAfterAttempt(ctx, st, att.TaskID)
 }
 
-// resolveServerModel: look up server across own + shared, pick model.
-func (r *Runner) resolveServerModel(username, preferredServer, preferredModel string) (*userdir.HermesServer, string) {
+// resolveServerModel looks up a server across the user's own + shared
+// configs and returns it along with the profile name to pass to Hermes
+// as the `model` field. Since each Hermes API server is tied to a
+// single profile, the second return value is simply the server's
+// configured Profile, falling back to the "hermes-agent" default
+// profile name advertised by bare Hermes installs.
+func (r *Runner) resolveServerModel(username, preferredServer string) (*userdir.HermesServer, string) {
 	var sv *userdir.HermesServer
 	if preferredServer != "" {
 		if _, s, usable, found := r.Users.FindServer(username, preferredServer); found && usable {
@@ -795,22 +787,11 @@ func (r *Runner) resolveServerModel(username, preferredServer, preferredModel st
 	if sv == nil {
 		return nil, ""
 	}
-	if preferredModel != "" {
-		for _, m := range sv.Models {
-			if strings.EqualFold(m.Name, preferredModel) {
-				return sv, m.Name
-			}
-		}
+	profile := sv.Profile
+	if profile == "" {
+		profile = config.HermesDefaultAgent
 	}
-	for _, m := range sv.Models {
-		if m.IsDefault {
-			return sv, m.Name
-		}
-	}
-	if len(sv.Models) > 0 {
-		return sv, sv.Models[0].Name
-	}
-	return sv, config.HermesDefaultAgent
+	return sv, profile
 }
 
 // allUsernames returns every cached username. Primarily used by

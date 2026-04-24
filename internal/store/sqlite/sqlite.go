@@ -22,7 +22,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   priority            INTEGER NOT NULL,
   trigger_mode        TEXT NOT NULL,
   preferred_server    TEXT,
-  preferred_model     TEXT,
   created_at          INTEGER NOT NULL,
   updated_at          INTEGER NOT NULL,
   description_excerpt TEXT,
@@ -132,6 +131,19 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	}
 	if err := migrateIntervalSchedules(ctx, db); err != nil {
 		return err
+	}
+	// v0.3.17: tasks.preferred_model was only meaningful when a server
+	// could advertise multiple profiles. Per the Hermes docs each API
+	// server is tied to one profile, so the column is pure dead
+	// weight — drop it on pre-existing DBs.
+	hasPrefMdl, err := columnExists(ctx, db, "tasks", "preferred_model")
+	if err != nil {
+		return err
+	}
+	if hasPrefMdl {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE tasks DROP COLUMN preferred_model`); err != nil {
+			return fmt.Errorf("drop tasks.preferred_model: %w", err)
+		}
 	}
 	return nil
 }

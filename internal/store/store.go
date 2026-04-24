@@ -60,10 +60,10 @@ func (s *Store) CreateTask(ctx context.Context, t *Task) error {
 	}
 	t.Position = maxPos.Int64 + 1024
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tasks(id,title,status,priority,trigger_mode,preferred_server,preferred_model,created_at,updated_at,description_excerpt,position)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO tasks(id,title,status,priority,trigger_mode,preferred_server,created_at,updated_at,description_excerpt,position)
+         VALUES(?,?,?,?,?,?,?,?,?,?)`,
 		t.ID, t.Title, string(t.Status), t.Priority, string(t.TriggerMode),
-		nullStr(t.PreferredServer), nullStr(t.PreferredModel),
+		nullStr(t.PreferredServer),
 		now.UnixMilli(), now.UnixMilli(), t.DescriptionExcerpt, t.Position,
 	); err != nil {
 		return err
@@ -86,9 +86,9 @@ func (s *Store) UpdateTask(ctx context.Context, t *Task) error {
 	now := time.Now()
 	t.UpdatedAt = now
 	res, err := tx.ExecContext(ctx,
-		`UPDATE tasks SET title=?,priority=?,trigger_mode=?,preferred_server=?,preferred_model=?,updated_at=?,description_excerpt=? WHERE id=?`,
+		`UPDATE tasks SET title=?,priority=?,trigger_mode=?,preferred_server=?,updated_at=?,description_excerpt=? WHERE id=?`,
 		t.Title, t.Priority, string(t.TriggerMode),
-		nullStr(t.PreferredServer), nullStr(t.PreferredModel),
+		nullStr(t.PreferredServer),
 		now.UnixMilli(), t.DescriptionExcerpt, t.ID,
 	)
 	if err != nil {
@@ -313,7 +313,7 @@ func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
 		return t, nil
 	}
 	row := s.DB.QueryRowContext(ctx,
-		`SELECT id,title,status,priority,trigger_mode,preferred_server,preferred_model,created_at,updated_at,description_excerpt,position
+		`SELECT id,title,status,priority,trigger_mode,preferred_server,created_at,updated_at,description_excerpt,position
          FROM tasks WHERE id=?`, id)
 	t, err := scanTask(row.Scan)
 	if err != nil {
@@ -374,7 +374,7 @@ type TaskFilter struct {
 // fires this path on every state change, so the saving is real.
 func (s *Store) ListTasks(ctx context.Context, f TaskFilter) ([]*Task, error) {
 	sb := &strings.Builder{}
-	sb.WriteString(`SELECT t.id,t.title,t.status,t.priority,t.trigger_mode,t.preferred_server,t.preferred_model,t.created_at,t.updated_at,t.description_excerpt,t.position FROM tasks t`)
+	sb.WriteString(`SELECT t.id,t.title,t.status,t.priority,t.trigger_mode,t.preferred_server,t.created_at,t.updated_at,t.description_excerpt,t.position FROM tasks t`)
 	args := []any{}
 	where := []string{}
 	if f.Tag != "" {
@@ -780,18 +780,17 @@ func scanTask(scan scanner) (*Task, error) {
 	var (
 		t                Task
 		createdAt, updAt int64
-		prefSrv, prefMdl sql.NullString
+		prefSrv          sql.NullString
 		excerpt          sql.NullString
 		position         int64
 	)
 	var status, trigger string
-	if err := scan(&t.ID, &t.Title, &status, &t.Priority, &trigger, &prefSrv, &prefMdl, &createdAt, &updAt, &excerpt, &position); err != nil {
+	if err := scan(&t.ID, &t.Title, &status, &t.Priority, &trigger, &prefSrv, &createdAt, &updAt, &excerpt, &position); err != nil {
 		return nil, err
 	}
 	t.Status = TaskStatus(status)
 	t.TriggerMode = TriggerMode(trigger)
 	t.PreferredServer = prefSrv.String
-	t.PreferredModel = prefMdl.String
 	t.DescriptionExcerpt = excerpt.String
 	t.CreatedAt = time.UnixMilli(createdAt)
 	t.UpdatedAt = time.UnixMilli(updAt)
