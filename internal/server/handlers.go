@@ -41,8 +41,6 @@ func (s *Server) hListTasks(w http.ResponseWriter, r *http.Request) {
 		Status: q.Get("status"),
 		Tag:    q.Get("tag"),
 		Query:  q.Get("q"),
-		Server: q.Get("server"),
-		Model:  q.Get("model"),
 	})
 	if err != nil {
 		writeErr(w, 500, err)

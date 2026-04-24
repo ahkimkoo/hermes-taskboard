@@ -3,7 +3,26 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## 2026-04-24 — v0.3.9
+## 2026-04-24 — v0.3.10
+
+### `ListTasks` no longer N+1
+
+Every `GET /api/tasks` used to run `1 + 3×N` queries: one `SELECT … FROM tasks` followed by (tags, deps, attempt-counts) for each task in a Go loop. For a 20-task board every board-SSE refresh was 60 round-trips.
+
+Collapsed to a fixed 4 queries regardless of board size:
+
+1. `SELECT … FROM tasks [WHERE …] ORDER BY status, position`
+2. `SELECT task_id, tag FROM task_tags WHERE task_id IN (…)`
+3. `SELECT task_id, depends_on, required_state FROM task_deps WHERE task_id IN (…)`
+4. `SELECT task_id, COUNT(*), SUM(active), SUM(needs_input) FROM attempts WHERE task_id IN (…) GROUP BY task_id`
+
+The tags/deps/counts get zipped back onto the task list in a single Go pass. `loadTaskTagsDeps` / `attemptCounts` helpers stay — still used by the single-task `GetTask` path.
+
+### `TaskFilter.Server` / `.Model` removed
+
+Both were handled as WHERE clauses in `ListTasks` but the bundled UI never passed them — the frontend fetches everything and groups columns client-side. Deleted the fields, their URL query params (`/api/tasks?server=` / `?model=`), and the three WHERE branches. `status`, `tag`, and `q` stay because they're cheap and give headroom for a future search UI.
+
+
 
 ### `shared` now always appears on hermes_servers
 

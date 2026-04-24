@@ -328,12 +328,22 @@ type TaskFilter struct {
 	Status string
 	Tag    string
 	Query  string
-	Server string
-	Model  string
 	Limit  int
 	Offset int
 }
 
+// ListTasks returns the user's tasks with tags/deps/attempt-counts
+// already populated. To avoid the old N+1 shape (one SELECT per task
+// × 3 facets), we pull all four datasets in at most four queries and
+// zip them together in Go:
+//
+//   1. the task rows that match the filter
+//   2. task_tags rows for those task ids
+//   3. task_deps rows for those task ids
+//   4. attempt counts GROUP BY task_id
+//
+// For 20 tasks this cuts ~60 queries down to ~4. The board SSE stream
+// fires this path on every state change, so the saving is real.
 func (s *Store) ListTasks(ctx context.Context, f TaskFilter) ([]*Task, error) {
 	sb := &strings.Builder{}
 	sb.WriteString(`SELECT t.id,t.title,t.status,t.priority,t.trigger_mode,t.preferred_server,t.preferred_model,t.created_at,t.updated_at,t.description_excerpt,t.position FROM tasks t`)
@@ -347,14 +357,6 @@ func (s *Store) ListTasks(ctx context.Context, f TaskFilter) ([]*Task, error) {
 	if f.Status != "" {
 		where = append(where, "t.status=?")
 		args = append(args, f.Status)
-	}
-	if f.Server != "" {
-		where = append(where, "t.preferred_server=?")
-		args = append(args, f.Server)
-	}
-	if f.Model != "" {
-		where = append(where, "t.preferred_model=?")
-		args = append(args, f.Model)
 	}
 	if f.Query != "" {
 		where = append(where, "(t.title LIKE ? OR COALESCE(t.description_excerpt,'') LIKE ?)")
@@ -374,26 +376,95 @@ func (s *Store) ListTasks(ctx context.Context, f TaskFilter) ([]*Task, error) {
 	}
 	defer rows.Close()
 	var list []*Task
+	byID := map[string]*Task{}
 	for rows.Next() {
 		t, err := scanTask(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
 		list = append(list, t)
+		byID[t.ID] = t
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	for _, t := range list {
-		if err := s.loadTaskTagsDeps(ctx, t); err != nil {
-			return nil, err
-		}
-		cnt, active, ni, err := s.attemptCounts(ctx, t.ID)
-		if err != nil {
-			return nil, err
-		}
-		t.AttemptCount, t.ActiveAttempts, t.NeedsInputAttempts = cnt, active, ni
+	if len(list) == 0 {
+		return list, nil
 	}
+
+	ids := make([]string, 0, len(list))
+	idArgs := make([]any, 0, len(list))
+	for _, t := range list {
+		ids = append(ids, t.ID)
+		idArgs = append(idArgs, t.ID)
+	}
+	placeholders := "?" + strings.Repeat(",?", len(ids)-1)
+
+	// 2. tags
+	tagRows, err := s.DB.QueryContext(ctx,
+		`SELECT task_id, tag FROM task_tags WHERE task_id IN (`+placeholders+`) ORDER BY task_id, tag`,
+		idArgs...)
+	if err != nil {
+		return nil, err
+	}
+	for tagRows.Next() {
+		var tid, tag string
+		if err := tagRows.Scan(&tid, &tag); err != nil {
+			tagRows.Close()
+			return nil, err
+		}
+		if t, ok := byID[tid]; ok {
+			t.Tags = append(t.Tags, tag)
+		}
+	}
+	tagRows.Close()
+
+	// 3. deps
+	depRows, err := s.DB.QueryContext(ctx,
+		`SELECT task_id, depends_on, required_state FROM task_deps WHERE task_id IN (`+placeholders+`)`,
+		idArgs...)
+	if err != nil {
+		return nil, err
+	}
+	for depRows.Next() {
+		var tid string
+		var d TaskDep
+		if err := depRows.Scan(&tid, &d.TaskID, &d.RequiredState); err != nil {
+			depRows.Close()
+			return nil, err
+		}
+		if t, ok := byID[tid]; ok {
+			t.Dependencies = append(t.Dependencies, d)
+		}
+	}
+	depRows.Close()
+
+	// 4. attempt counts
+	cntRows, err := s.DB.QueryContext(ctx, `
+		SELECT task_id,
+		       COUNT(*),
+		       SUM(CASE WHEN state IN ('queued','running','needs_input') THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN state = 'needs_input' THEN 1 ELSE 0 END)
+		FROM attempts WHERE task_id IN (`+placeholders+`) GROUP BY task_id`,
+		idArgs...)
+	if err != nil {
+		return nil, err
+	}
+	for cntRows.Next() {
+		var tid string
+		var total, active, ni sql.NullInt64
+		if err := cntRows.Scan(&tid, &total, &active, &ni); err != nil {
+			cntRows.Close()
+			return nil, err
+		}
+		if t, ok := byID[tid]; ok {
+			t.AttemptCount = int(total.Int64)
+			t.ActiveAttempts = int(active.Int64)
+			t.NeedsInputAttempts = int(ni.Int64)
+		}
+	}
+	cntRows.Close()
+
 	return list, nil
 }
 
