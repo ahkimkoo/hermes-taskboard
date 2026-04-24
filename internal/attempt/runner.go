@@ -53,8 +53,19 @@ func New(cfg *config.Store, stores *store.Manager, fs *fsstore.Manager, users *u
 }
 
 // ResumeOrphans reattaches to Hermes runs that were in-flight when the
-// previous process died. Iterates every user's DB. See the original
-// doc comment in the pre-refactor history for the full flow.
+// previous process died. Iterates every user's DB.
+//
+// Recovery strategy, in priority order:
+//  1. If the stored run_id is still streaming on Hermes, reattach to
+//     it. Pure recovery — no extra prompt, no turn cost.
+//  2. Otherwise (run_id missing, or Hermes forgot the run), fall back
+//     to kicking an auto-continue. The Hermes conversation — keyed by
+//     attempt.ID — is preserved even when the SSE run is gone, so a
+//     fresh turn with previous_response_id picks up where the prior
+//     completed turn left off.
+//  3. If even that isn't possible (no prior completed turn + task
+//     details unreadable), or if the attempt has already burned
+//     AutoResumeMaxRetries of auto-continues, only then mark Failed.
 func (r *Runner) ResumeOrphans(ctx context.Context, usernames []string) (resumed, failed int, err error) {
 	owned, err := r.Stores.ListAllActiveAttempts(ctx, usernames)
 	if err != nil {
@@ -76,33 +87,100 @@ func (r *Runner) ResumeOrphans(ctx context.Context, usernames []string) (resumed
 			failed++
 			continue
 		}
-		if runID == "" {
-			r.logSystemEvent(oa.Username, a.ID, "error", map[string]any{
-				"msg":         "process restart — no run_id recorded, cannot resume",
+		if runID != "" {
+			if rerr := r.resumeAttempt(oa.Username, a.ID, a.ServerID, runID); rerr == nil {
+				r.logSystemEvent(oa.Username, a.ID, "resumed", map[string]any{"run_id": runID})
+				resumed++
+				continue
+			} else {
+				r.logSystemEvent(oa.Username, a.ID, "resume_failed", map[string]any{
+					"run_id":      runID,
+					"prior_state": string(a.State),
+					"err":         rerr.Error(),
+				})
+			}
+		} else {
+			r.logSystemEvent(oa.Username, a.ID, "resume_no_run_id", map[string]any{
 				"prior_state": string(a.State),
 			})
-			_ = st.UpdateAttemptState(ctx, a.ID, store.AttemptFailed)
-			r.broadcastStateChange(a.ID, store.AttemptFailed)
-			_ = r.Board.MaybeAdvanceAfterAttempt(ctx, st, a.TaskID)
-			failed++
-			continue
 		}
-		if err := r.resumeAttempt(oa.Username, a.ID, a.ServerID, runID); err != nil {
-			r.logSystemEvent(oa.Username, a.ID, "error", map[string]any{
-				"msg":         "resume failed: " + err.Error(),
-				"run_id":      runID,
-				"prior_state": string(a.State),
-			})
-			_ = st.UpdateAttemptState(ctx, a.ID, store.AttemptFailed)
-			r.broadcastStateChange(a.ID, store.AttemptFailed)
-			_ = r.Board.MaybeAdvanceAfterAttempt(ctx, st, a.TaskID)
+		if r.kickRestartAutoContinue(ctx, st, fs, oa.Username, a, meta) {
+			resumed++
+		} else {
 			failed++
-			continue
 		}
-		r.logSystemEvent(oa.Username, a.ID, "resumed", map[string]any{"run_id": runID})
-		resumed++
 	}
 	return resumed, failed, nil
+}
+
+// kickRestartAutoContinue rescues an orphan whose live Hermes run could
+// not be reattached. Returns true when an auto-continue was launched,
+// false when the attempt was marked Failed instead (no conversation
+// state or retries exhausted).
+func (r *Runner) kickRestartAutoContinue(ctx context.Context, st *store.Store, fs *fsstore.FS, username string, a *store.Attempt, meta *store.AttemptMeta) bool {
+	markFailed := func(reason string) {
+		r.logSystemEvent(username, a.ID, "auto_resume_restart_abandoned", map[string]any{"reason": reason})
+		_ = st.UpdateAttemptState(ctx, a.ID, store.AttemptFailed)
+		r.broadcastStateChange(a.ID, store.AttemptFailed)
+		_ = r.Board.MaybeAdvanceAfterAttempt(ctx, st, a.TaskID)
+	}
+	if meta == nil {
+		markFailed("no_meta")
+		return false
+	}
+	if meta.Session.ContinueResumeCount >= AutoResumeMaxRetries {
+		markFailed("retries_exhausted")
+		return false
+	}
+	// Pick the recovery input: "continue" when prior turns are on record;
+	// otherwise rebuild the original task prompt so Hermes has context.
+	var input, kind string
+	if meta.Session.LatestResponseID != "" {
+		input = AutoResumeMessage
+		kind = "continue"
+	} else {
+		rebuilt, ok := r.rebuildInitialInput(ctx, st, fs, a.TaskID, a.ID)
+		if !ok {
+			markFailed("rebuild_failed")
+			return false
+		}
+		input = rebuilt
+		kind = "retry_initial"
+	}
+	meta.Session.ContinueResumeCount++
+	meta.Session.LastContinueAt = time.Now().Unix()
+	meta.Session.LastDisconnectReason = store.DisconnectAbnormal
+	meta.Session.LastDisconnectAt = time.Now().Unix()
+	meta.Session.CurrentRunID = ""
+	_ = fs.SaveAttemptMeta(meta)
+	r.logSystemEvent(username, a.ID, "auto_resume_restart", map[string]any{
+		"kind":        kind,
+		"retry_count": meta.Session.ContinueResumeCount,
+		"max_retries": AutoResumeMaxRetries,
+	})
+	r.startLoop(username, a.ID, input)
+	return true
+}
+
+// rebuildInitialInput reproduces the first-turn user message that
+// Start() sends. Used when a restart orphan has no LatestResponseID
+// to continue from — we have to resend the task details so Hermes
+// knows what to work on.
+func (r *Runner) rebuildInitialInput(ctx context.Context, st *store.Store, fs *fsstore.FS, taskID, attemptID string) (string, bool) {
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil || task == nil {
+		return "", false
+	}
+	doc, _ := fs.LoadTaskDoc(taskID)
+	var desc string
+	if doc != nil {
+		desc = doc.Description
+	}
+	idPrefix := attemptID
+	if len(idPrefix) > 8 {
+		idPrefix = idPrefix[:8]
+	}
+	return fmt.Sprintf("[tb-%s] # Task\n%s\n\n%s", idPrefix, task.Title, desc), true
 }
 
 // TryReconnect opens a fresh SSE subscription to the Hermes run for
@@ -337,7 +415,15 @@ func (r *Runner) SendMessage(ctx context.Context, username, attemptID, text stri
 	return nil
 }
 
-// Cancel stops the active run and marks the attempt cancelled.
+// Cancel stops the active run and marks the attempt as completed.
+//
+// Semantics note: a user-initiated stop is treated as a successful
+// terminal state (AttemptCompleted), not AttemptCancelled. Rationale:
+// the user chose to end the turn — from their perspective the work
+// is finished. The DisconnectCancelled reason still gets written to
+// attempt meta by the run loop, so the auto-resumer knows not to
+// retry. AttemptCancelled remains a valid legacy state for existing
+// rows; no new writes produce it.
 func (r *Runner) Cancel(ctx context.Context, username, attemptID string) error {
 	r.mu.Lock()
 	rc, ok := r.active[attemptID]
@@ -349,8 +435,8 @@ func (r *Runner) Cancel(ctx context.Context, username, attemptID string) error {
 	if err != nil {
 		return err
 	}
-	_ = st.UpdateAttemptState(ctx, attemptID, store.AttemptCancelled)
-	r.broadcastStateChange(attemptID, store.AttemptCancelled)
+	_ = st.UpdateAttemptState(ctx, attemptID, store.AttemptCompleted)
+	r.broadcastStateChange(attemptID, store.AttemptCompleted)
 	att, err := st.GetAttempt(ctx, attemptID)
 	if err == nil {
 		_ = r.Board.MaybeAdvanceAfterAttempt(ctx, st, att.TaskID)

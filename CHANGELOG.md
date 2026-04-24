@@ -3,6 +3,25 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.16
+
+### Taskboard restart now auto-continues orphaned attempts
+
+`ResumeOrphans` already tried to reattach to the saved Hermes `run_id` via SSE. When Hermes had already ended that run (common — either Hermes restarted alongside taskboard, or the run timed out while taskboard was down), the reattach failed and the attempt was permanently marked `failed` — even though the Hermes *conversation* (keyed by `attempt.id`, not `run_id`) was still intact and could be resumed with a fresh turn.
+
+Recovery order is now:
+1. Reattach to the live `run_id` (unchanged).
+2. If that fails or `run_id` is missing, kick an auto-continue: send `AutoResumeMessage` as a new turn using the preserved `conversation_id` + `previous_response_id`. For attempts that never completed a first turn (no `previous_response_id` to continue from), rebuild the original task prompt and resend it so Hermes has context.
+3. Only mark `failed` when retries are exhausted (same `AutoResumeMaxRetries=3` / `ContinueResumeCount` budget the in-flight resumer already uses) or no meta file exists.
+
+This closes the gap the existing 30-second `Resumer` couldn't cover, because the Resumer only re-scans attempts that are still in an *active* state — `ResumeOrphans` used to flip them to `failed` before the Resumer got a chance.
+
+### User-initiated Stop now finalises as Completed
+
+`POST /api/attempts/{id}/cancel` used to write state `cancelled`. The kanban counted that as terminal so the board still advanced Execute → Verify, but the attempt badge showed as "Cancelled" — awkward wording when the user had deliberately chosen to finish the turn early. It now writes `completed`. `AttemptCancelled` remains a valid legacy state for existing rows but no new writes produce it.
+
+The auto-resumer continues to skip user-stopped attempts because the runLoop still records `DisconnectCancelled` (not `DisconnectAbnormal`) on the meta, so there's no risk of an auto-retry resurrecting a turn the user explicitly wanted ended.
+
 ## 2026-04-24 — v0.3.15
 
 ### Fix: Start-now button still missing after deleting every attempt of a Done task
