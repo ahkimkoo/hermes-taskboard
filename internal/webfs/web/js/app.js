@@ -391,7 +391,18 @@ const TaskModal = {
       return s ? (s.models || []) : [];
     },
     isArchive() { return this.task && this.task.status === 'archive'; },
-    canStartFirst() { return this.task && (this.task.status === 'plan' || this.task.status === 'draft'); },
+    canStartFirst() {
+      // Gate for the ▶ 立即执行 button on a task with zero attempts.
+      // Previously limited to draft / plan, which meant if the user
+      // deleted every attempt of a task now sitting in execute or
+      // verify, neither Start-now nor New-attempt would appear and
+      // the card was stuck. Now any non-terminal column can kick a
+      // fresh attempt; Done / Archive require an explicit drag back
+      // to Plan first because those columns mean "retired".
+      if (!this.task) return false;
+      const s = this.task.status;
+      return s === 'draft' || s === 'plan' || s === 'execute' || s === 'verify';
+    },
     currentAttempt() {
       return this.attempts.find((a) => a.id === this.activeAttemptId) || null;
     },

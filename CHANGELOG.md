@@ -3,6 +3,14 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.11
+
+### Fix: Start-now button missing after deleting every attempt
+
+Deleting all attempts on a task that had already moved past Plan left the task modal with neither ▶ 立即执行 (Start now) nor ＋ 再次执行 (New attempt) visible — Start-now was gated on `status ∈ {draft, plan}` and New-attempt on `attempts.length > 0`. A task sitting in Execute or Verify with zero attempts fell through both gates.
+
+Widened the Start-now gate to `status ∈ {draft, plan, execute, verify}`. Done / Archive still require an explicit drag back to Plan first — those columns mean "retired" and shouldn't sprout a Start button out of nowhere.
+
 ## 2026-04-24 — v0.3.10
 
 ### `ListTasks` no longer N+1
