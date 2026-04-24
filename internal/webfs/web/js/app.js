@@ -989,7 +989,7 @@ API_SERVER_PORT=8642</pre>
                     <th></th>
                   </tr></thead>
                   <tbody>
-                    <tr v-for="u in users" :key="u.id">
+                    <tr v-for="u in users" :key="u.username">
                       <td>{{ u.username }}</td>
                       <td>{{ u.is_admin ? $t('field.role_admin') : $t('field.role_user') }}</td>
                       <td>{{ u.disabled ? $t('field.status_disabled') : $t('field.status_active') }}</td>

@@ -3,6 +3,16 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.5
+
+### Drop the per-user `id` — username is the sole identifier
+
+`data/{username}/config.yaml` used to carry a UUID `id:` field alongside `username:`. Since the directory name is already the unique key — every subsystem that looks up a user (auth middleware, session cookie, API paths like `/api/users/{username}`, per-user store routing) keys off `username` — the separate id was dead weight. It also made operators glancing at the YAML ask "which one is the real identifier?".
+
+v0.3.5 removes the `UserConfig.ID` field, `userdir.newID()`, and every code path that populated or preserved it. The view structs (`ServerView`, `TagView`) lose their `owner_id` field too; shared servers/tags still tell you who owns them via `owner_username`. The login + auth-status + list-users API responses no longer include the `user.id` key — callers that only read `username`/`is_admin` (which is what the bundled frontend does) are unaffected.
+
+Existing per-user config files are silently forward-compatible: the `id:` key is ignored when loaded, and the next write (change password, add a server, etc.) rewrites the file without it. If you want to tidy your existing files in one pass, a stopped-server `sed -i '/^id: /d' data/*/config.yaml` does it cleanly — the binary doesn't care either way.
+
 ## 2026-04-24 — v0.3.4
 
 ### User creation lays down the full directory skeleton

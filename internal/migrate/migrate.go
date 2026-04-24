@@ -73,10 +73,8 @@ func MigrateLegacy(dataDir string, cfgStore *config.Store, secret []byte, logger
 	}
 	// If data/admin/config.yaml somehow already exists (mid-migration
 	// crash, or operator added files manually), merge rather than
-	// clobber: existing owner gets to keep the password hash + id.
+	// clobber: keep the existing password + creation timestamp.
 	if existing, err := readUserConfig(filepath.Join(adminDir, "config.yaml")); err == nil {
-		// Preserve identity + password.
-		adminCfg.ID = existing.ID
 		adminCfg.PasswordHash = existing.PasswordHash
 		adminCfg.IsAdmin = existing.IsAdmin
 		if !existing.CreatedAt.IsZero() {
@@ -261,7 +259,6 @@ func buildAdminConfigFromLegacy(legacyPath string, secret []byte) (*userdir.User
 		prefs = *lf.Preferences
 	}
 	return &userdir.UserConfig{
-		ID:            newID(),
 		Username:      adminUsername,
 		PasswordHash:  hash,
 		IsAdmin:       true,
@@ -269,15 +266,6 @@ func buildAdminConfigFromLegacy(legacyPath string, secret []byte) (*userdir.User
 		Preferences:   prefs,
 		HermesServers: servers,
 	}, nil
-}
-
-// newID generates a UUID-ish identifier matching the format userdir uses.
-func newID() string {
-	b := make([]byte, 16)
-	if _, err := cryptoRead(b); err != nil {
-		return fmt.Sprintf("uid-%d", time.Now().UnixNano())
-	}
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func readUserConfig(path string) (*userdir.UserConfig, error) {

@@ -21,11 +21,9 @@
 package userdir
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -36,15 +34,16 @@ import (
 )
 
 // UserConfig is the serialised shape of data/{username}/config.yaml.
+// Username (= directory name) is the sole identifier; no separate UUID
+// is stored. If you need to rename, delete + recreate.
 type UserConfig struct {
-	ID           string         `yaml:"id" json:"id"`
-	Username     string         `yaml:"username" json:"username"`
-	PasswordHash string         `yaml:"password_hash" json:"-"`
-	IsAdmin      bool           `yaml:"is_admin" json:"is_admin"`
-	CreatedAt    time.Time      `yaml:"created_at" json:"created_at"`
-	Preferences  Preferences    `yaml:"preferences" json:"preferences"`
+	Username      string         `yaml:"username" json:"username"`
+	PasswordHash  string         `yaml:"password_hash" json:"-"`
+	IsAdmin       bool           `yaml:"is_admin" json:"is_admin"`
+	CreatedAt     time.Time      `yaml:"created_at" json:"created_at"`
+	Preferences   Preferences    `yaml:"preferences" json:"preferences"`
 	HermesServers []HermesServer `yaml:"hermes_servers" json:"hermes_servers"`
-	Tags         []Tag          `yaml:"tags" json:"tags"`
+	Tags          []Tag          `yaml:"tags" json:"tags"`
 }
 
 // Preferences: per-user display / sound / language choices.
@@ -231,9 +230,6 @@ func (m *Manager) Create(u *UserConfig) error {
 	if _, exists := m.users[u.Username]; exists {
 		return fmt.Errorf("user %q already exists", u.Username)
 	}
-	if u.ID == "" {
-		u.ID = newID()
-	}
 	if u.CreatedAt.IsZero() {
 		u.CreatedAt = time.Now()
 	}
@@ -400,10 +396,10 @@ func (m *Manager) DecryptedAPIKey(sv *HermesServer) string {
 // ----- shared views -----
 
 // ServerView is what non-owners see for a shared server — api key is
-// stripped, ownership is indicated.
+// stripped, ownership is indicated by the owner's username (which is
+// also their data directory name).
 type ServerView struct {
 	HermesServer
-	OwnerID       string `json:"owner_id"`
 	OwnerUsername string `json:"owner_username"`
 	Mine          bool   `json:"mine"`
 }
@@ -421,7 +417,6 @@ func (m *Manager) VisibleServers(viewerUsername string) []ServerView {
 		for _, sv := range me.HermesServers {
 			out = append(out, ServerView{
 				HermesServer:  stripKey(sv),
-				OwnerID:       me.ID,
 				OwnerUsername: me.Username,
 				Mine:          true,
 			})
@@ -437,7 +432,6 @@ func (m *Manager) VisibleServers(viewerUsername string) []ServerView {
 			}
 			out = append(out, ServerView{
 				HermesServer:  stripKey(sv),
-				OwnerID:       u.ID,
 				OwnerUsername: u.Username,
 				Mine:          false,
 			})
@@ -469,7 +463,6 @@ func (m *Manager) FindServer(viewer, id string) (owner string, sv HermesServer, 
 // TagView is the tag DTO with ownership tacked on.
 type TagView struct {
 	Tag
-	OwnerID       string `json:"owner_id"`
 	OwnerUsername string `json:"owner_username"`
 	Mine          bool   `json:"mine"`
 }
@@ -482,7 +475,7 @@ func (m *Manager) VisibleTags(viewerUsername string) []TagView {
 	me, ok := m.users[viewerUsername]
 	if ok {
 		for _, t := range me.Tags {
-			out = append(out, TagView{Tag: t, OwnerID: me.ID, OwnerUsername: me.Username, Mine: true})
+			out = append(out, TagView{Tag: t, OwnerUsername: me.Username, Mine: true})
 		}
 	}
 	for name, u := range m.users {
@@ -493,7 +486,7 @@ func (m *Manager) VisibleTags(viewerUsername string) []TagView {
 			if !t.Shared {
 				continue
 			}
-			out = append(out, TagView{Tag: t, OwnerID: u.ID, OwnerUsername: u.Username, Mine: false})
+			out = append(out, TagView{Tag: t, OwnerUsername: u.Username, Mine: false})
 		}
 	}
 	return out
@@ -656,15 +649,6 @@ func isReservedDir(name string) bool {
 		return true
 	}
 	return false
-}
-
-func newID() string {
-	b := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		// extremely unlikely; fall back to timestamp so we don't panic
-		return fmt.Sprintf("uid-%d", time.Now().UnixNano())
-	}
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func atomicWrite(path string, data []byte, mode os.FileMode) error {

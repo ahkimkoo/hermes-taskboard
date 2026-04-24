@@ -31,8 +31,3 @@ func aeadEncrypt(key []byte, plain string) (string, error) {
 	return base64.StdEncoding.EncodeToString(ct), nil
 }
 
-// cryptoRead fills b with crypto/rand bytes. Returned separately so the
-// id helper can stub it in tests if needed.
-func cryptoRead(b []byte) (int, error) {
-	return io.ReadFull(rand.Reader, b)
-}

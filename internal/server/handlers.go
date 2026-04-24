@@ -744,7 +744,6 @@ type serverDTO struct {
 	MaxConcurrent int                   `json:"max_concurrent"`
 	Models        []userdir.HermesModel `json:"models"`
 	Shared        bool                  `json:"shared"`
-	OwnerID       string                `json:"owner_id"`
 	OwnerUsername string                `json:"owner_username"`
 	Mine          bool                  `json:"mine"`
 }
@@ -765,7 +764,6 @@ func (s *Server) hListServers(w http.ResponseWriter, r *http.Request) {
 			MaxConcurrent: v.MaxConcurrent,
 			Models:        v.Models,
 			Shared:        v.Shared,
-			OwnerID:       v.OwnerID,
 			OwnerUsername: v.OwnerUsername,
 			Mine:          v.Mine,
 		})
@@ -1208,7 +1206,6 @@ func (s *Server) hAuthStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"logged_in": true,
 		"user": map[string]any{
-			"id":       u.ID,
 			"username": u.Username,
 			"is_admin": u.IsAdmin,
 		},
@@ -1234,7 +1231,7 @@ func (s *Server) hAuthLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"ok": true,
 		"user": map[string]any{
-			"id": u.ID, "username": u.Username, "is_admin": u.IsAdmin,
+			"username": u.Username, "is_admin": u.IsAdmin,
 		},
 	})
 }

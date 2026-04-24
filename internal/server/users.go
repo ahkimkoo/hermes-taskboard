@@ -48,7 +48,6 @@ func (s *Server) routeUserItem(w http.ResponseWriter, r *http.Request) {
 }
 
 type userDTO struct {
-	ID        string `json:"id"`
 	Username  string `json:"username"`
 	IsAdmin   bool   `json:"is_admin"`
 	Disabled  bool   `json:"disabled"`
@@ -60,7 +59,6 @@ func (s *Server) hListUsers(w http.ResponseWriter, r *http.Request) {
 	out := make([]userDTO, 0, len(users))
 	for _, u := range users {
 		out = append(out, userDTO{
-			ID:        u.ID,
 			Username:  u.Username,
 			IsAdmin:   u.IsAdmin,
 			Disabled:  s.Users.IsDisabled(u.Username),
@@ -105,7 +103,7 @@ func (s *Server) hCreateUser(w http.ResponseWriter, r *http.Request) {
 	// find it without racing the first login.
 	_, _ = s.Stores.Get(req.Username)
 	writeJSON(w, 201, map[string]any{"user": userDTO{
-		ID: u.ID, Username: u.Username, IsAdmin: u.IsAdmin,
+		Username: u.Username, IsAdmin: u.IsAdmin,
 	}})
 }
 
