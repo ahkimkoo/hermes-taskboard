@@ -364,6 +364,16 @@ const TaskModal = {
       confirmDeleteAttemptId: null, // id of attempt showing its confirm state
       confirmStop: false,       // inline 2-click confirm for Stop
       showAttemptHelp: false,
+      // Independent loading flags so the task body + attempts render
+      // as their respective requests land, instead of blocking the
+      // whole modal on whichever is slowest.
+      loadingTask: false,
+      loadingAttempts: false,
+      loadingMoreAttempts: false,
+      attemptsHasMore: false,
+      // Monotonic counter used to ignore stale responses when the
+      // user clicks another card before the in-flight load() finishes.
+      _loadSeq: 0,
       // Auto-fullscreen on phones (< 768px) so the card modal fills the
       // viewport by default — on a phone the small-window mode has nothing
       // useful to show behind it and just wastes space. Desktop keeps the
@@ -455,6 +465,12 @@ const TaskModal = {
                   d="M5 8l5 5 5-5"/>
           </svg>
         </button>
+        <!-- Placeholder while task body is still in flight. Shows
+             the moment the modal opens so users see immediate feedback
+             rather than a blank frame. -->
+        <div class="modal-body modal-loading" v-if="!task && loadingTask">
+          <div class="muted small" style="padding: 40px 0; text-align: center;">{{ $t('modal.loading_task') }}</div>
+        </div>
         <div class="modal-body" ref="modalBody" v-if="task" @scroll="onModalBodyScroll">
           <!-- Edit form -->
           <div v-if="editing">
@@ -579,6 +595,15 @@ const TaskModal = {
 
             <div class="attempt-panel" :class="{ stacked: !listOpen }">
               <div class="attempt-list" v-show="listOpen">
+                <div v-if="loadingAttempts && attempts.length === 0" class="muted small" style="padding: 8px 0;">
+                  {{ $t('attempt.loading') }}
+                </div>
+                <button v-if="attemptsHasMore && attempts.length > 0"
+                        class="ghost small attempt-load-earlier"
+                        :disabled="loadingMoreAttempts"
+                        @click="loadMoreAttempts">
+                  {{ loadingMoreAttempts ? $t('attempt.loading') : $t('attempt.load_earlier') }}
+                </button>
                 <div v-for="a in attempts" :key="a.id" class="attempt-item"
                      :class="{active: a.id === activeAttemptId}"
                      @click="activeAttemptId = a.id">
@@ -667,42 +692,87 @@ const TaskModal = {
       const sv = (this.$root.state.servers || []).find((s) => s.id === id);
       return sv ? (sv.name || sv.id) : id;
     },
-    async load() {
+    // load fires the task-detail and attempt-list fetches in parallel
+    // so the modal body can render the moment the task row lands,
+    // without waiting on the attempts response. A monotonic seq
+    // guards against stale responses when the user clicks another
+    // card mid-flight.
+    load() {
       if (!this.taskId) { this.task = null; return; }
-      try {
-        const r = await api('/api/tasks/' + this.taskId);
-        this.task = r.task;
-        // Normalise deps: backend may return old-shape strings from a stale db
-        // or the new-shape {task_id, required_state}. Coerce to the new shape.
-        const deps = (r.task.dependencies || []).map((d) => (typeof d === 'string'
-          ? { task_id: d, required_state: 'done' }
-          : { task_id: d.task_id, required_state: d.required_state || 'done' }));
-        this.form = {
-          title: r.task.title,
-          description: r.task.description || '',
-          priority: r.task.priority,
-          trigger_mode: r.task.trigger_mode,
-          preferred_server: r.task.preferred_server || '',
-          preferred_model: r.task.preferred_model || '',
-          tags: [...(r.task.tags || [])],
-          dependencies: deps,
-        };
-        const ar = await api('/api/tasks/' + this.taskId + '/attempts');
-        this.attempts = (ar.attempts || []).sort((a, b) => String(a.started_at || '').localeCompare(String(b.started_at || '')));
-        if (!this.activeAttemptId || !this.attempts.some((a) => a.id === this.activeAttemptId)) {
-          this.activeAttemptId = this.attempts.length ? this.attempts[this.attempts.length - 1].id : null;
-        }
-        // Collapse the list when there's only one attempt; expand it when
-        // there are several so users see them at a glance.
-        this.listOpen = this.attempts.length > 1;
-        // Seed the jump-to-bottom visibility after the body has laid out.
-        // Two ticks: one for Vue to render, one for the event stream to
-        // inflate the scroll height.
-        this.$nextTick(() => {
-          this.onModalBodyScroll();
-          setTimeout(() => this.onModalBodyScroll(), 300);
+      const seq = ++this._loadSeq;
+      const taskId = this.taskId;
+
+      this.loadingTask = true;
+      this.loadingAttempts = true;
+      this.attempts = [];
+      this.attemptsHasMore = false;
+
+      // (1) task detail
+      api('/api/tasks/' + taskId)
+        .then((r) => {
+          if (seq !== this._loadSeq) return; // user switched cards
+          this.task = r.task;
+          const deps = (r.task.dependencies || []).map((d) => (typeof d === 'string'
+            ? { task_id: d, required_state: 'done' }
+            : { task_id: d.task_id, required_state: d.required_state || 'done' }));
+          this.form = {
+            title: r.task.title,
+            description: r.task.description || '',
+            priority: r.task.priority,
+            trigger_mode: r.task.trigger_mode,
+            preferred_server: r.task.preferred_server || '',
+            preferred_model: r.task.preferred_model || '',
+            tags: [...(r.task.tags || [])],
+            dependencies: deps,
+          };
+        })
+        .catch((e) => {
+          if (seq === this._loadSeq) toast(t('toast.error', { err: e.message }), 'error');
+        })
+        .finally(() => {
+          if (seq === this._loadSeq) this.loadingTask = false;
         });
-      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+
+      // (2) attempt list — most recent 50, with "load earlier" paging
+      //     handled by loadMoreAttempts below.
+      api('/api/tasks/' + taskId + '/attempts?limit=50')
+        .then((ar) => {
+          if (seq !== this._loadSeq) return;
+          this.attempts = (ar.attempts || []).sort((a, b) => String(a.started_at || '').localeCompare(String(b.started_at || '')));
+          this.attemptsHasMore = !!ar.has_more;
+          if (!this.activeAttemptId || !this.attempts.some((a) => a.id === this.activeAttemptId)) {
+            this.activeAttemptId = this.attempts.length ? this.attempts[this.attempts.length - 1].id : null;
+          }
+          this.listOpen = this.attempts.length > 1;
+          this.$nextTick(() => {
+            this.onModalBodyScroll();
+            setTimeout(() => this.onModalBodyScroll(), 300);
+          });
+        })
+        .catch((e) => {
+          if (seq === this._loadSeq) toast(t('toast.error', { err: e.message }), 'error');
+        })
+        .finally(() => {
+          if (seq === this._loadSeq) this.loadingAttempts = false;
+        });
+    },
+
+    async loadMoreAttempts() {
+      if (this.loadingMoreAttempts || !this.attemptsHasMore || this.attempts.length === 0) return;
+      this.loadingMoreAttempts = true;
+      try {
+        const oldest = this.attempts[0];
+        const before = new Date(oldest.started_at).getTime();
+        const ar = await api('/api/tasks/' + this.taskId + '/attempts?limit=50&before=' + before);
+        const older = (ar.attempts || []).sort((a, b) =>
+          String(a.started_at || '').localeCompare(String(b.started_at || '')));
+        this.attempts = older.concat(this.attempts);
+        this.attemptsHasMore = !!ar.has_more;
+      } catch (e) {
+        toast(t('toast.error', { err: e.message }), 'error');
+      } finally {
+        this.loadingMoreAttempts = false;
+      }
     },
     async save() {
       try {

@@ -589,22 +589,50 @@ func (s *Store) GetAttempt(ctx context.Context, id string) (*Attempt, error) {
 	return scanAttempt(row.Scan)
 }
 
-func (s *Store) ListAttemptsForTask(ctx context.Context, taskID string) ([]*Attempt, error) {
-	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id,task_id,server_id,model,state,started_at,ended_at FROM attempts WHERE task_id=? ORDER BY started_at ASC`, taskID)
-	if err != nil {
-		return nil, err
+// ListAttemptsForTask returns attempts in chronological order (oldest
+// first). When limit > 0, returns the most recent `limit` attempts
+// whose started_at is strictly less than `before` (or latest when
+// before is zero). Use the returned hasMore flag to decide whether a
+// "load earlier" UI needs to show.
+//
+// Pagination is keyed by started_at (millis). Clients page by setting
+// before = oldest loaded attempt's started_at.
+func (s *Store) ListAttemptsForTask(ctx context.Context, taskID string, limit int, beforeMs int64) (attempts []*Attempt, hasMore bool, err error) {
+	q := `SELECT id,task_id,server_id,model,state,started_at,ended_at FROM attempts WHERE task_id=?`
+	args := []any{taskID}
+	if beforeMs > 0 {
+		q += ` AND started_at < ?`
+		args = append(args, beforeMs)
+	}
+	q += ` ORDER BY started_at DESC`
+	if limit > 0 {
+		q += fmt.Sprintf(` LIMIT %d`, limit+1) // over-fetch by 1 to detect hasMore
+	}
+	rows, qerr := s.DB.QueryContext(ctx, q, args...)
+	if qerr != nil {
+		return nil, false, qerr
 	}
 	defer rows.Close()
 	var out []*Attempt
 	for rows.Next() {
 		a, err := scanAttempt(rows.Scan)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, a)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+		hasMore = true
+	}
+	// Reverse to chronological (oldest → newest) for display.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, hasMore, nil
 }
 
 func (s *Store) ListActiveAttempts(ctx context.Context) ([]*Attempt, error) {

@@ -3,6 +3,22 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.14
+
+### Task modal loads task detail + attempts in parallel, shows progress
+
+`TaskModal.load()` used to `await` the task-detail fetch, then `await` the attempt-list fetch. The modal body stayed blank until BOTH responses landed. Now both requests fire simultaneously and each section renders the moment its own response arrives:
+
+- Before first response: "Loading task…" placeholder in the modal body.
+- Attempts section shows "Loading attempts…" until the list response lands.
+- A monotonic sequence guard discards stale responses if the user clicks another card before the first one finishes loading.
+
+### Attempts endpoint paginates
+
+`GET /api/tasks/{id}/attempts` now accepts `?limit=N&before=<started_at_ms>` and returns `{attempts, has_more}`. The frontend defaults to `limit=50` with chronological display; when `has_more` is true the attempts list shows a **↑ Load earlier** button that fetches the next 50 (keyed by the oldest loaded `started_at`). Server-side the query uses `ORDER BY started_at DESC LIMIT n+1` so pagination is O(n) per page regardless of total attempt count.
+
+Current boards max out at ~19 attempts per task so the user-visible effect is mild today, but the plumbing is in place for tasks that accumulate hundreds of attempts over time.
+
 ## 2026-04-24 — v0.3.13
 
 ### `ReadEventsTail` no longer parses the whole event log

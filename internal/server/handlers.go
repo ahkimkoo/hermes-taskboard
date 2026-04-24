@@ -356,12 +356,18 @@ func (s *Server) hListTaskAttempts(w http.ResponseWriter, r *http.Request, id st
 	if !ok {
 		return
 	}
-	atts, err := st.ListAttemptsForTask(r.Context(), id)
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if limit < 0 {
+		limit = 0
+	}
+	before, _ := strconv.ParseInt(q.Get("before"), 10, 64)
+	atts, hasMore, err := st.ListAttemptsForTask(r.Context(), id, limit, before)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"attempts": atts})
+	writeJSON(w, 200, map[string]any{"attempts": atts, "has_more": hasMore})
 }
 
 func (s *Server) hStartAttempt(w http.ResponseWriter, r *http.Request, id string) {
