@@ -15,9 +15,12 @@ import (
 // the multi-user lookup layer.
 type Store struct {
 	DB *sql.DB
+	tc *taskCache // LRU snapshot of fully-populated Task rows
 }
 
-func New(db *sql.DB) *Store { return &Store{DB: db} }
+func New(db *sql.DB) *Store {
+	return &Store{DB: db, tc: newTaskCache(defaultTaskCacheMax)}
+}
 
 var ErrNotFound = errors.New("not found")
 
@@ -107,7 +110,11 @@ func (s *Store) UpdateTask(ctx context.Context, t *Task) error {
 	if err := writeDeps(ctx, tx, t.ID, t.Dependencies); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.tc.invalidate(t.ID)
+	return nil
 }
 
 func (s *Store) SetTaskStatus(ctx context.Context, id string, to TaskStatus) error {
@@ -131,7 +138,11 @@ func (s *Store) SetTaskStatus(ctx context.Context, id string, to TaskStatus) err
 	if n == 0 {
 		return ErrNotFound
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.tc.invalidate(id)
+	return nil
 }
 
 // MoveTask relocates a task into `to` column at a specific slot.
@@ -246,7 +257,11 @@ func (s *Store) MoveTask(ctx context.Context, id string, to TaskStatus, afterID,
 	if n == 0 {
 		return ErrNotFound
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.tc.invalidate(id)
+	return nil
 }
 
 func (s *Store) DeleteTask(ctx context.Context, id string) ([]string, error) {
@@ -285,11 +300,18 @@ func (s *Store) DeleteTask(ctx context.Context, id string) ([]string, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	s.tc.invalidate(id)
 	return ids, nil
 }
 
 // GetTask loads a task + tags + deps (description still in fsstore).
+// Snapshots are cached per-Store in a 200-entry LRU so the common
+// "operator clicks the same card again" path avoids 4 round-trips.
+// Writes invalidate by id (see SetTaskStatus / UpdateTask / ...).
 func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
+	if t := s.tc.get(id); t != nil {
+		return t, nil
+	}
 	row := s.DB.QueryRowContext(ctx,
 		`SELECT id,title,status,priority,trigger_mode,preferred_server,preferred_model,created_at,updated_at,description_excerpt,position
          FROM tasks WHERE id=?`, id)
@@ -308,11 +330,16 @@ func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
 		return nil, err
 	}
 	t.AttemptCount, t.ActiveAttempts, t.NeedsInputAttempts = cnt, active, ni
-	return t, nil
+	s.tc.put(id, t)
+	// Return a fresh copy (cache entry should stay immutable to callers).
+	return cloneTask(t), nil
 }
 
-// DeleteAttempt removes a single attempt row by id.
+// DeleteAttempt removes a single attempt row by id. Invalidates the
+// owning task's cache entry so the next GetTask sees fresh counts.
 func (s *Store) DeleteAttempt(ctx context.Context, id string) error {
+	var taskID string
+	_ = s.DB.QueryRowContext(ctx, `SELECT task_id FROM attempts WHERE id=?`, id).Scan(&taskID)
 	res, err := s.DB.ExecContext(ctx, `DELETE FROM attempts WHERE id=?`, id)
 	if err != nil {
 		return err
@@ -321,6 +348,7 @@ func (s *Store) DeleteAttempt(ctx context.Context, id string) error {
 	if n == 0 {
 		return ErrNotFound
 	}
+	s.tc.invalidate(taskID)
 	return nil
 }
 
@@ -465,6 +493,13 @@ func (s *Store) ListTasks(ctx context.Context, f TaskFilter) ([]*Task, error) {
 	}
 	cntRows.Close()
 
+	// Prime the per-task cache — every row we returned is a
+	// fully-populated snapshot, the same shape GetTask produces. On
+	// unfiltered list reloads this pre-warms the cache for
+	// card-open, turning typical clicks into hits.
+	for _, t := range list {
+		s.tc.put(t.ID, t)
+	}
 	return list, nil
 }
 
@@ -521,6 +556,9 @@ func (s *Store) CreateAttempt(ctx context.Context, a *Attempt) error {
 		`INSERT INTO attempts(id,task_id,server_id,model,state,started_at,ended_at) VALUES(?,?,?,?,?,?,NULL)`,
 		a.ID, a.TaskID, a.ServerID, a.Model, string(a.State), now.UnixMilli(),
 	)
+	if err == nil {
+		s.tc.invalidate(a.TaskID)
+	}
 	return err
 }
 
@@ -534,6 +572,14 @@ func (s *Store) UpdateAttemptState(ctx context.Context, id string, state Attempt
 		`UPDATE attempts SET state=?, ended_at=COALESCE(?, ended_at) WHERE id=?`,
 		string(state), endedAt, id,
 	)
+	if err == nil {
+		// Invalidate the owning task's cache so attempt-count changes
+		// show up on the next card open. Cheap extra query.
+		var taskID string
+		if qerr := s.DB.QueryRowContext(ctx, `SELECT task_id FROM attempts WHERE id=?`, id).Scan(&taskID); qerr == nil {
+			s.tc.invalidate(taskID)
+		}
+	}
 	return err
 }
 

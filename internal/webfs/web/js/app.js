@@ -737,14 +737,27 @@ const TaskModal = {
       return a && a.state !== 'queued' && a.state !== 'running' && a.state !== 'needs_input';
     },
     async deleteAttempt(id) {
+      // Optimistic update: pull the attempt out of the local list
+      // immediately so the DOM updates on the same frame. If the
+      // server rejects (e.g. concurrent Stop-then-Delete race), we
+      // roll back and re-load from the server to reconcile.
       this.confirmDeleteAttemptId = null;
+      const prev = this.attempts;
+      this.attempts = this.attempts.filter((a) => a.id !== id);
+      if (this.activeAttemptId === id) {
+        this.activeAttemptId = this.attempts.length
+          ? this.attempts[this.attempts.length - 1].id
+          : null;
+      }
       try {
         await api('/api/attempts/' + id, { method: 'DELETE' });
-        if (this.activeAttemptId === id) this.activeAttemptId = null;
-        await this.load();
         this.$emit('refresh');
         toast(t('toast.deleted'));
-      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+      } catch (e) {
+        this.attempts = prev;
+        await this.load();
+        toast(t('toast.error', { err: e.message }), 'error');
+      }
     },
     async actuallyStartAttempt() {
       this.confirmNewAttempt = false;

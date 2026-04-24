@@ -3,6 +3,23 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.12
+
+### Fix: deleted attempt doesn't disappear from the list until reload
+
+Deleting an attempt waited for the server round-trip + a full task refresh before touching the DOM, so the row stayed visible for however long the network took. Made it optimistic: splice the attempt out of the local list the moment the confirm button is clicked, run the DELETE in the background, and roll back (plus re-`load()`) only if the server rejects it. Same approach we already use for 2-click Stop.
+
+### Task cache — open-card path no longer does 4 SQL round-trips per click
+
+`GetTask(id)` used to always re-query the tasks row + tags + deps + attempt-count aggregate (4 round-trips + a JSON file read), every time an operator opened the same card. Added an in-memory per-user LRU of fully-populated `*Task` snapshots, capacity 200, evicting least-recently-used.
+
+- **Hit**: reads return a cloned Task from memory, no DB touch.
+- **Miss**: runs the normal 4 queries + caches.
+- **ListTasks also warms it** — opening the board pre-populates the cache for up to 200 cards, so the first click on any visible card is already a hit.
+- **Writes invalidate by id**: `UpdateTask`, `SetTaskStatus`, `MoveTask`, `DeleteTask`, `CreateAttempt`, `UpdateAttemptState`, `DeleteAttempt` all drop the stale entry so the next read sees fresh counts / status / tags.
+- Cache is per-`Store`, which is already per-user, so no cross-user leakage.
+- Task descriptions stay in `data/{user}/task/{id}.json` — not cached, because they're the big items and may be edited out of band; the cache only covers the row-level metadata.
+
 ## 2026-04-24 — v0.3.11
 
 ### Fix: Start-now button missing after deleting every attempt
