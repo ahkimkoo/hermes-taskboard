@@ -80,7 +80,7 @@ type HermesServer struct {
 	IsDefault     bool          `yaml:"is_default" json:"is_default"`
 	MaxConcurrent int           `yaml:"max_concurrent" json:"max_concurrent"`
 	Models        []HermesModel `yaml:"models" json:"models"`
-	Shared        bool          `yaml:"shared,omitempty" json:"shared"`
+	Shared        bool          `yaml:"shared" json:"shared"`
 }
 
 type HermesModel struct {

@@ -3,6 +3,12 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.9
+
+### `shared` now always appears on hermes_servers
+
+`HermesServer.Shared` was tagged `yaml:"shared,omitempty"`, so a `false` value got elided from the serialised YAML. Operators looking at `data/{user}/config.yaml` saw no `shared:` line and reasonably assumed the flag didn't exist. v0.3.9 drops `omitempty` — every server entry now carries an explicit `shared: true` or `shared: false`, matching the `is_default` treatment. Tags are unaffected (their sharing state lives in the `.private` / `.public` filename suffix).
+
 ## 2026-04-24 — v0.3.8
 
 ### Tag files drop the YAML wrapper — contents are just the prompt
