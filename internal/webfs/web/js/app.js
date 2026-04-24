@@ -985,7 +985,12 @@ const SettingsModal = {
                   <div class="form-row"><label>ID</label><input type="text" v-model="editServer.id" :disabled="editServer.__edit"></div>
                   <div class="form-row"><label>{{ $t('th.name') }}</label><input type="text" v-model="editServer.name"></div>
                   <div class="form-row"><label>{{ $t('th.base_url') }}</label><input type="text" v-model="editServer.base_url"></div>
-                  <div class="form-row"><label>API Key (Hermes <code>API_SERVER_KEY</code>)</label><input type="password" v-model="editServer.api_key" :placeholder="$t('field.api_key_placeholder')"></div>
+                  <div class="form-row">
+                    <label>API Key (Hermes <code>API_SERVER_KEY</code>)
+                      <span v-if="editServer.__edit && editServer.has_api_key" class="api-key-set">· {{ $t('field.api_key_already_set') }}</span>
+                    </label>
+                    <input type="password" v-model="editServer.api_key" :placeholder="$t('field.api_key_placeholder')">
+                  </div>
                   <div class="form-row">
                     <label>{{ $t('settings.profile_label') }}</label>
                     <input type="text" v-model="editServer.profile" placeholder="hermes-agent">

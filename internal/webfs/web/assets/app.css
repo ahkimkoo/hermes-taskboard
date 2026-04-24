@@ -613,6 +613,7 @@ body.dragging-active * { cursor: grabbing !important; }
 .dep-hint { font-size: 11px; color: var(--text-muted); line-height: 1.4; margin-top: 2px; }
 
 .optional { color: var(--text-muted); font-weight: 400; font-size: 11px; }
+.api-key-set { color: var(--accent); font-weight: 400; font-size: 11px; margin-left: 6px; }
 
 .sound-row { flex-direction: row; align-items: center; gap: 10px; }
 .sound-row label { flex: 1; margin-bottom: 0; font-weight: 500; color: var(--text); }

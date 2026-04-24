@@ -3,6 +3,18 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.18
+
+### Fix: editing a server with a blank API key field looked like it cleared the stored key
+
+Two distinct bugs stacked up to make users think leaving the API key field blank on a server edit was clearing the stored value, even though the on-disk `api_key_enc` was actually preserved (confirmed via curl: `api_key_enc` bytes unchanged after a PATCH with `api_key:""`).
+
+**Bug 1**: `GET /api/servers` returned `has_api_key: false` for every row, always. The DTO computed `has_api_key` from `ServerView.APIKey != "" || ServerView.APIKeyEnc != ""`, but `ServerView` comes through `stripKey()` which blanks both fields for defence-in-depth. Moved the `HasAPIKey` calculation up to `userdir.VisibleServers` where it can inspect the unstripped struct.
+
+**Bug 2**: the edit form showed no visible acknowledgement that a key was already stored, so blank-on-save felt indistinguishable from cleared. Added a "key is set" / "已保存" badge next to the API Key label in the server edit panel when `has_api_key` is true.
+
+Also added a belt-and-suspenders trim: `PATCH /api/servers/{id}` with a whitespace-only `api_key` no longer overwrites the stored key. Guards against stray spaces from autofill or clipboard.
+
 ## 2026-04-24 — v0.3.17
 
 ### One Hermes API server = one profile (breaking data model change)

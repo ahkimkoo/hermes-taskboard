@@ -757,7 +757,7 @@ func (s *Server) hListServers(w http.ResponseWriter, r *http.Request) {
 	for _, v := range views {
 		out = append(out, serverDTO{
 			ID: v.ID, Name: v.Name, BaseURL: v.BaseURL,
-			HasAPIKey:     v.APIKey != "" || v.APIKeyEnc != "",
+			HasAPIKey:     v.HasAPIKey,
 			IsDefault:     v.IsDefault,
 			MaxConcurrent: v.MaxConcurrent,
 			Profile:       v.Profile,
@@ -913,8 +913,12 @@ func (s *Server) hUpdateServer(w http.ResponseWriter, r *http.Request, id string
 			if req.BaseURL != "" {
 				sv.BaseURL = req.BaseURL
 			}
-			if req.APIKey != "" {
-				sv.APIKey = req.APIKey
+			// Whitespace-only is treated as unchanged to guard against
+			// accidental clear from browser autofill or stray spaces.
+			// The "leave blank to keep existing" affordance depends on
+			// this.
+			if trimmed := strings.TrimSpace(req.APIKey); trimmed != "" {
+				sv.APIKey = trimmed
 				sv.APIKeyEnc = ""
 			}
 			if req.MaxConcurrent != 0 {

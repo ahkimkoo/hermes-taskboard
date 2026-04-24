@@ -443,11 +443,15 @@ func (m *Manager) DecryptedAPIKey(sv *HermesServer) string {
 
 // ServerView is what non-owners see for a shared server — api key is
 // stripped, ownership is indicated by the owner's username (which is
-// also their data directory name).
+// also their data directory name). HasAPIKey is sampled BEFORE the
+// strip so the UI can tell "key is set but hidden" apart from "key
+// is truly empty" — essential for the edit form's "leave blank to
+// keep existing" affordance.
 type ServerView struct {
 	HermesServer
 	OwnerUsername string `json:"owner_username"`
 	Mine          bool   `json:"mine"`
+	HasAPIKey     bool   `json:"has_api_key"`
 }
 
 // VisibleServers returns the server list that `viewer` should see:
@@ -465,6 +469,7 @@ func (m *Manager) VisibleServers(viewerUsername string) []ServerView {
 				HermesServer:  stripKey(sv),
 				OwnerUsername: me.Username,
 				Mine:          true,
+				HasAPIKey:     sv.APIKey != "" || sv.APIKeyEnc != "",
 			})
 		}
 	}
@@ -480,6 +485,7 @@ func (m *Manager) VisibleServers(viewerUsername string) []ServerView {
 				HermesServer:  stripKey(sv),
 				OwnerUsername: u.Username,
 				Mine:          false,
+				HasAPIKey:     sv.APIKey != "" || sv.APIKeyEnc != "",
 			})
 		}
 	}

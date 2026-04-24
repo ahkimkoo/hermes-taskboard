@@ -73,6 +73,7 @@
   "field.new_password": "新密码",
   "field.current_password": "当前密码",
   "field.api_key_placeholder": "留空表示保留原值",
+  "field.api_key_already_set": "已保存",
   "field.role": "角色",
   "field.role_admin": "管理员",
   "field.role_user": "普通用户",

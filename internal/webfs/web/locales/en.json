@@ -73,6 +73,7 @@
   "field.new_password": "New password",
   "field.current_password": "Current password",
   "field.api_key_placeholder": "leave blank to keep existing",
+  "field.api_key_already_set": "key is set",
   "field.role": "Role",
   "field.role_admin": "Admin",
   "field.role_user": "User",
