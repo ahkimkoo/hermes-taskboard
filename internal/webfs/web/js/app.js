@@ -403,15 +403,14 @@ const TaskModal = {
     isArchive() { return this.task && this.task.status === 'archive'; },
     canStartFirst() {
       // Gate for the ▶ 立即执行 button on a task with zero attempts.
-      // Previously limited to draft / plan, which meant if the user
-      // deleted every attempt of a task now sitting in execute or
-      // verify, neither Start-now nor New-attempt would appear and
-      // the card was stuck. Now any non-terminal column can kick a
-      // fresh attempt; Done / Archive require an explicit drag back
-      // to Plan first because those columns mean "retired".
-      if (!this.task) return false;
-      const s = this.task.status;
-      return s === 'draft' || s === 'plan' || s === 'execute' || s === 'verify';
+      // Mirrors the always-available "+ new attempt" button that shows
+      // when attempts > 0: if zero attempts is a runnable state for a
+      // fresh task, it's equally runnable after the user deletes the
+      // last attempt, regardless of which column the card now sits in
+      // (auto-trigger tasks in particular end up in Done after their
+      // run completes; deleting the attempt there used to strand the
+      // card with no way to retry).
+      return !!this.task;
     },
     currentAttempt() {
       return this.attempts.find((a) => a.id === this.activeAttemptId) || null;

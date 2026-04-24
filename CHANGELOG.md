@@ -3,6 +3,14 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.15
+
+### Fix: Start-now button still missing after deleting every attempt of a Done task
+
+v0.3.11 widened `canStartFirst` to cover `{draft, plan, execute, verify}` but deliberately excluded `done` and `archive`. Real-world case exposed by a user today: an auto-trigger task runs once → lands in **Done** → user deletes the attempt → now the card has zero attempts, `done` status, and neither Start-now nor New-attempt shows. The card is stuck with no way to re-run.
+
+Fix is to drop the status gate entirely on the zero-attempt Start-now button, matching the already-unconditional `+ new attempt` button that shows when attempts > 0. If a card has an attempt list visible to the user, it should be runnable from that list regardless of which column it sits in.
+
 ## 2026-04-24 — v0.3.14
 
 ### Task modal loads task detail + attempts in parallel, shows progress
