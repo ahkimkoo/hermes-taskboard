@@ -3,6 +3,16 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.1
+
+### Legacy migration no longer leaves an archive directory
+
+v0.3.0's migration path moved the old central DB into `data/_migrated-YYYYMMDD-HHMMSS/db/` as a safety copy. In practice operators found the leftover `taskboard.db` sitting next to `data/admin/db/taskboard.db` confusing — easy to mistake for the live database. v0.3.1 removes the legacy DB files after the rows have been copied into admin's per-user store. The AEAD key at `data/db/.secret` stays put because it's still the runtime encryption key for API credentials.
+
+**If you want a pre-migration safety net, back up the host `data/` directory yourself before upgrading** — e.g. `tar czf taskboard-data.backup.tar.gz taskboard-data`. The migration is one-way.
+
+Everything else in v0.3.0 stays as-is; the CHANGELOG entry for v0.3.0 has been corrected to describe this behaviour.
+
 ## 2026-04-23 — v0.3.0
 
 ### Multi-user support with folder-level data isolation
@@ -40,7 +50,7 @@ This satisfies the stated design goal — **folder-level pluggability**: wiping 
 1. Reassigns every task, attempt, dependency, tag link, and schedule to the `admin` user (copied into `data/admin/db/taskboard.db`).
 2. Pulls `hermes_servers` out of the global config and inlines them into `data/admin/config.yaml` with API keys re-encrypted under the same `data/db/.secret` AEAD key.
 3. Moves `data/task/` → `data/admin/task/` and `data/attempt/` → `data/admin/attempt/`.
-4. Archives the old `data/db/` to `data/_migrated-YYYYMMDD-HHMMSS/db/` so nothing is destroyed.
+4. Removes the legacy `data/db/taskboard.db` (and WAL/SHM companions) after the copy succeeds. `data/db/.secret` stays put — it's still the runtime AEAD key. (In v0.3.0 the old DB was archived to `data/_migrated-YYYYMMDD-HHMMSS/db/`; v0.3.1 drops that archive because it was easy to mistake for the live DB. Back up `data/` yourself before upgrading if you want a safety net.)
 5. Rewrites `data/config.yaml` stripped of the per-user fields.
 
 ### Delete individual attempts

@@ -106,15 +106,25 @@ func MigrateLegacy(dataDir string, cfgStore *config.Store, secret []byte, logger
 		}
 	}
 
-	// Archive legacy DB.
+	// Delete the legacy DB now that its rows have been copied into
+	// admin's per-user DB. Previously we archived it to
+	// data/_migrated-{timestamp}/db/, but operators found having a
+	// second taskboard.db sitting in the data directory confusing —
+	// easy to mistake for the live DB. Anyone who wants a safety net
+	// should back up `data/` externally before upgrading. We keep
+	// data/db/.secret in place because it's the AEAD key the new
+	// layout still reads at runtime.
 	if fileExists(legacyDB) {
-		stamp := time.Now().Format("20060102-150405")
-		archive := filepath.Join(dataDir, "_migrated-"+stamp, "db")
-		if err := os.MkdirAll(archive, 0o700); err != nil {
-			return err
-		}
-		if err := moveDir(filepath.Join(dataDir, "db"), archive); err != nil {
-			return fmt.Errorf("archive legacy db: %w", err)
+		oldDir := filepath.Join(dataDir, "db")
+		entries, _ := os.ReadDir(oldDir)
+		for _, e := range entries {
+			name := e.Name()
+			if name == ".secret" {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(oldDir, name)); err != nil {
+				logger.Warn("remove legacy db artefact", "name", name, "err", err)
+			}
 		}
 	}
 

@@ -114,7 +114,7 @@ data/
 
 Each user only sees their own board. To work as another user, log out and log in as them — there is no admin impersonation. From **⚙ Settings → Users** (admin-only) admins can invite new users, reset passwords, disable accounts (`disabled` sentinel), or grant admin privileges. Tags and Hermes servers can be marked **Shared**: shared entries show up in other users' lists read-only (visible + usable, but not editable). Only admins can configure global options: scheduler, OSS integration, archive retention, and "Reload config from file".
 
-When an older single-DB install boots against this binary for the first time, a one-shot migration reassigns every task / tag / Hermes server to `admin` and moves them into `data/admin/`. The old `data/db/` is archived to `data/_migrated-YYYYMMDD-HHMMSS/db/` so nothing is destroyed.
+When an older single-DB install boots against this binary for the first time, a one-shot migration reassigns every task / tag / Hermes server to `admin` and moves them into `data/admin/`. The old `data/db/taskboard.db` is removed once the rows have been copied (the AEAD key at `data/db/.secret` stays put — it's still used at runtime). **Back up `data/` externally before upgrading** if you want a safety net; the migration does not keep one for you.
 
 ### Set up Hermes for this board
 
@@ -212,7 +212,7 @@ docker compose pull
 docker compose up -d
 ```
 
-The per-user layout stays intact across restarts. If you're upgrading from a pre-v0.3.0 single-DB install, the first boot runs a one-shot migration that moves everything under `data/admin/` and archives the old DB to `data/_migrated-{timestamp}/`.
+The per-user layout stays intact across restarts. If you're upgrading from a pre-v0.3.0 single-DB install, the first boot runs a one-shot migration that moves everything under `data/admin/` and removes the old central DB. Snapshot the host folder with `tar czf taskboard-data.backup.tar.gz taskboard-data` first if you want a pre-migration safety net.
 
 #### Pointing taskboard at Hermes
 
@@ -375,7 +375,7 @@ data/
 
 每个人只能看到自己的看板。要切到另一个用户的视角,退出登录再用对方的账号密码登入即可 —— 管理员不支持假扮他人浏览。管理员可在 **⚙ 设置 → 用户管理**(仅管理员可见)新增用户、重置密码、禁用/启用账号、或将其他用户升级为管理员。标签和 Hermes server 支持 **共享**:勾选共享后,其他用户可以在自己列表里看到并使用(但不能编辑 / 删除)。只有管理员能修改系统级选项:全局调度、OSS 集成、归档策略、"从文件重新加载配置"。
 
-如果旧版看板(单一 DB 的布局)第一次用新二进制启动,会触发一次性迁移,把全部任务 / 标签 / Hermes server 转到 `admin` 用户名下,搬进 `data/admin/`。原来的 `data/db/` 会被归档到 `data/_migrated-YYYYMMDD-HHMMSS/db/`,不会破坏原数据。
+如果旧版看板(单一 DB 的布局)第一次用新二进制启动,会触发一次性迁移,把全部任务 / 标签 / Hermes server 转到 `admin` 用户名下,搬进 `data/admin/`。旧 `data/db/taskboard.db` 在行被复制完之后会被删掉(AEAD 密钥 `data/db/.secret` 保留,运行时还要用)。**需要安全兜底的话请在升级前自己备份一下整个 `data/` 目录**,迁移过程不会替你留副本。
 
 ### Hermes 侧配置
 
@@ -473,7 +473,7 @@ docker compose pull
 docker compose up -d
 ```
 
-重启不会破坏 per-user 布局。如果你是从 v0.3.0 之前的单 DB 版本升级过来,首次启动会跑一次性迁移,把全部内容挪到 `data/admin/` 下,旧 DB 归档到 `data/_migrated-{时间戳}/`。
+重启不会破坏 per-user 布局。如果你是从 v0.3.0 之前的单 DB 版本升级过来,首次启动会跑一次性迁移,把全部内容挪到 `data/admin/` 下,旧 DB 被删除。需要安全兜底请在升级前手动 `tar czf taskboard-data.backup.tar.gz taskboard-data` 存一份。
 
 #### 让 taskboard 连接 Hermes
 
