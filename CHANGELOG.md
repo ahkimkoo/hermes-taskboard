@@ -99,7 +99,7 @@ The attach-file control whitelisted only images. Expanded to accept audio, video
 
 ### UI: Hermes server label shows name, not id
 
-Card headers and the attempt detail pane were labelling the selected Hermes server with the internal `server_id` (`local`, `office`) instead of the human-facing `name` (`Local Hermes`, `办公电脑`). Flipped to `name`, with the id kept as a tooltip for operators who still care. The English "Server:" label now also renders as "服务器" under Chinese locale.
+Card headers and the attempt detail pane were labelling the selected Hermes server with the internal `server_id` (`local`, `office`) instead of the human-facing `name` (`Local Hermes`, `Office PC`). Flipped to `name`, with the id kept as a tooltip for operators who still care. The English "Server:" label now also has its Chinese translation.
 
 ### Resume orphan runs + manual reconnect + paginated events
 
@@ -123,7 +123,7 @@ Everything a phone user hit since v0.1.0 got tightened:
 
 ### Japanese translations of user-facing docs
 
-`CHANGELOG.ja-JP.md`, `docs/release-notes/v0.1.0.ja-JP.md`, `docs/requirements.ja-JP.md`, and `docs/smoke.ja-JP.sh` ship alongside the English originals. UI remains English / 简体中文 for now; Japanese docs are read-only supplements.
+`docs/release-notes/v0.1.0.ja-JP.md`, `docs/requirements.ja-JP.md`, and `docs/smoke.ja-JP.sh` ship alongside the English originals. UI remains English / Simplified Chinese for now; Japanese docs are read-only supplements.
 
 ## 2026-04-20
 
@@ -166,7 +166,7 @@ S5 (30-second gap, session survival across idle) takes a full minute and is skip
 ### Release (round 7.2 → tagged v0.1.0) — schedule picker UX, orphan reaper, drag/click fix
 
 **Schedule picker now speaks plain language, backend is cron-only.**
-Previously the per-task schedule picker exposed two kinds (`interval` and `cron`) and required users to type raw specs like `15m` or `0 9 * * 1-5`. Since cron already expresses intervals (`*/15 * * * *`), the second kind was redundant *and* unfriendly. Redesigned the picker to be preset-driven: "every N minutes / hours" (N is a free-form number), "daily at HH:MM", "weekly on picked weekdays at HH:MM", "monthly on day D at HH:MM", plus an Advanced escape hatch for raw cron. Saved schedules render back as human prose ("每 15 分钟", "Weekly Mon, Wed, Fri at 09:00") with the raw cron underneath for inspection. The picker shows a live preview of the cron it will save, so users know exactly what's going to disk.
+Previously the per-task schedule picker exposed two kinds (`interval` and `cron`) and required users to type raw specs like `15m` or `0 9 * * 1-5`. Since cron already expresses intervals (`*/15 * * * *`), the second kind was redundant *and* unfriendly. Redesigned the picker to be preset-driven: "every N minutes / hours" (N is a free-form number), "daily at HH:MM", "weekly on picked weekdays at HH:MM", "monthly on day D at HH:MM", plus an Advanced escape hatch for raw cron. Saved schedules render back as human prose ("Every 15 minutes", "Weekly Mon, Wed, Fri at 09:00") with the raw cron underneath for inspection. The picker shows a live preview of the cron it will save, so users know exactly what's going to disk.
 
 Backend rewritten to accept only `kind='cron'` (API rejects anything else). One-shot DB migration on startup converts any legacy `interval` rows (`time.ParseDuration` string) to a best-effort cron approximation: `N` minutes up to 59 → `*/N * * * *`; full-hour multiples up to 23 → `0 */H * * *`; anything past a day collapses to daily at midnight. Migrated rows have their `next_run_at` cleared and the worker rehydrates them on boot via a new `ListEnabledNullNextSchedules` sweep, so no schedule is silently missed after the upgrade.
 
@@ -248,7 +248,7 @@ New `task_schedules` table + `internal/cron` worker (separate goroutine, ticks e
 - **Event stream is now semantic** — each Hermes event is grouped into a user message, an assistant bubble (with Markdown rendering), or a collapsible tool-call card showing name / args / output. No more raw JSON dumps. (Requirement #4)
 - **Light/dark theme toggle** in the top bar (☾/☀), persisted to `preferences.theme` in `data/config.yaml`. A full light-theme palette is defined in CSS variables. (Requirement #5)
 - **Delete gating**: the *Delete task* button only appears when a card sits in the Archive column; clicking once reveals a second "Confirm delete?" button. (Requirement #6)
-- **Column subtitles**: each of the six columns now has a small gray one-liner explaining its meaning (e.g. Plan → "Queued and ready for execution." / 计划 → "排队准备执行"). (Requirement #10)
+- **Column subtitles**: each of the six columns now has a small gray one-liner explaining its meaning (e.g. Plan → "Queued and ready for execution."). Translations are loaded from the per-locale dictionaries. (Requirement #10)
 - **Settings page**: now includes an explicit helper paragraph under *Models* explaining that each row corresponds to a Hermes agent profile (same thing the Hermes API calls "model"). (Requirement #11)
 - **Settings modal reopen bug** — fixed. Now always goes through a `showSettings = false → true` transition to avoid a stale-state window where the second click was a no-op. (Requirement #12)
 - **i18n rewritten to be reactive** (Vue ref) — no more language-mixing after toggle. The `$t(key)` lookup consistently resolves against exactly one dictionary. Missing keys fall back to English, never to a leftover Chinese string. (Requirement #9)
@@ -260,20 +260,20 @@ New `task_schedules` table + `internal/cron` worker (separate goroutine, ticks e
 - New Playwright suite `tests/ui_test.py` with 15 cases — run it any time after a UI change.
 
 ### Docs (later)
-- 在 `README.md` 的 "Set up Hermes for this board / Hermes 侧配置" 两节各加上 Hermes 官方 API Server 文档直链：<https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server>。用户读完本项目的最小化配置说明后，可以直接跳到上游文档查所有可配置字段。
-- 重写 `README.md`，让中英两个版本各自读起来像母语原生写的文档而不是相互的对照翻译：
-  - 英文段落里不再混入中文字符（之前把 "微信/飞书/钉钉/QQ" 直接塞进了英文段，现在换成 `WeChat / Feishu (Lark) / DingTalk / QQ`）。
-  - 中文段落减少生硬的 English 术语，改用地道表达（如 "backlog" → "待办清单"、"IM-first" → "聊天驱动的工作流"）。
-  - 截图 caption、小节标题也按各自语言的习惯顺一遍。
-- Hermes 链接更正为 `https://github.com/NousResearch/hermes-agent`（之前指向不存在的 `https://github.com/hermes-agent`）。
-- 顶部 tagline 精简，去掉看起来奇怪的 `i18n (中 / EN)`。
-- `README.md` 中英两个版本各新增 **项目初衷 / Why this exists** 段落（同日早先）：说明 Hermes 的自我进化能力与"数字伙伴"定位、列出它支持的消息网关，并阐明聊天驱动工作流的瓶颈。
+- Added a direct link to the Hermes API Server docs (<https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server>) inside the "Set up Hermes for this board" section of `README.md`. Readers can jump straight to the upstream reference for every configurable field after reading our minimal setup.
+- Rewrote `README.md` so the English and Chinese halves each read like native-language prose rather than mutual translations:
+  - English passages no longer smuggle in CJK glyphs (e.g. `WeChat / Feishu (Lark) / DingTalk / QQ` instead of the native spelling).
+  - Chinese passages cut awkward English jargon in favour of natural phrasing.
+  - Screenshot captions and section headings reordered to each language's conventions.
+- Hermes link corrected to `https://github.com/NousResearch/hermes-agent` (the previous `https://github.com/hermes-agent` didn't exist).
+- Tightened the top tagline, dropped the awkward language-toggle suffix that used to hang off the end.
+- Both language variants of `README.md` gained a new **Why this exists** section (same day, earlier) explaining Hermes's self-evolving-agent positioning, the messaging gateways it supports, and the friction that pushed this project into existence.
 
 ### Docs
-- `docs/requirements.md` 升到 v0.2：在 §4.8.1 / §4.8.5 开头各加了一个"契约"引言块，把两条关键规则提升为明显红线：
-  1. 每个接入的 Hermes Server 必须配置 Server 级并发上限（默认 10），每个 profile（如 `hermes-agent`）再配置自己的并发上限（**默认 5**），任一层级超限即拒绝新 Attempt。
-  2. 所有系统设置（账号密码、Hermes Servers、各类开关）统一存 `data/config.yaml`；启动时读入内存、修改时先刷内存再原子写回、设置页必须提供"从文件重新加载配置"按钮（`POST /api/config/reload`），支持手改 YAML 后热刷新免重启。
-- 文档顶部新增修订历史段。
+- `docs/requirements.md` bumped to v0.2: §4.8.1 / §4.8.5 each gained a "contract" lead-in paragraph promoting two rules to bright red lines:
+  1. Every registered Hermes Server must declare a server-level concurrency cap (default 10) and each profile (e.g. `hermes-agent`) must declare its own cap (**default 5**); breaching either layer rejects the next Attempt.
+  2. All settings (auth, Hermes Servers, various toggles) live in `data/config.yaml`; the process loads it into memory on boot and writes atomically on edit, and the settings page must expose a "Reload config from file" button (`POST /api/config/reload`) so hand-edited YAML can hot-reload without a restart.
+- Added a revision-history section at the top of the doc.
 
 ### Added
 - Initial implementation of the Hermes Task Board.
@@ -294,7 +294,7 @@ New `task_schedules` table + `internal/cron` worker (separate goroutine, ticks e
 - Responsive layouts: 6-column (≥1200 px), 3-column scroll (768–1199 px), single-column with top-tabs (<768 px).
 - `build.sh`, `release.sh` (cross-platform tarballs + checksums), and a distroless `Dockerfile`.
 - Screenshots captured against a live Hermes instance running on the same host (`docs/screenshots/`).
-- Bilingual (English / 中文) README and this CHANGELOG.
+- Bilingual (English / Simplified Chinese) README; this CHANGELOG is English-only.
 
 ### Known limitations
 - No multi-user or RBAC (single user by design for v1).
