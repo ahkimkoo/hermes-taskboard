@@ -177,6 +177,45 @@ docker run -d --name taskboard \
   hermes-taskboard:dev
 ```
 
+#### docker compose
+
+The same deployment with a folder-mapped data directory (`./taskboard-data` on the host → `/data` inside the container) — drop this `docker-compose.yml` anywhere convenient and `docker compose up -d`:
+
+```yaml
+services:
+  taskboard:
+    image: successage/hermes-taskboard:latest
+    container_name: taskboard
+    ports:
+      - "1900:1900"
+    volumes:
+      - ./taskboard-data:/data          # host folder → container's /data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # reach Hermes running on the host
+    restart: unless-stopped
+```
+
+First run (one-time): create the host folder and make it writable by the container's non-root user (distroless images run as UID 65532):
+
+```bash
+mkdir -p taskboard-data
+sudo chown 65532:65532 taskboard-data
+docker compose up -d
+```
+
+After that, everything — `data/config.yaml`, per-user dirs, the SQLite databases, attempt logs — lives in `./taskboard-data/` on the host. `rm -rf taskboard-data/{username}/` wipes a single user cleanly (see the [multi-user section](#multi-user-folder-level-pluggability)); `docker compose down && rm -rf taskboard-data` wipes everything.
+
+To upgrade, pull + recreate:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The per-user layout stays intact across restarts. If you're upgrading from a pre-v0.3.0 single-DB install, the first boot runs a one-shot migration that moves everything under `data/admin/` and archives the old DB to `data/_migrated-{timestamp}/`.
+
+#### Pointing taskboard at Hermes
+
 In the app's **Settings → Hermes Servers**, set `base_url` to `http://host.docker.internal:8642` (Hermes runs on the host, not inside the container).
 
 > **Security note**: When taskboard and Hermes share an OS user (typical local-dev setup), the Hermes agent — through its `terminal` / `execute_code` tools — has filesystem read access to `data/{username}/db/taskboard.db`. The encrypted API keys are safe at rest, but tag system prompts and task descriptions are plain text. For production, sandbox Hermes (separate container / OS user) so it can't reach taskboard's data dir.
@@ -399,7 +438,46 @@ docker run -d --name taskboard \
   hermes-taskboard:dev
 ```
 
-然后在设置里把 Hermes Server 的 `base_url` 填成 `http://host.docker.internal:8642` —— 因为 Hermes 跑在宿主机上，不在容器里。
+#### docker compose
+
+把宿主机的 `./taskboard-data` 目录映射到容器里的 `/data` —— 这样所有数据都落在你自己的文件夹,备份 / 迁移 / 清理都直接在宿主机操作即可。把下面的 `docker-compose.yml` 放到任意目录,`docker compose up -d` 就行:
+
+```yaml
+services:
+  taskboard:
+    image: successage/hermes-taskboard:latest
+    container_name: taskboard
+    ports:
+      - "1900:1900"
+    volumes:
+      - ./taskboard-data:/data          # 宿主机目录 → 容器内的 /data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # 让容器能访问到宿主机上的 Hermes
+    restart: unless-stopped
+```
+
+首次启动(一次性操作):先建好宿主机目录,并把属主改成容器里运行的非 root 用户(distroless 镜像里运行的 UID 是 65532):
+
+```bash
+mkdir -p taskboard-data
+sudo chown 65532:65532 taskboard-data
+docker compose up -d
+```
+
+之后所有东西 —— `data/config.yaml`、各用户目录、SQLite 数据库、attempt 事件日志 —— 都落在 `./taskboard-data/` 里。清掉某个用户只需 `rm -rf taskboard-data/{用户名}/`(参见 [多用户支持(目录级别可插拔)](#多用户支持目录级别可插拔) 一节);整体清空则 `docker compose down && rm -rf taskboard-data`。
+
+升级时 pull + 重建即可:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+重启不会破坏 per-user 布局。如果你是从 v0.3.0 之前的单 DB 版本升级过来,首次启动会跑一次性迁移,把全部内容挪到 `data/admin/` 下,旧 DB 归档到 `data/_migrated-{时间戳}/`。
+
+#### 让 taskboard 连接 Hermes
+
+在设置里把 Hermes Server 的 `base_url` 填成 `http://host.docker.internal:8642` —— 因为 Hermes 跑在宿主机上,不在容器里。
 
 > **安全提示**：当 taskboard 和 Hermes 跑在同一个 OS 用户下（典型本地开发场景）时，Hermes agent 通过 `terminal` / `execute_code` 工具有读取 `data/{username}/db/taskboard.db` 的能力。API key 是加密存的，但任务描述和标签 system prompt 是明文。生产环境请把 Hermes 隔离到独立容器/独立用户,使其无法访问 taskboard 的数据目录。
 
