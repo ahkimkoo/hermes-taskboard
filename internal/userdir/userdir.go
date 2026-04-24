@@ -230,6 +230,16 @@ func (m *Manager) Create(u *UserConfig) error {
 	if _, exists := m.users[u.Username]; exists {
 		return fmt.Errorf("user %q already exists", u.Username)
 	}
+	// Guard against clobbering a real user whose config.yaml failed to
+	// parse (LoadAll logs and skips those rather than erroring). Without
+	// this check, a corrupted admin/config.yaml would silently be
+	// overwritten by ensureDefaultAdmin on the next boot, destroying
+	// the real password hash, hermes_servers, and tags. Refuse loudly
+	// so the operator sees the problem instead.
+	existing := filepath.Join(m.Root, u.Username, "config.yaml")
+	if _, err := os.Stat(existing); err == nil {
+		return fmt.Errorf("user %q has an existing config.yaml at %s — refusing to overwrite. Fix or remove the file first.", u.Username, existing)
+	}
 	if u.CreatedAt.IsZero() {
 		u.CreatedAt = time.Now()
 	}

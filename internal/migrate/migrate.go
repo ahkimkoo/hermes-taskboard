@@ -71,14 +71,56 @@ func MigrateLegacy(dataDir string, cfgStore *config.Store, secret []byte, logger
 	if err != nil {
 		return err
 	}
+	// Legacy DB's `tags` table carried the tag metadata (name, color,
+	// system_prompt, and — from v0.3.0 onwards — owner_id + shared).
+	// Pull those rows out and inline them into admin's per-user config
+	// so tag prompts survive the move. Silently no-op when there's no
+	// legacy DB (e.g. migrating from a YAML-only install).
+	if fileExists(legacyDB) {
+		tags, err := readLegacyTags(legacyDB)
+		if err != nil {
+			logger.Warn("read legacy tags (continuing)", "err", err)
+		}
+		if len(tags) > 0 {
+			adminCfg.Tags = append(adminCfg.Tags, tags...)
+			logger.Info("migrated legacy tags into admin config", "count", len(tags))
+		}
+	}
 	// If data/admin/config.yaml somehow already exists (mid-migration
 	// crash, or operator added files manually), merge rather than
 	// clobber: keep the existing password + creation timestamp.
-	if existing, err := readUserConfig(filepath.Join(adminDir, "config.yaml")); err == nil {
+	//
+	// Three cases:
+	//   - file doesn't exist → fresh migration, use adminCfg as-is
+	//   - file exists + parses → merge (preserve hash/IsAdmin/created)
+	//   - file exists + corrupt → bail out; never overwrite an
+	//     unreadable config, operator needs to fix / remove it manually
+	adminCfgPath := filepath.Join(adminDir, "config.yaml")
+	if fileExists(adminCfgPath) {
+		existing, rerr := readUserConfig(adminCfgPath)
+		if rerr != nil {
+			return fmt.Errorf("existing %s is unreadable (%v) — refusing to overwrite. Fix or remove the file and retry migration.", adminCfgPath, rerr)
+		}
 		adminCfg.PasswordHash = existing.PasswordHash
 		adminCfg.IsAdmin = existing.IsAdmin
 		if !existing.CreatedAt.IsZero() {
 			adminCfg.CreatedAt = existing.CreatedAt
+		}
+		// Prepend any tags the existing admin already has so a re-run
+		// doesn't drop user-added tags on top of the migrated ones.
+		if len(existing.Tags) > 0 {
+			seen := map[string]bool{}
+			merged := make([]userdir.Tag, 0, len(existing.Tags)+len(adminCfg.Tags))
+			for _, t := range existing.Tags {
+				merged = append(merged, t)
+				seen[t.Name] = true
+			}
+			for _, t := range adminCfg.Tags {
+				if !seen[t.Name] {
+					merged = append(merged, t)
+				}
+			}
+			adminCfg.Tags = merged
 		}
 	}
 	if err := writeUserConfig(filepath.Join(adminDir, "config.yaml"), adminCfg); err != nil {
@@ -266,6 +308,90 @@ func buildAdminConfigFromLegacy(legacyPath string, secret []byte) (*userdir.User
 		Preferences:   prefs,
 		HermesServers: servers,
 	}, nil
+}
+
+// readLegacyTags pulls the `tags` table out of the legacy central DB
+// and returns userdir.Tag rows ready to merge into admin's per-user
+// config. Schema varies by vintage:
+//
+//   Pre-v0.3.0:  name, color, system_prompt
+//   v0.3.0-era:  name, color, system_prompt, owner_id, shared
+//
+// We probe PRAGMA table_info first so we can select the right column
+// set — an ALTER TABLE ADD COLUMN path that landed mid-cycle shouldn't
+// break migration from one of the in-between builds.
+func readLegacyTags(dbPath string) ([]userdir.Tag, error) {
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	hasShared, err := columnExists(db, "tags", "shared")
+	if err != nil {
+		// Table missing entirely is fine — means the legacy install
+		// never had any tags.
+		return nil, nil
+	}
+	q := `SELECT name, COALESCE(color,''), COALESCE(system_prompt,'')`
+	if hasShared {
+		q += `, COALESCE(shared, 0)`
+	}
+	q += ` FROM tags`
+	rows, err := db.Query(q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []userdir.Tag
+	for rows.Next() {
+		var t userdir.Tag
+		var shared int
+		if hasShared {
+			if err := rows.Scan(&t.Name, &t.Color, &t.SystemPrompt, &shared); err != nil {
+				return nil, err
+			}
+			t.Shared = shared != 0
+		} else {
+			if err := rows.Scan(&t.Name, &t.Color, &t.SystemPrompt); err != nil {
+				return nil, err
+			}
+		}
+		if t.Name == "" {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// columnExists returns true if table.col is present in the given DB.
+// Returns false (no error) when the table itself is missing — that's
+// "nothing to migrate", not an error.
+func columnExists(db *sql.DB, table, col string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	found := false
+	any := false
+	for rows.Next() {
+		any = true
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == col {
+			found = true
+		}
+	}
+	if !any {
+		return false, fmt.Errorf("no such table: %s", table)
+	}
+	return found, nil
 }
 
 func readUserConfig(path string) (*userdir.UserConfig, error) {

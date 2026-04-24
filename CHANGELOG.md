@@ -3,6 +3,22 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.6
+
+### Legacy migration now carries `tags` across too
+
+Earlier v0.3.x migration code only pulled `hermes_servers` out of the old global `config.yaml`. The central DB's `tags` table — which held each tag's name, color, and **system_prompt** — was never read, so tag prompts (e.g. the "notify me on QQ when finished" instruction attached to a tag) quietly disappeared when a pre-v0.3.0 install was upgraded. Fixed:
+
+- New `readLegacyTags` step runs before admin's per-user config is written; rows are injected into `adminCfg.Tags` with `system_prompt` + `color` + `shared` preserved.
+- Schema-aware: detects whether the legacy `tags` table has an `owner_id` / `shared` column (v0.3.0 era added them) and honours `shared` when present; defaults to `shared=false` on older schemas.
+- Re-run safe: when `data/admin/config.yaml` already exists (e.g. migration fired on a previous boot then admin added more tags), the merge prefers the existing row on name collisions and appends new ones from the legacy DB underneath.
+
+### Refuse to overwrite a corrupt per-user config
+
+`userdir.LoadAll` silently skips any `data/{username}/config.yaml` that fails to parse. That was dangerous — `ensureDefaultAdmin` could then see "no admin in cache" and create a fresh one, **overwriting the unreadable file and destroying the real password hash, Hermes servers, and tags in the process.**
+
+`userdir.Create` now checks disk before writing: if `data/{username}/config.yaml` already exists, it bails with a clear "refusing to overwrite — fix or remove the file first" error. The legacy-migration path has the same guard at admin's config write step. Operators see a loud startup failure instead of silent data loss.
+
 ## 2026-04-24 — v0.3.5
 
 ### Drop the per-user `id` — username is the sole identifier
