@@ -346,13 +346,14 @@ func readLegacyTags(dbPath string) ([]userdir.Tag, error) {
 	for rows.Next() {
 		var t userdir.Tag
 		var shared int
+		var color string // read-but-discarded; v0.3.7+ tag files don't carry color
 		if hasShared {
-			if err := rows.Scan(&t.Name, &t.Color, &t.SystemPrompt, &shared); err != nil {
+			if err := rows.Scan(&t.Name, &color, &t.SystemPrompt, &shared); err != nil {
 				return nil, err
 			}
 			t.Shared = shared != 0
 		} else {
-			if err := rows.Scan(&t.Name, &t.Color, &t.SystemPrompt); err != nil {
+			if err := rows.Scan(&t.Name, &color, &t.SystemPrompt); err != nil {
 				return nil, err
 			}
 		}

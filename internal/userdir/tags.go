@@ -1,22 +1,23 @@
 package userdir
 
-// Per-user tag storage: `data/{username}/tags/{sanitized}.{private|public}`.
+// Per-user tag storage: `data/{username}/tags/{filename}.{private|public}`.
 //
-//   Filename encodes (a) the sanitised display name (spaces → '-') and
-//   (b) whether the tag is visible to other users.
-//   File content is a tiny YAML holding the authoritative display name
-//   (so we can round-trip names that had spaces) + the system_prompt.
+// The filename IS the tag — no metadata wrapper inside. Spaces in a
+// display name get stored as '-' in the filename (so "Browser Skill"
+// becomes "Browser-Skill.private"). File contents are the raw
+// system_prompt text, operator-friendly for `cat` / `grep` / manual
+// edits. Missing file or empty contents means a tag with no prompt.
 //
 // Example:
 //
 //   data/admin/tags/
-//     企微通知.public
+//     企微通知.public       ← content: raw markdown system prompt
 //     浏览器.private
 //     Browser-Skill.public
 //
-// `.public` tags must be globally unique across all users — flipping
-// a private tag to public reads every other user's tags/ dir to look
-// for a collision.
+// `.public` tag names are globally unique across all users — the
+// flip-to-public and rename paths both check against every other
+// user's tags/ directory.
 
 import (
 	"errors"
@@ -25,16 +26,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
-
-// tagFile is the on-disk representation.
-type tagFile struct {
-	Name         string `yaml:"name"`
-	Color        string `yaml:"color,omitempty"`
-	SystemPrompt string `yaml:"system_prompt,omitempty"`
-}
 
 // tagsDir is the per-user tags/ directory.
 func (m *Manager) tagsDir(username string) string {
@@ -42,20 +34,15 @@ func (m *Manager) tagsDir(username string) string {
 }
 
 // sanitizeTagFilename turns a display name into a filesystem-safe basename.
-// Current rules:
-//   - whitespace runs collapse into a single '-'
-//   - leading/trailing whitespace trimmed
-//   - control chars / path separators rejected by ValidateTagName first,
-//     so we don't have to strip them here
+// Whitespace runs collapse to a single '-'; other chars pass through.
+// ValidateTagName has already rejected control chars / path separators
+// by the time we call this.
 func sanitizeTagFilename(name string) string {
-	name = strings.TrimSpace(name)
-	// Replace any whitespace with '-'. Using Fields+Join collapses runs.
-	parts := strings.Fields(name)
+	parts := strings.Fields(strings.TrimSpace(name))
 	return strings.Join(parts, "-")
 }
 
 // ValidateTagName rejects names that would be confusing or unsafe on disk.
-// Returns a nil error when name is OK to use.
 func ValidateTagName(name string) error {
 	n := strings.TrimSpace(name)
 	if n == "" {
@@ -88,9 +75,22 @@ func (m *Manager) tagPath(username, name string, shared bool) string {
 	return filepath.Join(m.tagsDir(username), sanitizeTagFilename(name)+"."+suffix)
 }
 
+// displayNameFromFilename strips the .private/.public suffix and returns
+// the name as stored on disk. Hyphens coming from sanitisation stay as
+// hyphens — we don't try to reverse the spaces→'-' mapping because it
+// would corrupt names that legitimately contain hyphens.
+func displayNameFromFilename(basename string) (name string, shared bool, ok bool) {
+	switch {
+	case strings.HasSuffix(basename, ".public"):
+		return strings.TrimSuffix(basename, ".public"), true, true
+	case strings.HasSuffix(basename, ".private"):
+		return strings.TrimSuffix(basename, ".private"), false, true
+	}
+	return "", false, false
+}
+
 // ListTagsOfUser scans data/{username}/tags/ and returns the tags it
-// finds. Returns a non-nil empty slice when the directory is missing
-// (fresh user, never added a tag yet).
+// finds. Returns a non-nil empty slice when the directory is missing.
 func (m *Manager) ListTagsOfUser(username string) ([]Tag, error) {
 	dir := m.tagsDir(username)
 	entries, err := os.ReadDir(dir)
@@ -105,64 +105,37 @@ func (m *Manager) ListTagsOfUser(username string) ([]Tag, error) {
 		if e.IsDir() {
 			continue
 		}
-		n := e.Name()
-		var shared bool
-		switch {
-		case strings.HasSuffix(n, ".public"):
-			shared = true
-		case strings.HasSuffix(n, ".private"):
-			shared = false
-		default:
-			continue // ignore stray files
+		name, shared, ok := displayNameFromFilename(e.Name())
+		if !ok {
+			continue // ignore stray files without our suffix
 		}
-		t, err := m.readTagFile(filepath.Join(dir, n), shared)
+		body, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
-			// Don't nuke the whole list because one file is corrupt;
-			// skip + keep going so the rest still load.
+			// Don't tank the whole list because one file is unreadable.
 			continue
 		}
-		out = append(out, t)
+		out = append(out, Tag{
+			Name:         name,
+			SystemPrompt: string(body),
+			Shared:       shared,
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
-func (m *Manager) readTagFile(path string, shared bool) (Tag, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return Tag{}, err
-	}
-	var tf tagFile
-	if err := yaml.Unmarshal(b, &tf); err != nil {
-		return Tag{}, fmt.Errorf("parse %s: %w", filepath.Base(path), err)
-	}
-	if tf.Name == "" {
-		// Fallback: derive from filename (strip .private/.public).
-		base := filepath.Base(path)
-		base = strings.TrimSuffix(base, ".private")
-		base = strings.TrimSuffix(base, ".public")
-		tf.Name = base
-	}
-	return Tag{
-		Name:         tf.Name,
-		Color:        tf.Color,
-		SystemPrompt: tf.SystemPrompt,
-		Shared:       shared,
-	}, nil
-}
-
-// GetTagOfUser reads one tag by name out of a user's tags/ directory.
-// Returns (Tag{}, false, nil) when not found. The name lookup is
-// authoritative — we scan files instead of trusting the sanitised
-// filename — so display names that differ only in whitespace layout
-// (e.g. "Browser Skill" vs "Browser  Skill") are resolved correctly.
+// GetTagOfUser reads one tag by display name. Lookup compares against
+// the on-disk name (derived from filename), so it correctly returns
+// hits for both the sanitised form ("Browser-Skill") and the raw form
+// if the user stored spaces (though the standard path rewrites spaces).
 func (m *Manager) GetTagOfUser(username, name string) (Tag, bool, error) {
 	tags, err := m.ListTagsOfUser(username)
 	if err != nil {
 		return Tag{}, false, err
 	}
+	sanitised := sanitizeTagFilename(name)
 	for _, t := range tags {
-		if t.Name == name {
+		if t.Name == name || t.Name == sanitised {
 			return t, true, nil
 		}
 	}
@@ -170,10 +143,10 @@ func (m *Manager) GetTagOfUser(username, name string) (Tag, bool, error) {
 }
 
 // IsPublicTagNameTaken returns true when any user OTHER than excludeOwner
-// owns a `.public` tag with the exact display name. Used to gate both
-// "create a public tag" and "flip a private tag to public" — both must
-// fail when another user has already claimed the name globally.
+// owns a `.public` tag with the exact sanitised filename. Gates create +
+// rename + flip-to-public so two users can't claim the same public slot.
 func (m *Manager) IsPublicTagNameTaken(name, excludeOwner string) (bool, string, error) {
+	want := sanitizeTagFilename(name)
 	m.mu.RLock()
 	owners := make([]string, 0, len(m.users))
 	for u := range m.users {
@@ -189,7 +162,7 @@ func (m *Manager) IsPublicTagNameTaken(name, excludeOwner string) (bool, string,
 			return false, "", err
 		}
 		for _, t := range tags {
-			if t.Shared && t.Name == name {
+			if t.Shared && sanitizeTagFilename(t.Name) == want {
 				return true, u, nil
 			}
 		}
@@ -197,18 +170,19 @@ func (m *Manager) IsPublicTagNameTaken(name, excludeOwner string) (bool, string,
 	return false, "", nil
 }
 
-// TagUpsertRequest describes a create-or-update operation. If oldName
-// is non-empty and differs from tag.Name, the old file is removed as
-// part of the upsert (rename).
+// TagUpsertRequest describes a create-or-update operation. If OldName
+// is non-empty and differs from Tag.Name (after sanitisation) OR the
+// shared flag flipped, the stale file gets removed as part of the
+// write so the new filename replaces it cleanly.
 type TagUpsertRequest struct {
-	OldName string // empty when creating new; the current display name when editing
+	OldName string
 	Tag     Tag
 }
 
-// UpsertTagOfUser validates + writes a tag file. Enforces global name
-// uniqueness for `.public` tags. When a tag changes name or sharing
-// status, the stale file is removed so the new filename replaces it
-// cleanly.
+// UpsertTagOfUser writes the tag's system_prompt as the file body at
+// data/{owner}/tags/{name-with-spaces-as-hyphens}.{private|public}.
+// Public-name uniqueness is checked first — collision errors out
+// before any disk write happens.
 func (m *Manager) UpsertTagOfUser(ownerUsername string, req TagUpsertRequest) error {
 	if err := ValidateTagName(req.Tag.Name); err != nil {
 		return err
@@ -217,7 +191,7 @@ func (m *Manager) UpsertTagOfUser(ownerUsername string, req TagUpsertRequest) er
 		if taken, otherOwner, err := m.IsPublicTagNameTaken(req.Tag.Name, ownerUsername); err != nil {
 			return err
 		} else if taken {
-			return fmt.Errorf("a shared tag named %q already exists (owner: %s) — rename yours before making it public", req.Tag.Name, otherOwner)
+			return fmt.Errorf("a shared tag named %q already exists (owner: %s) — rename yours before making it public", sanitizeTagFilename(req.Tag.Name), otherOwner)
 		}
 	}
 	dir := m.tagsDir(ownerUsername)
@@ -225,38 +199,24 @@ func (m *Manager) UpsertTagOfUser(ownerUsername string, req TagUpsertRequest) er
 		return err
 	}
 
-	// Compute old + new paths so we can remove the stale file on
-	// rename / shared-flag flip. On a pure content edit (same name +
-	// same shared) newPath == oldPath and the rename is a no-op.
 	var oldPath string
 	if req.OldName != "" {
-		// Look up the old file on disk because we don't know the old
-		// shared state otherwise.
-		oldTag, found, err := m.GetTagOfUser(ownerUsername, req.OldName)
-		if err != nil {
-			return err
-		}
-		if found {
+		if oldTag, found, err := m.GetTagOfUser(ownerUsername, req.OldName); err == nil && found {
 			oldPath = m.tagPath(ownerUsername, oldTag.Name, oldTag.Shared)
 		}
 	}
 	newPath := m.tagPath(ownerUsername, req.Tag.Name, req.Tag.Shared)
 
-	// If renaming INTO a slot already occupied by a different tag,
-	// refuse. Same-path write (pure edit) is fine.
-	if _, err := os.Stat(newPath); err == nil && newPath != oldPath {
-		return fmt.Errorf("another tag already lives at %s — pick a different name", filepath.Base(newPath))
+	// Refuse to write if another distinct tag already occupies the
+	// destination — protects against a rename silently stomping an
+	// unrelated file.
+	if newPath != oldPath {
+		if _, err := os.Stat(newPath); err == nil {
+			return fmt.Errorf("another tag already lives at %s — pick a different name", filepath.Base(newPath))
+		}
 	}
 
-	body, err := yaml.Marshal(tagFile{
-		Name:         req.Tag.Name,
-		Color:        req.Tag.Color,
-		SystemPrompt: req.Tag.SystemPrompt,
-	})
-	if err != nil {
-		return err
-	}
-	if err := atomicWrite(newPath, body, 0o600); err != nil {
+	if err := atomicWrite(newPath, []byte(req.Tag.SystemPrompt), 0o600); err != nil {
 		return err
 	}
 	if oldPath != "" && oldPath != newPath {
@@ -265,8 +225,8 @@ func (m *Manager) UpsertTagOfUser(ownerUsername string, req TagUpsertRequest) er
 	return nil
 }
 
-// DeleteTagOfUser removes the tag file matching `name`. Ignores a
-// missing file (returns nil) so re-delete is safe.
+// DeleteTagOfUser removes the tag file for a given display name.
+// Missing file is a no-op (redelete safe).
 func (m *Manager) DeleteTagOfUser(ownerUsername, name string) error {
 	t, found, err := m.GetTagOfUser(ownerUsername, name)
 	if err != nil {
@@ -278,11 +238,11 @@ func (m *Manager) DeleteTagOfUser(ownerUsername, name string) error {
 	return os.Remove(m.tagPath(ownerUsername, t.Name, t.Shared))
 }
 
-// migrateInlineTags pulls any `tags:` list embedded in a legacy
+// migrateInlineTags pulls any legacy `tags:` list embedded in a user's
 // config.yaml into the new per-file layout. Idempotent: writes only
 // for tag names that don't already have a file on disk, then clears
-// the cached slice and rewrites config.yaml so the next save drops
-// the key. Returns the count of tags materialised.
+// the cached slice so the next Mutate drops the key from the yaml.
+// Returns the count of tags materialised.
 func (m *Manager) migrateInlineTags(username string) (int, error) {
 	m.mu.Lock()
 	u, ok := m.users[username]
@@ -307,30 +267,17 @@ func (m *Manager) migrateInlineTags(username string) (int, error) {
 			continue
 		}
 		if err := ValidateTagName(t.Name); err != nil {
-			// Skip bogus names rather than abort the whole migration.
 			continue
 		}
 		p := m.tagPath(username, t.Name, t.Shared)
 		if _, err := os.Stat(p); err == nil {
-			// File-backed tag already there — don't stomp the disk
-			// copy on re-run.
-			continue
+			continue // already migrated; don't stomp disk copy on re-run
 		}
-		body, err := yaml.Marshal(tagFile{
-			Name:         t.Name,
-			Color:        t.Color,
-			SystemPrompt: t.SystemPrompt,
-		})
-		if err != nil {
-			return written, err
-		}
-		if err := atomicWrite(p, body, 0o600); err != nil {
+		if err := atomicWrite(p, []byte(t.SystemPrompt), 0o600); err != nil {
 			return written, err
 		}
 		written++
 	}
-	// Clear the inline list + rewrite config.yaml so the legacy key
-	// drops out.
 	if err := m.Mutate(username, func(uc *UserConfig) error {
 		uc.Tags = nil
 		return nil

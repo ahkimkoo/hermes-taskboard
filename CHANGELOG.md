@@ -3,6 +3,27 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.8
+
+### Tag files drop the YAML wrapper — contents are just the prompt
+
+v0.3.7 wrote each tag as a small YAML file with `name:` / `color:` / `system_prompt:` keys. Overkill: the filename already encodes the name, color had no UI ever, and wrapping the prompt text in YAML made `cat tags/foo.public` harder to read than it needed to be.
+
+v0.3.8 stores each tag as **just the raw system_prompt text**. File name = tag name (spaces → `-`) + `.private` / `.public`. File body = the prompt, verbatim. Nothing else. `Tag.Color` is gone from the Go struct + the frontend stopped sending it. Existing YAML-wrapped files from v0.3.7 need a one-liner to rewrite as plain text:
+
+```bash
+python3 -c '
+import os, yaml
+for fn in os.listdir("tags"):
+    if not fn.endswith((".private",".public")): continue
+    with open(f"tags/{fn}") as f: d = yaml.safe_load(f.read())
+    if isinstance(d, dict) and "system_prompt" in d:
+        with open(f"tags/{fn}","w") as f: f.write(d.get("system_prompt") or "")
+'
+```
+
+(Run this once per user's `data/{username}/tags/` dir; harmless on already-plain files.)
+
 ## 2026-04-24 — v0.3.7
 
 ### Tags move out of `config.yaml` into per-file storage

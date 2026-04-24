@@ -90,12 +90,14 @@ type HermesModel struct {
 }
 
 // Tag is a user-owned label with an optional system prompt. Shared
-// tags appear in other users' tag lists as read-only.
+// tags appear in other users' tag lists as read-only. The on-disk
+// representation is `data/{username}/tags/{name}.{private|public}`
+// where the filename is the tag name (spaces → '-') and the file
+// contents are the raw system_prompt text — no metadata wrappers.
 type Tag struct {
-	Name         string `yaml:"name" json:"name"`
-	Color        string `yaml:"color,omitempty" json:"color"`
-	SystemPrompt string `yaml:"system_prompt,omitempty" json:"system_prompt"`
-	Shared       bool   `yaml:"shared,omitempty" json:"shared"`
+	Name         string `json:"name"`
+	SystemPrompt string `json:"system_prompt"`
+	Shared       bool   `json:"shared"`
 }
 
 // Manager caches every user config in memory and guards the on-disk

@@ -1142,7 +1142,7 @@ API_SERVER_PORT=8642</pre>
       // so the stale on-disk file gets removed + a public uniqueness
       // check runs against the new name. Blank for "new tag".
       if (tag) this.tagEdit = { ...tag, __edit: true, __origName: tag.name };
-      else this.tagEdit = { name: '', color: '', system_prompt: '', shared: false, __origName: '' };
+      else this.tagEdit = { name: '', system_prompt: '', shared: false, __origName: '' };
     },
     tagIsMine(tag) {
       // Backend now flags ownership explicitly: viewer's own tags come
@@ -1156,7 +1156,6 @@ API_SERVER_PORT=8642</pre>
       try {
         await api('/api/tags', { method: 'POST', body: {
           name: this.tagEdit.name.trim(),
-          color: this.tagEdit.color || '',
           system_prompt: this.tagEdit.system_prompt || '',
           shared: !!this.tagEdit.shared,
           old_name: this.tagEdit.__origName || '',
