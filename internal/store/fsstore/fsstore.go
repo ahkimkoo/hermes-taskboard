@@ -1,6 +1,7 @@
 package fsstore
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -213,15 +214,92 @@ func (f *FS) ReadEventsRange(attemptID string, sinceSeq uint64, limit int) ([]ma
 }
 
 // ReadEventsTail returns the last `n` events (in ascending order).
+// Chunk-reads backwards from EOF instead of loading the whole log:
+// for a 50 MB events.ndjson asking for tail=30 the naïve approach
+// parsed every line (hundreds of ms); this reads ~64 KB from the end,
+// finds the last n line boundaries, and decodes just those.
 func (f *FS) ReadEventsTail(attemptID string, n int) ([]map[string]any, error) {
-	all, err := f.ReadEventsRange(attemptID, 0, 0)
+	if n <= 0 {
+		return nil, nil
+	}
+	file, err := os.Open(f.eventsPath(attemptID))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer file.Close()
+	st, err := file.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if len(all) <= n || n <= 0 {
-		return all, nil
+	size := st.Size()
+	if size == 0 {
+		return nil, nil
 	}
-	return all[len(all)-n:], nil
+
+	const chunk = 64 * 1024
+	var buf []byte
+	var offset = size
+	for offset > 0 && countNewlines(buf) < n+1 {
+		readSize := int64(chunk)
+		if readSize > offset {
+			readSize = offset
+		}
+		offset -= readSize
+		segment := make([]byte, readSize)
+		if _, err := file.ReadAt(segment, offset); err != nil && err != io.EOF {
+			return nil, err
+		}
+		buf = append(segment, buf...)
+	}
+
+	// Drop a potentially-partial first line when we didn't read from 0.
+	start := 0
+	if offset > 0 {
+		if nl := indexNewline(buf); nl >= 0 {
+			start = nl + 1
+		}
+	}
+
+	events := decodeNDJSON(buf[start:])
+	if len(events) > n {
+		events = events[len(events)-n:]
+	}
+	return events, nil
+}
+
+func countNewlines(b []byte) int {
+	c := 0
+	for _, x := range b {
+		if x == '\n' {
+			c++
+		}
+	}
+	return c
+}
+
+func indexNewline(b []byte) int {
+	for i, x := range b {
+		if x == '\n' {
+			return i
+		}
+	}
+	return -1
+}
+
+func decodeNDJSON(b []byte) []map[string]any {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	var out []map[string]any
+	for {
+		var m map[string]any
+		if err := dec.Decode(&m); err != nil {
+			break // EOF or a malformed trailing record — either way, stop
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // ReadEventsBefore returns up to `limit` events with seq < beforeSeq (ascending).
