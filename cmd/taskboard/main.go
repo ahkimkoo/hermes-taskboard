@@ -84,6 +84,17 @@ func main() {
 		logger.Error("load userdir", "err", err)
 		os.Exit(1)
 	}
+	// Legacy upgrade path: v0.3.6 and earlier kept `tags: [...]` inline
+	// in each user's config.yaml. v0.3.7 moved them to per-file storage
+	// under data/{username}/tags/{name}.{private|public}. This pulls
+	// any inline list forward one time and rewrites the YAML without
+	// the key. No-op on already-migrated installs.
+	if n, err := users.MigrateAllInlineTags(); err != nil {
+		logger.Error("migrate inline tags", "err", err)
+		os.Exit(1)
+	} else if n > 0 {
+		logger.Info("migrated legacy inline tags into files", "count", n)
+	}
 
 	if *resetAdmin {
 		if err := resetAdminPassword(users, logger); err != nil {

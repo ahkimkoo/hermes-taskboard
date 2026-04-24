@@ -1098,7 +1098,7 @@ API_SERVER_PORT=8642</pre>
                   <h4>{{ tagEdit.__edit ? $t('action.edit_tag') : $t('action.new_tag') }}</h4>
                   <div class="form-row">
                     <label>{{ $t('th.name') }} <span class="required">*</span></label>
-                    <input type="text" v-model="tagEdit.name" :disabled="tagEdit.__edit" placeholder="backend">
+                    <input type="text" v-model="tagEdit.name" placeholder="backend">
                   </div>
                   <div class="form-row">
                     <label>
@@ -1138,8 +1138,11 @@ API_SERVER_PORT=8642</pre>
       catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
     tagEditInit(tag) {
-      if (tag) this.tagEdit = { ...tag, __edit: true };
-      else this.tagEdit = { name: '', color: '', system_prompt: '', shared: false };
+      // __origName lets the server spot a rename (new name ≠ old name)
+      // so the stale on-disk file gets removed + a public uniqueness
+      // check runs against the new name. Blank for "new tag".
+      if (tag) this.tagEdit = { ...tag, __edit: true, __origName: tag.name };
+      else this.tagEdit = { name: '', color: '', system_prompt: '', shared: false, __origName: '' };
     },
     tagIsMine(tag) {
       // Backend now flags ownership explicitly: viewer's own tags come
@@ -1156,6 +1159,7 @@ API_SERVER_PORT=8642</pre>
           color: this.tagEdit.color || '',
           system_prompt: this.tagEdit.system_prompt || '',
           shared: !!this.tagEdit.shared,
+          old_name: this.tagEdit.__origName || '',
         }});
         this.tagEdit = null;
         await this.reloadTags();

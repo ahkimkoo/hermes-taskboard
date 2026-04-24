@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -798,11 +799,29 @@ func (s *Server) hCreateServer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errors.New("id and base_url required"))
 		return
 	}
-	// Server IDs must be globally unique across users so the Hermes pool
-	// can key clients by ID alone.
-	if owner, _, _, found := s.Users.FindServer(me.Username, req.ID); found {
-		writeErr(w, 409, fmt.Errorf("server id %q already exists (owner: %s)", req.ID, owner))
-		return
+	// Only SHARED server ids have to be globally unique (hermes.Pool
+	// keys clients by id, so two users exposing the same shared id
+	// would collide). Private ids may repeat — each owner's private
+	// server routes through their own api_key regardless.
+	if req.Shared {
+		if taken, otherOwner := s.Users.IsPublicServerIDTaken(req.ID, me.Username); taken {
+			writeErr(w, 409, fmt.Errorf("a shared server with id %q already exists (owner: %s) — rename the id before making this one shared", req.ID, otherOwner))
+			return
+		}
+	}
+	// Same-user duplicate-id check: prevent the owner from adding two
+	// entries with the same id inside their own config.
+	for _, sv := range func() []userdir.HermesServer {
+		u, _ := s.Users.Get(me.Username)
+		if u == nil {
+			return nil
+		}
+		return u.HermesServers
+	}() {
+		if sv.ID == req.ID {
+			writeErr(w, 409, fmt.Errorf("you already have a server with id %q", req.ID))
+			return
+		}
 	}
 	err := s.Users.Mutate(me.Username, func(uc *userdir.UserConfig) error {
 		for _, sv := range uc.HermesServers {
@@ -865,7 +884,7 @@ func (s *Server) hUpdateServer(w http.ResponseWriter, r *http.Request, id string
 		writeErr(w, 401, errors.New("unauthorized"))
 		return
 	}
-	owner, _, _, found := s.Users.FindServer(me.Username, id)
+	owner, existing, _, found := s.Users.FindServer(me.Username, id)
 	if !found || owner != me.Username {
 		writeErr(w, 404, errors.New("not found"))
 		return
@@ -874,6 +893,16 @@ func (s *Server) hUpdateServer(w http.ResponseWriter, r *http.Request, id string
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err)
 		return
+	}
+	// Private → shared transition (or a shared server's id is being
+	// rebounded somehow — not currently possible via this API since
+	// id is immutable in the URL path, but future-proof the check
+	// anyway). Scan other users' shared servers for the same id.
+	if req.Shared && !existing.Shared {
+		if taken, otherOwner := s.Users.IsPublicServerIDTaken(id, me.Username); taken {
+			writeErr(w, 409, fmt.Errorf("a shared server with id %q already exists (owner: %s) — rename the id before making this one shared", id, otherOwner))
+			return
+		}
 	}
 	err := s.Users.Mutate(me.Username, func(uc *userdir.UserConfig) error {
 		for i := range uc.HermesServers {
@@ -1005,41 +1034,47 @@ func (s *Server) hListTags(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"tags": s.Users.VisibleTags(u.Username)})
 }
 
+// upsertTagReq adds an optional old_name field so the frontend can
+// rename a tag (change its display name or shared state) without
+// losing the stale file. Backwards-compatible: if old_name is
+// omitted, server treats this as a pure create/edit on `name`.
+type upsertTagReq struct {
+	userdir.Tag
+	OldName string `json:"old_name"`
+}
+
 func (s *Server) hUpsertTag(w http.ResponseWriter, r *http.Request) {
 	me := auth.UserFromContext(r.Context())
 	if me == nil {
 		writeErr(w, 401, errors.New("unauthorized"))
 		return
 	}
-	var t userdir.Tag
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+	var req upsertTagReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	t.Name = strings.TrimSpace(t.Name)
-	if t.Name == "" {
-		writeErr(w, 400, errors.New("tag name required"))
+	req.Name = strings.TrimSpace(req.Name)
+	if err := userdir.ValidateTagName(req.Name); err != nil {
+		writeErr(w, 400, err)
 		return
 	}
-	// Only allowed to edit if no one else owns this tag name, OR it's mine.
-	if owner, _, _, found := s.Users.TagByName(me.Username, t.Name); found && owner != me.Username {
+	// If the client specified an old_name different from the new one
+	// this is a rename — verify the caller owns the old one so we
+	// don't let user A "rename" user B's tag out from under them.
+	lookupName := req.Name
+	if req.OldName != "" && req.OldName != req.Name {
+		lookupName = req.OldName
+	}
+	if owner, _, _, found := s.Users.TagByName(me.Username, lookupName); found && owner != me.Username {
 		writeErr(w, 403, errors.New("tag owned by another user"))
 		return
 	}
-	err := s.Users.Mutate(me.Username, func(uc *userdir.UserConfig) error {
-		for i := range uc.Tags {
-			if uc.Tags[i].Name == t.Name {
-				uc.Tags[i].Color = t.Color
-				uc.Tags[i].SystemPrompt = t.SystemPrompt
-				uc.Tags[i].Shared = t.Shared
-				return nil
-			}
-		}
-		uc.Tags = append(uc.Tags, t)
-		return nil
-	})
-	if err != nil {
-		writeErr(w, 500, err)
+	if err := s.Users.UpsertTagOfUser(me.Username, userdir.TagUpsertRequest{
+		OldName: req.OldName,
+		Tag:     req.Tag,
+	}); err != nil {
+		writeErr(w, 400, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
@@ -1056,30 +1091,27 @@ func (s *Server) hDeleteTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/api/tags/")
+	// URL-decode so shared/public names with non-ASCII chars work.
+	if decoded, err := urlDecode(name); err == nil {
+		name = decoded
+	}
 	owner, _, _, found := s.Users.TagByName(me.Username, name)
 	if !found || owner != me.Username {
 		writeErr(w, 404, errors.New("not found"))
 		return
 	}
-	err := s.Users.Mutate(me.Username, func(uc *userdir.UserConfig) error {
-		idx := -1
-		for i := range uc.Tags {
-			if uc.Tags[i].Name == name {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
-			return errors.New("not found")
-		}
-		uc.Tags = append(uc.Tags[:idx], uc.Tags[idx+1:]...)
-		return nil
-	})
-	if err != nil {
-		writeErr(w, 400, err)
+	if err := s.Users.DeleteTagOfUser(me.Username, name); err != nil {
+		writeErr(w, 500, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// urlDecode wraps net/url.QueryUnescape for the one place in this file
+// that needs it. Imported here rather than at the top to keep the
+// scope visible.
+func urlDecode(s string) (string, error) {
+	return url.QueryUnescape(s)
 }
 
 // ---------------- settings / preferences ----------------

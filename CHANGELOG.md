@@ -3,6 +3,43 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.7
+
+### Tags move out of `config.yaml` into per-file storage
+
+Tag `system_prompt` bodies can run into hundreds of lines — keeping them inline in `data/{username}/config.yaml` made the file awkward to read. v0.3.7 gives each tag its own file:
+
+```
+data/admin/tags/
+  企微通知.public            # shared (visible to every user)
+  浏览器.private             # private
+  Browser-Skill.public       # display name "Browser Skill" → filename "Browser-Skill"
+```
+
+- Filename: `{display-name-with-spaces-replaced-by-hyphens}.{private|public}`. The extension encodes visibility so `ls` tells you at a glance; spaces → `-` gives uniform basenames for shell globbing.
+- File content: a tiny YAML carrying the authoritative `name:` (so round-tripping "Browser Skill" doesn't lose the space) + `color:` + `system_prompt:`.
+- Operators can `cat data/admin/tags/企微通知.public` to see the prompt as raw text. Editing the file directly works for power-user tweaks — the next mutation through the UI rewrites it.
+
+Legacy upgrade path: any user with a `tags: [...]` list still inline in their `config.yaml` gets pulled forward on boot (`MigrateAllInlineTags`), with individual files written under `tags/` and the YAML key dropped. Idempotent — re-runs don't clobber files already on disk.
+
+### Global uniqueness enforced on `.public` tags
+
+A shared tag name must be unique across every user. Create + rename + flip-to-public all check — if the name already exists as another user's public tag, the operation is refused with a specific error:
+
+> a shared tag named "notes" already exists (owner: admin) — rename yours before making it public
+
+Private tag names may still overlap freely — two users can each have their own `notes` as long as both stay private.
+
+### Same rule for shared Hermes servers
+
+Server IDs were previously always required to be globally unique. That was overly strict: private servers route through their owner's api_key regardless of id. v0.3.7 relaxes it to "only **shared** server ids must be globally unique". Trying to create / flip-to-shared an id already in use by another shared server returns 409 with an owner hint.
+
+Also fixed a latent bug where `userdir.FindServer` would hit map-iteration order and pick another user's shared server over the viewer's own private one with the same id. Viewer's own row now always wins the lookup, so a flip-to-shared properly surfaces "id taken" against the collision.
+
+### Frontend: tag editor now allows renaming
+
+The tag name input was hard-disabled during edit. Now the input is free-form, and the frontend sends `old_name` alongside the new name so the server can remove the stale file + run the public-uniqueness gate. Same form works for pure content edits — if the name didn't change, server treats it as a no-op rename.
+
 ## 2026-04-24 — v0.3.6
 
 ### Legacy migration now carries `tags` across too

@@ -35,7 +35,12 @@ import (
 
 // UserConfig is the serialised shape of data/{username}/config.yaml.
 // Username (= directory name) is the sole identifier; no separate UUID
-// is stored. If you need to rename, delete + recreate.
+// is stored. Tags moved out of this struct in v0.3.7 and now live as
+// individual files under data/{username}/tags/; the Tags field below
+// is kept ONLY so legacy configs that still carry a `tags:` list can
+// be read long enough for MigrateAllInlineTags to materialise them.
+// The `omitempty` + `json:"-"` combination means: never serialise to
+// the yaml on save, never expose over HTTP.
 type UserConfig struct {
 	Username      string         `yaml:"username" json:"username"`
 	PasswordHash  string         `yaml:"password_hash" json:"-"`
@@ -43,7 +48,7 @@ type UserConfig struct {
 	CreatedAt     time.Time      `yaml:"created_at" json:"created_at"`
 	Preferences   Preferences    `yaml:"preferences" json:"preferences"`
 	HermesServers []HermesServer `yaml:"hermes_servers" json:"hermes_servers"`
-	Tags          []Tag          `yaml:"tags" json:"tags"`
+	Tags          []Tag          `yaml:"tags,omitempty" json:"-"`
 }
 
 // Preferences: per-user display / sound / language choices.
@@ -248,7 +253,7 @@ func (m *Manager) Create(u *UserConfig) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	for _, sub := range []string{"db", "task", "attempt"} {
+	for _, sub := range []string{"db", "task", "attempt", "tags"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
 			return fmt.Errorf("mkdir %s/%s: %w", u.Username, sub, err)
 		}
@@ -450,24 +455,53 @@ func (m *Manager) VisibleServers(viewerUsername string) []ServerView {
 	return out
 }
 
-// FindServer looks up a server by id across all users. Returns the
-// owning username + a copy of the row, plus a flag indicating whether
-// `viewer` may use it (owner or shared).
+// FindServer looks up a server by id. Checks the viewer's own config
+// FIRST (so a private server of theirs doesn't get shadowed by another
+// user's shared server sharing the same id), then other users' shared
+// entries. Returns the owning username, a copy of the row, and a flag
+// indicating whether `viewer` may use it (owner or shared=true).
 func (m *Manager) FindServer(viewer, id string) (owner string, sv HermesServer, usable, found bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for name, u := range m.users {
+	if u, ok := m.users[viewer]; ok {
 		for _, s := range u.HermesServers {
 			if s.ID == id {
-				owner = name
-				sv = s
-				found = true
-				usable = name == viewer || s.Shared
-				return
+				return viewer, s, true, true
 			}
 		}
 	}
-	return
+	for name, u := range m.users {
+		if name == viewer {
+			continue
+		}
+		for _, s := range u.HermesServers {
+			if s.ID == id && s.Shared {
+				return name, s, true, true
+			}
+		}
+	}
+	return "", HermesServer{}, false, false
+}
+
+// IsPublicServerIDTaken reports whether any user OTHER than
+// excludeOwner has a `shared=true` Hermes server with the given id.
+// Gate for "create shared server" + "flip private to shared" so the
+// hermes.Pool (which keys clients by id globally) never sees a
+// collision between two users' public servers.
+func (m *Manager) IsPublicServerIDTaken(id, excludeOwner string) (bool, string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for name, u := range m.users {
+		if name == excludeOwner {
+			continue
+		}
+		for _, s := range u.HermesServers {
+			if s.Shared && s.ID == id {
+				return true, name
+			}
+		}
+	}
+	return false, ""
 }
 
 // TagView is the tag DTO with ownership tacked on.
@@ -477,52 +511,58 @@ type TagView struct {
 	Mine          bool   `json:"mine"`
 }
 
-// VisibleTags — viewer's tags + every other user's shared tags.
+// VisibleTags — viewer's tags + every other user's `.public` tags.
+// Reads from disk (data/{username}/tags/*.{private,public}).
 func (m *Manager) VisibleTags(viewerUsername string) []TagView {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
 	out := []TagView{}
-	me, ok := m.users[viewerUsername]
-	if ok {
-		for _, t := range me.Tags {
-			out = append(out, TagView{Tag: t, OwnerUsername: me.Username, Mine: true})
+	if mine, err := m.ListTagsOfUser(viewerUsername); err == nil {
+		for _, t := range mine {
+			out = append(out, TagView{Tag: t, OwnerUsername: viewerUsername, Mine: true})
 		}
 	}
-	for name, u := range m.users {
+	m.mu.RLock()
+	others := make([]string, 0, len(m.users))
+	for name := range m.users {
 		if name == viewerUsername {
 			continue
 		}
-		for _, t := range u.Tags {
+		others = append(others, name)
+	}
+	m.mu.RUnlock()
+	for _, u := range others {
+		tags, err := m.ListTagsOfUser(u)
+		if err != nil {
+			continue
+		}
+		for _, t := range tags {
 			if !t.Shared {
 				continue
 			}
-			out = append(out, TagView{Tag: t, OwnerUsername: u.Username, Mine: false})
+			out = append(out, TagView{Tag: t, OwnerUsername: u, Mine: false})
 		}
 	}
 	return out
 }
 
 // TagByName returns a tag (and its owner) visible to viewer. Returns
-// found=false when the name doesn't exist in viewer's own list and in
-// no shared list from other users.
+// found=false when the name doesn't exist in viewer's own tags and in
+// no shared tag from other users.
 func (m *Manager) TagByName(viewer, name string) (owner string, tag Tag, mine, found bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if u, ok := m.users[viewer]; ok {
-		for _, t := range u.Tags {
-			if t.Name == name {
-				return viewer, t, true, true
-			}
-		}
+	if t, ok, _ := m.GetTagOfUser(viewer, name); ok {
+		return viewer, t, true, true
 	}
-	for uname, u := range m.users {
-		if uname == viewer {
+	m.mu.RLock()
+	others := make([]string, 0, len(m.users))
+	for u := range m.users {
+		if u == viewer {
 			continue
 		}
-		for _, t := range u.Tags {
-			if t.Name == name && t.Shared {
-				return uname, t, false, true
-			}
+		others = append(others, u)
+	}
+	m.mu.RUnlock()
+	for _, u := range others {
+		if t, ok, _ := m.GetTagOfUser(u, name); ok && t.Shared {
+			return u, t, false, true
 		}
 	}
 	return "", Tag{}, false, false
