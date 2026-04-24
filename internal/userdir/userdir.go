@@ -212,9 +212,13 @@ func (m *Manager) Count() int {
 	return len(m.users)
 }
 
-// Create writes a fresh user directory + config.yaml. Fails if the
-// directory already exists. Does NOT create the per-user DB — that's
-// the store manager's job on first access.
+// Create writes a fresh user directory + config.yaml + the complete
+// subdirectory skeleton (db/, task/, attempt/). Doing the skeleton
+// eagerly instead of letting each of them land lazily on first use
+// keeps `ls data/{username}/` looking consistent for operators and
+// removes a class of "why doesn't my new user have a db/ yet" head-
+// scratching. The per-user SQLite file is still opened lazily by
+// store.Manager — we only lay down the empty directories here.
 func (m *Manager) Create(u *UserConfig) error {
 	if u == nil || u.Username == "" {
 		return errors.New("username required")
@@ -237,6 +241,11 @@ func (m *Manager) Create(u *UserConfig) error {
 	dir := filepath.Join(m.Root, u.Username)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
+	}
+	for _, sub := range []string{"db", "task", "attempt"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
+			return fmt.Errorf("mkdir %s/%s: %w", u.Username, sub, err)
+		}
 	}
 	if err := m.persist(u); err != nil {
 		return err

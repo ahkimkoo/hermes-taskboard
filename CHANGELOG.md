@@ -3,6 +3,14 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-24 — v0.3.4
+
+### User creation lays down the full directory skeleton
+
+Previously `userdir.Manager.Create` only wrote `data/{username}/config.yaml`, and the `db/`, `task/`, `attempt/` subdirectories appeared lazily on first use — `db/` when the scheduler opened the per-user store, `task/` when the user created their first task, `attempt/` when their first Attempt ran. That left `ls data/tony/` looking like a half-built workspace immediately after admin ran "Add user", which was confusing.
+
+v0.3.4 creates all three subdirectories eagerly inside `Create`, so every user — admin on bootstrap, or any user invited via `POST /api/users` — lands with a complete `data/{username}/ {config.yaml, db/, task/, attempt/}` skeleton. The per-user SQLite file is still opened lazily by `store.Manager` (that hasn't changed); we just lay down the empty folders so operators see a consistent tree.
+
 ## 2026-04-24 — v0.3.3
 
 ### AEAD key moves to `data/.secret` — `data/db/` is gone
