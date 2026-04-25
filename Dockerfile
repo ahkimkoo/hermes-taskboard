@@ -41,5 +41,11 @@ RUN mkdir -p /data && chown -R taskboard:taskboard /data
 VOLUME ["/data"]
 EXPOSE 1900
 
+# Default to UTC so behaviour is well-defined out of the box. Operators
+# in other zones override via `-e TZ=Asia/Shanghai` (docker run) or the
+# environment: block in docker-compose. Cron schedules are interpreted
+# in this timezone — see internal/cron/worker.go Compute().
+ENV TZ=UTC
+
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["/app/hermes-taskboard", "-data", "/data"]

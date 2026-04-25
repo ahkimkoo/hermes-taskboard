@@ -3,6 +3,21 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-25 — v0.3.19
+
+### Fix: cron schedules ran in UTC even when the host is in a different timezone
+
+The Docker image had no `ENV TZ`, and `docker run` / `docker compose` users typically don't set one either, so containers booted with `time.Local == UTC`. `cron.Compute()` passed `time.Now()` (UTC) to `robfig/cron`'s `schedule.Next(...)`, which interprets the spec relative to the input time's `Location`. Result: a user in UTC+8 setting `0 9 * * *` got "9am UTC" → 17:00 Beijing instead of 09:00 Beijing.
+
+Two-part fix:
+
+1. **Code** — `cron.Compute()` now coerces `from` to `time.Local` before handing it to robfig/cron. The spec is now consistently interpreted in the host's local timezone regardless of which `Location` the caller's `time.Now()` happens to carry.
+2. **Image / docs** — `Dockerfile` declares `ENV TZ=UTC` so the default is explicit; the README docker-compose example shows `environment: { TZ: Asia/Shanghai }` with a callout block explaining the trade-off. Operators set `TZ` to their actual zone and the cron interpretation follows.
+
+`tzdata` was already in the image, so no new package install is needed — just the env var.
+
+3 new tests in `internal/cron/worker_tz_test.go` cover the Shanghai case, the UTC default, and the "caller hands us a UTC time but Local is Shanghai" coercion.
+
 ## 2026-04-24 — v0.3.18
 
 ### Fix: editing a server with a blank API key field looked like it cleared the stored key

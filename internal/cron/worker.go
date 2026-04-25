@@ -28,6 +28,13 @@ type Worker struct {
 }
 
 // Compute computes the NextRunAt field for a schedule relative to `from`.
+//
+// Timezone: robfig/cron interprets a 5-field spec relative to the
+// Location of the input time. We always coerce to time.Local before
+// computing so the spec means "9am in the host's local time" rather
+// than "9am UTC". time.Local respects the TZ env var (e.g. setting
+// TZ=Asia/Shanghai in docker-compose makes "0 9 * * *" fire at 9am
+// Beijing, not 9am UTC = 17:00 Beijing).
 func Compute(s *store.Schedule, from time.Time) error {
 	if !s.Enabled {
 		s.NextRunAt = nil
@@ -37,7 +44,7 @@ func Compute(s *store.Schedule, from time.Time) error {
 	if err != nil {
 		return fmt.Errorf("invalid cron %q: %w", s.Spec, err)
 	}
-	next := schedule.Next(from)
+	next := schedule.Next(from.In(time.Local))
 	s.NextRunAt = &next
 	return nil
 }

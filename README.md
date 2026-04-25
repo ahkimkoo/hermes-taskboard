@@ -188,12 +188,16 @@ services:
     container_name: taskboard
     ports:
       - "1900:1900"
+    environment:
+      TZ: Asia/Shanghai                   # cron schedules are read in this timezone (default UTC)
     volumes:
-      - ./taskboard-data:/data          # host folder → container's /data
+      - ./taskboard-data:/data            # host folder → container's /data
     extra_hosts:
       - "host.docker.internal:host-gateway"  # reach Hermes running on the host
     restart: unless-stopped
 ```
+
+> **Timezone note**: the image defaults to `TZ=UTC`. If you want `0 9 * * *` to fire at 9am in your local time rather than 9am UTC, set `TZ` to your zone (e.g. `Asia/Shanghai`, `Europe/London`, `America/Los_Angeles`).
 
 First run — nothing to prep beyond creating the host folder:
 
@@ -450,12 +454,16 @@ services:
     container_name: taskboard
     ports:
       - "1900:1900"
+    environment:
+      TZ: Asia/Shanghai                   # 定时任务的 cron 按这个时区解释（默认 UTC）
     volumes:
-      - ./taskboard-data:/data          # 宿主机目录 → 容器内的 /data
+      - ./taskboard-data:/data            # 宿主机目录 → 容器内的 /data
     extra_hosts:
       - "host.docker.internal:host-gateway"  # 让容器能访问到宿主机上的 Hermes
     restart: unless-stopped
 ```
+
+> **时区说明**：镜像默认 `TZ=UTC`，所以 `0 9 * * *` 默认是「每天 UTC 9 点 = 北京 17 点」。把上面的 `TZ` 改成你所在的时区（东八区是 `Asia/Shanghai`）才会按当地的 9 点执行。
 
 首次启动 —— 宿主机上只需要建个空目录就够了:
 
