@@ -3,6 +3,12 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-28 — v0.3.25
+
+### Typing indicator: drop the chrome, just three pulsing dots
+
+The v0.3.21 typing indicator had a pill background, a 1 px accent border, and the words "正在回复…" inline. User feedback: looked busy. Stripped to a centred row of 3 pulsing accent dots — the universal messenger "…" idiom reads as "alive and replying" on its own without the chrome or label. Tooltip still says "Agent is replying…" if the user hovers. `prefers-reduced-motion` still honoured.
+
 ## 2026-04-28 — v0.3.24
 
 ### "↓ new messages" floating button is back to being noticeable

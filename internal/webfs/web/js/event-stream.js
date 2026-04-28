@@ -160,16 +160,14 @@ export const EventStream = {
           </button>
         </div>
         <!-- Live "agent is replying" indicator. Surfaces only when
-             the attempt is actively streaming, so a card sitting in
-             the user's modal can be told apart at a glance from one
-             that's truly idle. The 3-dot pulse cribs the standard
-             messenger "typing" affordance — universally read as
-             "alive and producing output". -->
+             the attempt is actively streaming. Pure 3-dot pulse,
+             centred, no label or pill chrome — the universal
+             messenger "typing" affordance is recognisable on its
+             own and the words just made it look noisy. -->
         <div v-if="attemptState === 'running'" class="es-typing" :title="$t('event.replying')">
           <span class="es-typing-dot"></span>
           <span class="es-typing-dot"></span>
           <span class="es-typing-dot"></span>
-          <span class="es-typing-label">{{ $t('event.replying') }}</span>
         </div>
         <div v-if="!messages.length" class="empty">—</div>
       </div>
