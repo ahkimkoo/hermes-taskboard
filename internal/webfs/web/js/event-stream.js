@@ -174,7 +174,8 @@ export const EventStream = {
         <div v-if="!messages.length" class="empty">—</div>
       </div>
       <button v-if="hasNewBelow" class="jump-to-bottom" @click="jumpToBottom">
-        ↓ {{ $t('event.new_below') }}
+        <span class="jtb-arrow">↓</span>
+        <span class="jtb-label">{{ $t('event.new_below') }}</span>
       </button>
     </div>
   `,

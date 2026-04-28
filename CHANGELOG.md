@@ -3,6 +3,22 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-28 — v0.3.24
+
+### "↓ new messages" floating button is back to being noticeable
+
+The floating jump-to-bottom pill never actually disappeared from the code (`hasNewBelow` flag, `.jump-to-bottom` class, click → `scrollBottom`) — but recent CSS-leaning iterations had ended up with a 12 px font, 4 px padding, and a `bottom: 8 px` parking spot that put it close enough to the input area to easily miss. Users reported the feature as "lost".
+
+Re-tuned visually:
+
+- 13 px font, 9×18 px padding — actual hit target.
+- Parked at `bottom: 16 px` and given `z-index: 10` so it can't be obscured.
+- Glow shadow that matches the accent so it pops against the message stream.
+- Bouncy entry animation (`jtb-pop`) and a softly bobbing arrow (`jtb-bounce`) that signals "new content below".
+- Honours `prefers-reduced-motion`.
+
+Behaviour is unchanged: the pill only surfaces when the user has scrolled out of the 80 px stick-to-bottom zone AND a new event has landed. Click → snap to bottom + re-arm auto-follow.
+
 ## 2026-04-28 — v0.3.23
 
 ### Send / Continue now always pin the viewport to the bottom

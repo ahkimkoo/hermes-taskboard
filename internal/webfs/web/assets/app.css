@@ -578,16 +578,54 @@ body.dragging-active * { cursor: grabbing !important; }
 .refresh-btn.spinning svg { animation: refresh-spin 0.8s linear infinite; }
 @keyframes refresh-spin { to { transform: rotate(360deg); } }
 
-/* Chat-style jump-to-bottom pill. */
+/* Chat-style jump-to-bottom pill. Re-tuned in v0.3.24 — the prior
+   4 px / 12 px size was too easy to miss against the message
+   stream. Now: bigger hit target, brighter glow, bouncy entry, and
+   parked above the input area so it can't get hidden. */
 .event-stream-wrap { position: relative; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .jump-to-bottom {
-  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  position: absolute;
+  bottom: 16px; left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 8px;
   background: var(--accent); color: #111;
   border: none; border-radius: 999px;
-  padding: 4px 12px; font-size: 12px; font-weight: 600;
-  box-shadow: var(--shadow); cursor: pointer;
+  padding: 9px 18px;
+  font-size: 13px; font-weight: 600;
+  box-shadow:
+    0 4px 14px color-mix(in srgb, var(--accent) 55%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+  cursor: pointer;
+  z-index: 10;
+  animation: jtb-pop 0.35s ease-out;
 }
-.jump-to-bottom:hover { background: var(--accent-2); }
+.jump-to-bottom:hover {
+  background: var(--accent-2);
+  transform: translateX(-50%) translateY(-1px);
+  box-shadow:
+    0 6px 18px color-mix(in srgb, var(--accent) 70%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.jump-to-bottom:active { transform: translateX(-50%) translateY(0); }
+.jtb-arrow {
+  display: inline-block;
+  font-size: 14px;
+  line-height: 1;
+  animation: jtb-bounce 1.6s ease-in-out infinite;
+}
+.jtb-label { line-height: 1; }
+@keyframes jtb-pop {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px) scale(0.92); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+@keyframes jtb-bounce {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .jump-to-bottom { animation: none; }
+  .jtb-arrow      { animation: none; }
+}
 
 /* ---------- Login ---------- */
 .login-shell { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
