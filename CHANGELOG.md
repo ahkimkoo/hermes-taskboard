@@ -3,6 +3,20 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-28 — v0.3.20
+
+### One-click Continue when an attempt parks in `needs_input`
+
+Tasks frequently stall in the middle of a conversation when Hermes asks for confirmation — the runner flips the attempt to `needs_input` and waits. Until now the user had to scroll to the input box, type "continue", and hit Send. Added an inline pill at the tail of the event log that appears only when `attempt.state === 'needs_input'`:
+
+- Click sends `continue` via the existing `POST /api/attempts/{id}/messages` endpoint.
+- The resulting `user_message` event flows back through SSE and renders as the usual 👤 bubble — same path as a typed reply, no special-case write.
+- The `TaskModal` now also subscribes to the board SSE stream for `attempt.state_changed` events and updates its local `attempts[].state` in place. Without this the pill would only appear after a manual reload when the state flipped while the modal was already open.
+
+### Event-stream "load earlier" now pages 200 events at a time
+
+Was 30 per click — too few for a conversation with several rounds of tool calls. Bumped the `loadMore()` request to `tail=200`. Initial tail stays at 30 to keep first-paint fast.
+
 ## 2026-04-25 — v0.3.19
 
 ### Fix: cron schedules ran in UTC even when the host is in a different timezone

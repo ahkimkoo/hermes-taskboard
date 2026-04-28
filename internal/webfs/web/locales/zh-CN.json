@@ -119,6 +119,8 @@
   "event.new_below": "新消息",
   "event.load_earlier": "↑ 加载更早",
   "event.loading": "加载中…",
+  "event.click_to_continue": "点这里发送 continue",
+  "event.sending_continue": "发送中…",
   "event.refresh": "刷新",
   "event.refreshing": "刷新中…",
   "event.refresh_title": "重连 Hermes 会话,拉取最新消息",

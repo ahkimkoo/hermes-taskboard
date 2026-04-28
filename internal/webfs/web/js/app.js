@@ -394,6 +394,25 @@ const TaskModal = {
     },
     taskId: { immediate: true, handler: 'load' },
   },
+  // Subscribe to the board's attempt.state_changed events so the
+  // open card reflects state flips live — without this the
+  // EventStream's continue-pill (which keys off attempts[].state)
+  // would only appear after a manual reload.
+  mounted() {
+    this._unsubBoard = sseSubscribe('/api/stream/board', (evt) => {
+      if (!evt || evt.event !== 'attempt.state_changed') return;
+      const aid = evt.attempt_id;
+      const newState = evt.state;
+      if (!aid || !newState) return;
+      const idx = this.attempts.findIndex((a) => a.id === aid);
+      if (idx >= 0 && this.attempts[idx].state !== newState) {
+        this.attempts[idx].state = newState;
+      }
+    });
+  },
+  beforeUnmount() {
+    if (this._unsubBoard) { this._unsubBoard(); this._unsubBoard = null; }
+  },
   computed: {
     profileForSelected() {
       const id = this.form.preferred_server;
@@ -615,7 +634,7 @@ const TaskModal = {
                 </button>
               </div>
               <div class="attempt-content">
-                <event-stream :attempt-id="activeAttemptId"></event-stream>
+                <event-stream :attempt-id="activeAttemptId" :attempt-state="currentAttempt && currentAttempt.state"></event-stream>
                 <div v-if="activeAttemptId" class="input-area">
                   <div class="input-bar">
                     <textarea ref="messageInput"

@@ -14,7 +14,12 @@ import { renderMarkdown } from './markdown.js';
 import { t } from './i18n.js';
 
 export const EventStream = {
-  props: ['attemptId'],
+  // attemptState is passed through from the parent so the inline
+  // continue-pill knows when to surface itself. Decoupled from any
+  // local state lookup so the pill flips on/off as the SSE stream
+  // updates the parent's attempts array.
+  props: ['attemptId', 'attemptState'],
+  emits: ['send-continue'],
   data() {
     return {
       events: [], messages: [], unsub: null,
@@ -33,6 +38,9 @@ export const EventStream = {
       // pages backwards on demand via the "加载更早" link.
       hasMore: false,        // true when older events exist server-side
       loadingMore: false,    // guards concurrent clicks on the link
+      // Continue-pill in-flight guard so a double-click can't queue
+      // two "continue" messages.
+      sendingContinue: false,
     };
   },
   watch: { attemptId: { immediate: true, handler: 'reload' } },
@@ -108,6 +116,17 @@ export const EventStream = {
             <span v-if="m.ts" class="es-time" :title="formatTsFull(m.ts)">{{ formatTs(m.ts) }}</span>
           </div>
         </template>
+        <!-- Continue pill: surfaces inline at the tail of the log
+             whenever the attempt is paused waiting for user input.
+             Click sends "continue" via the same /messages endpoint
+             the input box uses, so the resulting user-message bubble
+             flows back via SSE just like a typed reply. -->
+        <div v-if="attemptState === 'needs_input'" class="es-continue-row">
+          <button class="es-continue" :disabled="sendingContinue" @click="sendContinue">
+            <span class="es-continue-icon">▶</span>
+            <span>{{ sendingContinue ? $t('event.sending_continue') : $t('event.click_to_continue') }}</span>
+          </button>
+        </div>
         <div v-if="!messages.length" class="empty">—</div>
       </div>
       <button v-if="hasNewBelow" class="jump-to-bottom" @click="jumpToBottom">
@@ -214,9 +233,9 @@ export const EventStream = {
       setTimeout(() => this.scrollBottom(), 400);
     },
     async loadMore() {
-      // Fetch 30 more events whose seq is strictly below our earliest-known
-      // seq, prepend, rebuild, and restore the scroll position so the user's
-      // current viewport doesn't jump.
+      // Fetch a larger chunk per click — 200 events is enough to
+      // cover most multi-turn excursions in one go without making the
+      // initial render path heavier (initial tail stays at 30).
       if (this.loadingMore || !this.hasMore || !this.attemptId) return;
       if (this.events.length === 0) return;
       const beforeSeq = this.events[0].seq || 0;
@@ -227,7 +246,7 @@ export const EventStream = {
       const prevTop = scroller ? scroller.scrollTop : 0;
       try {
         const { events } = await api('/api/attempts/' + this.attemptId +
-          '/events?tail=30&before_seq=' + beforeSeq);
+          '/events?tail=200&before_seq=' + beforeSeq);
         const older = events || [];
         if (older.length === 0) {
           this.hasMore = false;
@@ -278,6 +297,23 @@ export const EventStream = {
       const atBottom = (s.scrollHeight - s.scrollTop - s.clientHeight) < 40;
       this.stickToBottom = atBottom;
       if (atBottom) this.hasNewBelow = false;
+    },
+    async sendContinue() {
+      // Re-uses the existing /messages endpoint so the resulting
+      // user-message event flows back via SSE and renders as a
+      // normal "👤 continue" bubble in the log — no special-case
+      // optimistic write needed.
+      if (this.sendingContinue || !this.attemptId) return;
+      this.sendingContinue = true;
+      try {
+        await api('/api/attempts/' + this.attemptId + '/messages',
+          { method: 'POST', body: { text: 'continue' } });
+        this.$emit('send-continue');
+      } catch (e) {
+        alert((e && e.message) || 'send failed');
+      } finally {
+        this.sendingContinue = false;
+      }
     },
     rebuild() {
       // Walk raw events, building semantic messages. Maintain a per-tool-id map.

@@ -119,6 +119,8 @@
   "event.new_below": "new messages",
   "event.load_earlier": "↑ Load earlier",
   "event.loading": "Loading…",
+  "event.click_to_continue": "Click to send \"continue\"",
+  "event.sending_continue": "Sending continue…",
   "event.refresh": "Refresh",
   "event.refreshing": "Refreshing…",
   "event.refresh_title": "Reconnect to the Hermes session and pull the latest events",
