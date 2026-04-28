@@ -43,6 +43,27 @@ export const EventStream = {
       sendingContinue: false,
     };
   },
+  computed: {
+    // The Continue pill mirrors the states in which `Runner.SendMessage`
+    // actually accepts a new turn: `needs_input` (parked mid-session
+    // waiting on the user) AND any terminal state (`completed`,
+    // `failed`, `cancelled`) — for those the runner re-queues the
+    // attempt and starts a fresh turn against the same conversation.
+    // We hide the pill while the attempt is `running`/`queued`
+    // because the typing indicator is already covering those.
+    canSendContinue() {
+      const s = this.attemptState;
+      return s === 'needs_input' || s === 'completed' || s === 'failed' || s === 'cancelled';
+    },
+    // Label shifts subtly with state so the user knows whether
+    // "continue" means "pick up where you stopped" or "retry the
+    // run that just blew up". Same action either way.
+    continuePillLabel() {
+      const s = this.attemptState;
+      if (s === 'failed') return this.$t('event.click_to_retry');
+      return this.$t('event.click_to_continue');
+    },
+  },
   watch: {
     attemptId: { immediate: true, handler: 'reload' },
     // The typing indicator appearing/vanishing at the tail of the log
@@ -123,14 +144,19 @@ export const EventStream = {
           </div>
         </template>
         <!-- Continue pill: surfaces inline at the tail of the log
-             whenever the attempt is paused waiting for user input.
-             Click sends "continue" via the same /messages endpoint
-             the input box uses, so the resulting user-message bubble
-             flows back via SSE just like a typed reply. -->
-        <div v-if="attemptState === 'needs_input'" class="es-continue-row">
+             whenever sending another turn would actually do something —
+             needs_input (waiting on the user) plus the terminal
+             states completed/failed/cancelled (Runner.SendMessage
+             re-queues those by design). The pill stays hidden while
+             the attempt is running/queued because the typing
+             indicator already covers that. Click sends "continue"
+             via the same /messages endpoint the input box uses, so
+             the resulting user-message bubble flows back via SSE
+             just like a typed reply. -->
+        <div v-if="canSendContinue" class="es-continue-row">
           <button class="es-continue" :disabled="sendingContinue" @click="sendContinue">
             <span class="es-continue-icon">▶</span>
-            <span>{{ sendingContinue ? $t('event.sending_continue') : $t('event.click_to_continue') }}</span>
+            <span>{{ sendingContinue ? $t('event.sending_continue') : continuePillLabel }}</span>
           </button>
         </div>
         <!-- Live "agent is replying" indicator. Surfaces only when

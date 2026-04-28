@@ -120,6 +120,7 @@
   "event.load_earlier": "↑ 加载更早",
   "event.loading": "加载中…",
   "event.click_to_continue": "点这里发送 continue",
+  "event.click_to_retry": "点这里重试 — 发送 continue",
   "event.sending_continue": "发送中…",
   "event.replying": "正在回复…",
   "event.refresh": "刷新",

@@ -3,6 +3,21 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-28 — v0.3.22
+
+### Continue pill now shows for stopped attempts too — not just `needs_input`
+
+v0.3.20 only surfaced the inline Continue pill when an attempt parked in `needs_input`. A user reported the pill missing on a card whose auto-resume had hit `connection refused` and landed in `failed` — exactly the case where they most want a one-click retry.
+
+The pill now appears in any state where `Runner.SendMessage` would actually accept a new turn:
+
+- `needs_input` — original case, agent paused waiting for user
+- `completed` — including the user-stopped path (per v0.3.16)
+- `failed` — auto-resume exhausted or runtime error
+- `cancelled` — legacy state from pre-v0.3.16 rows
+
+It stays hidden during `running`/`queued` because the typing indicator already covers those. Label flips to "点这里重试 — 发送 continue" / "Click to retry — send continue" on `failed` so the user knows the click will revive a dead run; everywhere else stays "点这里发送 continue".
+
 ## 2026-04-28 — v0.3.21
 
 ### Live "agent is replying" indicator at the tail of the event log
