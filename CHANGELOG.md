@@ -3,6 +3,20 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-28 — v0.3.21
+
+### Live "agent is replying" indicator at the tail of the event log
+
+A typing-style 3-dot pulse with a soft accent label appears at the bottom of the conversation when the active attempt's `state === 'running'`. Disappears the moment the state flips to `completed` / `failed` / `needs_input` / etc. Lets a card sitting in another tab be told apart from a stopped one without scrolling. Honours `prefers-reduced-motion`.
+
+The indicator is wired through the same `attemptState` prop on `<event-stream>` that the v0.3.20 Continue pill uses, so state flips driven by board SSE flow through the existing reactivity path.
+
+### Autoscroll polish
+
+- The "stuck to bottom" tolerance widened from 40 px to 80 px. One stray scroll-wheel click no longer flips the user off auto-follow mid-stream; a deliberate scroll up still does.
+- An `attemptState` watcher fires `maybeAutoScroll` on every state transition. When the running indicator appears (or vanishes) it pushes/pulls the scroll height — if the user was stuck to the bottom we follow that change so the indicator stays visible.
+- Existing rule preserved: if the user has scrolled up to read prior context, neither new messages nor the indicator's appearance yank them down. The "↓ new messages" badge surfaces instead.
+
 ## 2026-04-28 — v0.3.20
 
 ### One-click Continue when an attempt parks in `needs_input`

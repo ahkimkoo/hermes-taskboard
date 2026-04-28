@@ -43,7 +43,13 @@ export const EventStream = {
       sendingContinue: false,
     };
   },
-  watch: { attemptId: { immediate: true, handler: 'reload' } },
+  watch: {
+    attemptId: { immediate: true, handler: 'reload' },
+    // The typing indicator appearing/vanishing at the tail of the log
+    // changes scrollHeight; if the user was pinned to the bottom we
+    // want to follow that change so the indicator stays visible.
+    attemptState() { this.$nextTick(() => this.maybeAutoScroll()); },
+  },
   template: `
     <div class="event-stream-wrap">
       <div class="event-stream v2" ref="scroller" @scroll="onScroll">
@@ -126,6 +132,18 @@ export const EventStream = {
             <span class="es-continue-icon">▶</span>
             <span>{{ sendingContinue ? $t('event.sending_continue') : $t('event.click_to_continue') }}</span>
           </button>
+        </div>
+        <!-- Live "agent is replying" indicator. Surfaces only when
+             the attempt is actively streaming, so a card sitting in
+             the user's modal can be told apart at a glance from one
+             that's truly idle. The 3-dot pulse cribs the standard
+             messenger "typing" affordance — universally read as
+             "alive and producing output". -->
+        <div v-if="attemptState === 'running'" class="es-typing" :title="$t('event.replying')">
+          <span class="es-typing-dot"></span>
+          <span class="es-typing-dot"></span>
+          <span class="es-typing-dot"></span>
+          <span class="es-typing-label">{{ $t('event.replying') }}</span>
         </div>
         <div v-if="!messages.length" class="empty">—</div>
       </div>
@@ -292,9 +310,12 @@ export const EventStream = {
     onScroll() {
       const s = this.$refs.scroller;
       if (!s) return;
-      // Treat "within 40 px of the bottom" as still-at-bottom. This gives the
-      // user some room to scroll a little without the page snapping them back.
-      const atBottom = (s.scrollHeight - s.scrollTop - s.clientHeight) < 40;
+      // Treat "within 80 px of the bottom" as still-at-bottom. Wide
+      // enough that one accidental wheel-click doesn't unstick the
+      // viewport mid-stream, narrow enough that a deliberate scroll
+      // up to read prior context flips us off auto-follow as
+      // expected. Scrolling back into the dead zone re-sticks.
+      const atBottom = (s.scrollHeight - s.scrollTop - s.clientHeight) < 80;
       this.stickToBottom = atBottom;
       if (atBottom) this.hasNewBelow = false;
     },
