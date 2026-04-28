@@ -143,22 +143,6 @@ export const EventStream = {
             <span v-if="m.ts" class="es-time" :title="formatTsFull(m.ts)">{{ formatTs(m.ts) }}</span>
           </div>
         </template>
-        <!-- Continue pill: surfaces inline at the tail of the log
-             whenever sending another turn would actually do something —
-             needs_input (waiting on the user) plus the terminal
-             states completed/failed/cancelled (Runner.SendMessage
-             re-queues those by design). The pill stays hidden while
-             the attempt is running/queued because the typing
-             indicator already covers that. Click sends "continue"
-             via the same /messages endpoint the input box uses, so
-             the resulting user-message bubble flows back via SSE
-             just like a typed reply. -->
-        <div v-if="canSendContinue" class="es-continue-row">
-          <button class="es-continue" :disabled="sendingContinue" @click="sendContinue">
-            <span class="es-continue-icon">▶</span>
-            <span>{{ sendingContinue ? $t('event.sending_continue') : continuePillLabel }}</span>
-          </button>
-        </div>
         <!-- Live "agent is replying" indicator. Surfaces only when
              the attempt is actively streaming. Pure 3-dot pulse,
              centred, no label or pill chrome — the universal
@@ -174,6 +158,20 @@ export const EventStream = {
       <button v-if="hasNewBelow" class="jump-to-bottom" @click="jumpToBottom">
         <span class="jtb-arrow">↓</span>
         <span class="jtb-label">{{ $t('event.new_below') }}</span>
+      </button>
+      <!-- Compact icon-only continue/retry button anchored at the
+           bottom-right of the viewport. Lifted out of the scrolling
+           container so it stays in place; visible whenever sending
+           another turn would actually do something (needs_input or
+           any terminal state). Hidden while running/queued because
+           the dot indicator already covers those. -->
+      <button v-if="canSendContinue" class="es-continue-fab"
+              :class="{ retry: attemptState === 'failed' }"
+              :disabled="sendingContinue"
+              :title="continuePillLabel"
+              :aria-label="continuePillLabel"
+              @click="sendContinue">
+        <span class="es-continue-fab-icon">▶</span>
       </button>
     </div>
   `,

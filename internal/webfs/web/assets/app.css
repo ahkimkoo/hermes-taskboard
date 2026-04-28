@@ -396,27 +396,55 @@ body.dragging-active * { cursor: grabbing !important; }
   font-weight: 500;
 }
 
-/* Continue pill — surfaces inline at the tail of the event log when
-   the attempt is parked in needs_input. Matches the warm accent so
-   the user's eye lands on it without the alarm tone of an error. */
-.es-continue-row { display: flex; justify-content: center; margin: 6px 0 4px; }
-.es-continue {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 8px 18px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+/* Continue / retry FAB — small icon-only round button anchored at
+   the bottom-right of the event-stream wrap. Surfaces whenever
+   sending another turn would re-engage the conversation (parked in
+   needs_input, or any terminal state). Hover reveals the full
+   intent via the title tooltip — the icon itself just needs to
+   read as "play / continue". The .retry variant tints warm so a
+   failed run is visibly distinct from a normal continue. */
+.es-continue-fab {
+  position: absolute;
+  bottom: 16px; right: 16px;
+  width: 32px; height: 32px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--accent) 65%, transparent);
   background: color-mix(in srgb, var(--accent) 18%, var(--bg-elev-2));
-  color: var(--text);
-  font-size: 13px; font-weight: 500;
+  color: var(--accent);
+  font-size: 11px;
   cursor: pointer;
-  transition: background 0.15s, transform 0.05s;
+  z-index: 10;
+  box-shadow:
+    0 2px 8px color-mix(in srgb, var(--accent) 40%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
+  transition: background 0.15s, transform 0.05s, box-shadow 0.15s;
 }
-.es-continue:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 30%, var(--bg-elev-2));
+.es-continue-fab:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 32%, var(--bg-elev-2));
+  box-shadow:
+    0 3px 10px color-mix(in srgb, var(--accent) 55%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
 }
-.es-continue:active:not(:disabled) { transform: translateY(1px); }
-.es-continue:disabled { opacity: 0.6; cursor: progress; }
-.es-continue-icon { color: var(--accent); font-size: 11px; }
+.es-continue-fab:active:not(:disabled) { transform: translateY(1px); }
+.es-continue-fab:disabled { opacity: 0.55; cursor: progress; }
+.es-continue-fab.retry {
+  border-color: color-mix(in srgb, var(--warning) 65%, transparent);
+  background: color-mix(in srgb, var(--warning) 18%, var(--bg-elev-2));
+  color: var(--warning);
+  box-shadow:
+    0 2px 8px color-mix(in srgb, var(--warning) 40%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--warning) 20%, transparent);
+}
+.es-continue-fab.retry:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warning) 32%, var(--bg-elev-2));
+}
+.es-continue-fab-icon {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1;
+  margin-left: 1px; /* visually centre the ▶ glyph */
+}
 
 /* Typing indicator — three centred dots pulsing in sequence.
    No pill chrome, no label — the universal messenger "…" idiom is

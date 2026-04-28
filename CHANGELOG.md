@@ -3,6 +3,12 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-28 — v0.3.26
+
+### Continue / retry button: shrunk to a corner FAB, icon only
+
+The full-width pill at the tail of the log carried two lines of Chinese label and was visually heavy. Replaced with a 32×32 px circular icon-only button anchored at the bottom-right of the event-stream wrap. The icon (▶) is the same regardless of state; the hover tooltip + aria-label still carry the i18n hint ("点这里发送 continue" / "Click to retry — send continue"). On `failed` the FAB tints warm (`var(--warning)`) so a failed run is visibly distinct from a normal pause-then-continue. Lifted out of the scrolling container so it stays in place even when the user scrolls the log.
+
 ## 2026-04-28 — v0.3.25
 
 ### Typing indicator: drop the chrome, just three pulsing dots
