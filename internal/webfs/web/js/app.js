@@ -634,7 +634,7 @@ const TaskModal = {
                 </button>
               </div>
               <div class="attempt-content">
-                <event-stream :attempt-id="activeAttemptId" :attempt-state="currentAttempt && currentAttempt.state"></event-stream>
+                <event-stream ref="eventStream" :attempt-id="activeAttemptId" :attempt-state="currentAttempt && currentAttempt.state"></event-stream>
                 <div v-if="activeAttemptId" class="input-area">
                   <div class="input-bar">
                     <textarea ref="messageInput"
@@ -866,6 +866,12 @@ const TaskModal = {
       const text = this.input;
       this.input = '';
       this.$nextTick(() => this.autoGrowInput());  // collapse the textarea back to 1 row
+      // Hitting Send is an explicit "I'm engaging now" signal — yank the
+      // viewport back to the bottom so the user's own message + the
+      // assistant's incoming reply land in view, even if they had
+      // scrolled up earlier. scrollBottom() also re-arms stickToBottom
+      // so the rest of the SSE stream follows.
+      if (this.$refs.eventStream) this.$refs.eventStream.scrollBottom();
       try { await api('/api/attempts/' + this.activeAttemptId + '/messages', { method: 'POST', body: { text } }); }
       catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },

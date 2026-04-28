@@ -352,6 +352,10 @@ export const EventStream = {
       // optimistic write needed.
       if (this.sendingContinue || !this.attemptId) return;
       this.sendingContinue = true;
+      // Match sendMsg's "user is engaging" signal — pin the
+      // viewport to the bottom so the typing indicator + reply
+      // land in view even if the click came after scrolling up.
+      this.scrollBottom();
       try {
         await api('/api/attempts/' + this.attemptId + '/messages',
           { method: 'POST', body: { text: 'continue' } });

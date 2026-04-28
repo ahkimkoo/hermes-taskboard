@@ -3,6 +3,16 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-28 — v0.3.23
+
+### Send / Continue now always pin the viewport to the bottom
+
+Hitting **Send** in the input box (or clicking the Continue pill in the event log) is an explicit "I'm engaging now" signal. v0.3.21's autoscroll only auto-followed when `stickToBottom` was already true, so a user who had scrolled up earlier to read context and then typed a reply saw their own bubble + the agent's response land off-screen.
+
+`TaskModal.sendMsg` now grabs an `eventStream` ref and calls `scrollBottom()` the moment the user hits Send. That re-arms `stickToBottom = true` so the rest of the SSE stream (the user-message bubble itself, the typing indicator, the assistant reply) follows the bottom. Same change applied to `EventStream.sendContinue` for the inline Continue pill.
+
+The "user has scrolled up to read prior context, don't yank them" rule is unchanged — only the explicit Send / Continue actions force the viewport back to live view.
+
 ## 2026-04-28 — v0.3.22
 
 ### Continue pill now shows for stopped attempts too — not just `needs_input`
