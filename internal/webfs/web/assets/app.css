@@ -208,6 +208,45 @@ body.dragging-active * { cursor: grabbing !important; }
 .fullscreen-toggle:hover { color: var(--accent); background: var(--bg-elev-2); }
 .fullscreen-toggle.active { color: var(--accent); }
 
+/* Jump-to-section dropdown (next to the modal-header Edit button).
+   The toggle is a tiny chevron; clicking it reveals a popover with
+   four navigation links to the major sections of the task card. */
+.jump-menu { position: relative; display: inline-block; }
+.jump-toggle {
+  color: var(--text-dim);
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  padding: 6px 8px;
+  min-width: 28px; min-height: 28px;
+  transition: color 0.15s, background 0.15s, transform 0.15s;
+}
+.jump-toggle svg { display: block; }
+.jump-toggle:hover { color: var(--accent); background: var(--bg-elev-2); }
+.jump-menu.open .jump-toggle { color: var(--accent); transform: rotate(180deg); }
+.jump-menu-popover {
+  position: absolute;
+  top: calc(100% + 4px); right: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+  padding: 4px;
+  min-width: 120px;
+  z-index: 30;
+  display: flex; flex-direction: column;
+}
+.jump-menu-popover button {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  padding: 7px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.jump-menu-popover button:hover { background: var(--bg-elev-2); color: var(--accent); }
+
 /* Jump-to-bottom floating icon sits on the top-right of the modal body,
    anchored to the modal container so it stays put as the body scrolls.
    Auto-hides when already at the bottom via the .hidden class. */

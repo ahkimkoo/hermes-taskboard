@@ -3,6 +3,29 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-28 — v0.3.27
+
+### NewTaskModal gains the fullscreen toggle
+
+The new-task creation form previously capped at 640 px wide with no way to expand. On a phone or for users typing long descriptions this felt cramped. Borrowed the existing TaskModal `fullscreen` pattern verbatim — same toggle button between the title and the close X, same auto-fullscreen on viewports below 768 px.
+
+### Jump-to-section dropdown next to the Edit button
+
+The open task card has four notable regions — task description, schedule, attempts, conversation log — and on a long card they're all behind a scroll. Added a small chevron button next to the **编辑 / Edit** button that opens a 4-item popover:
+
+- **任务 / Task** — scrolls the modal body so the description block is at the top.
+- **定时 / Schedule** — opens the `<details>` if it was collapsed, then scrolls to it.
+- **执行 / Attempts** — forces `listOpen = true` (so the heading is useful even when nothing was running) and scrolls to the attempts section.
+- **日志 / Log** — reuses `scrollModalBottom()` so the live event stream tail and the chat input land in view together.
+
+Click-outside dismisses the popover; the toggle chevron rotates 180° while open. Built with refs + `scrollIntoView({behavior:'smooth', block:'start'})` rather than anchor links so the scroll target is the modal body, not the page.
+
+### Settings: better Chinese for the Hermes-server tab + Chinese setup guide
+
+- `settings.nav.servers` (zh-CN): "Hermes Servers" → **"连接 Hermes"**
+- `action.new_server` (zh-CN): "新增 Server" → **"添加连接"**
+- The Hermes setup guide that lived inside the server-edit panel was hardcoded English: numbered steps, the "Tip" callout, the section A / B headings. Lifted every text node into i18n keys (`setup_guide.*`) and added the Chinese translations. The interface language switch now flips both the chrome and the setup walkthrough.
+
 ## 2026-04-28 — v0.3.26
 
 ### Continue / retry button: shrunk to a corner FAB, icon only

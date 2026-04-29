@@ -260,6 +260,10 @@ const NewTaskModal = {
         title: '', description: '', priority: 3, trigger_mode: 'auto',
         preferred_server: '', tags: [], dependencies: [],
       },
+      // Auto-fullscreen on phones (< 768 px) to mirror TaskModal's
+      // behaviour — the small-window mode wastes too much real
+      // estate on a phone for a form-heavy modal.
+      fullscreen: typeof window !== 'undefined' && window.innerWidth < 768,
     };
   },
   computed: {
@@ -267,11 +271,26 @@ const NewTaskModal = {
     depCandidates() { return this.$root.state.tasks; },
   },
   template: `
-    <div class="modal-overlay">
-      <div class="modal" style="max-width:640px">
+    <div class="modal-overlay" :class="{ fullscreen: fullscreen }">
+      <div class="modal" :class="{ fullscreen: fullscreen }" style="max-width:640px">
         <div class="modal-header">
           <h2>{{ $t('action.new_task') }}</h2>
-          <button class="ghost close-btn" @click="$emit('close')">✕</button>
+          <div class="modal-header-actions">
+            <button class="ghost fullscreen-toggle" :class="{ active: fullscreen }"
+                    :title="$t(fullscreen ? 'action.exit_fullscreen' : 'action.fullscreen')"
+                    aria-label="Toggle fullscreen"
+                    @click="fullscreen = !fullscreen">
+              <svg v-if="!fullscreen" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                      d="M4 8V4h4M16 8V4h-4M4 12v4h4M16 12v4h-4"/>
+              </svg>
+              <svg v-else viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                      d="M8 4v4H4M12 4v4h4M8 16v-4H4M12 16v-4h4"/>
+              </svg>
+            </button>
+            <button class="ghost close-btn" @click="$emit('close')">✕</button>
+          </div>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -384,6 +403,10 @@ const TaskModal = {
       // reconnect to Hermes for. Reset whenever the selection changes so
       // picking a different attempt gets its own catch-up attempt.
       reconnectAskedFor: null,
+      // Header dropdown: snap-to-section menu next to Edit. False
+      // when closed; toggled by the small chevron, dismissed by
+      // any outside click (see _onJumpDocClick handler below).
+      jumpOpen: false,
     };
   },
   watch: {
@@ -409,9 +432,17 @@ const TaskModal = {
         this.attempts[idx].state = newState;
       }
     });
+    // Click-outside dismissal for the header jump-to-section menu.
+    this._onJumpDocClick = (e) => {
+      if (!this.jumpOpen) return;
+      const root = this.$refs.jumpMenu;
+      if (root && !root.contains(e.target)) this.jumpOpen = false;
+    };
+    document.addEventListener('click', this._onJumpDocClick);
   },
   beforeUnmount() {
     if (this._unsubBoard) { this._unsubBoard(); this._unsubBoard = null; }
+    if (this._onJumpDocClick) document.removeEventListener('click', this._onJumpDocClick);
   },
   computed: {
     profileForSelected() {
@@ -454,6 +485,29 @@ const TaskModal = {
               <span class="modal-edit-icon">✎</span>
               <span class="modal-edit-label">{{ $t('action.edit') }}</span>
             </button>
+            <!-- Jump-to-section menu. Long task cards bury the
+                 sections users care about behind a scroll; this
+                 lets them snap straight to description / schedule
+                 / attempts list / chat-input bottom from the
+                 header. Built on the click-outside dismissal idiom
+                 (ref-based) rather than <details> so we can also
+                 close after a menu item is clicked. -->
+            <div v-if="task && !editing" ref="jumpMenu" class="jump-menu" :class="{ open: jumpOpen }">
+              <button class="ghost jump-toggle"
+                      :title="$t('jump.menu_title')"
+                      aria-label="Jump to section"
+                      @click.stop="jumpOpen = !jumpOpen">
+                <svg viewBox="0 0 12 8" width="12" height="8" aria-hidden="true">
+                  <path d="M1 1 L6 6 L11 1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              <div v-if="jumpOpen" class="jump-menu-popover">
+                <button @click="jumpTo('task')">{{ $t('jump.task') }}</button>
+                <button @click="jumpTo('schedule')">{{ $t('jump.schedule') }}</button>
+                <button @click="jumpTo('attempts')">{{ $t('jump.attempts') }}</button>
+                <button @click="jumpTo('log')">{{ $t('jump.log') }}</button>
+              </div>
+            </div>
             <button class="ghost fullscreen-toggle" :class="{ active: fullscreen }"
                     :title="$t(fullscreen ? 'action.exit_fullscreen' : 'action.fullscreen')"
                     aria-label="Toggle fullscreen"
@@ -568,17 +622,17 @@ const TaskModal = {
               </div>
             </dl>
 
-            <div v-if="task.description" class="task-desc" v-html="renderedDescription"></div>
-            <p v-else class="task-desc-empty">{{ $t('task.no_description') }}</p>
+            <div v-if="task.description" ref="descSection" class="task-desc" v-html="renderedDescription"></div>
+            <p v-else ref="descSection" class="task-desc-empty">{{ $t('task.no_description') }}</p>
 
             <!-- Schedule feature is infrequently used. Keep it collapsed
                  behind a small heading so it doesn't dominate the modal. -->
-            <details class="schedule-details">
+            <details ref="scheduleSection" class="schedule-details">
               <summary>⏱ {{ $t('schedule.heading') }}</summary>
               <schedule-picker :task-id="taskId"></schedule-picker>
             </details>
 
-            <h3 class="attempts-heading">
+            <h3 ref="attemptsSection" class="attempts-heading">
               {{ $t('attempt.heading') }}
               <button class="help-btn" type="button" :title="$t('attempt.help_title')" @click="showAttemptHelp = !showAttemptHelp">?</button>
               <span class="attempts-count">{{ attempts.length }}</span>
@@ -881,6 +935,38 @@ const TaskModal = {
       try { body.scrollTo({ top: body.scrollHeight, behavior: 'smooth' }); }
       catch { body.scrollTop = body.scrollHeight; }
     },
+    // Header dropdown action: snap the modal-body scroll position to
+    // a named section. For "attempts" we also force the list open
+    // because the heading alone isn't useful if it's collapsed.
+    // For "log" we reuse scrollModalBottom — the chat input area is
+    // always at the bottom so jumping there exposes the live log
+    // tail and the input box at once.
+    jumpTo(target) {
+      this.jumpOpen = false;
+      const body = this.$refs.modalBody;
+      if (!body) return;
+      const smoothTo = (el) => {
+        if (!el) return;
+        // scrollIntoView's options mode anchors the element top to
+        // the modal-body's top, taking the header height into
+        // account via scrollMargin if we ever set it.
+        try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+        catch { el.scrollTop = 0; }
+      };
+      if (target === 'task')     { smoothTo(this.$refs.descSection); return; }
+      if (target === 'schedule') {
+        const el = this.$refs.scheduleSection;
+        if (el && !el.open) el.open = true;
+        this.$nextTick(() => smoothTo(el));
+        return;
+      }
+      if (target === 'attempts') {
+        if (!this.listOpen) this.listOpen = true;
+        this.$nextTick(() => smoothTo(this.$refs.attemptsSection));
+        return;
+      }
+      if (target === 'log') { this.scrollModalBottom(); return; }
+    },
     onModalBodyScroll() {
       // Hide the jump-to-bottom icon once the user is within 60 px of the
       // actual bottom. Small tolerance avoids the icon flickering on and
@@ -1028,28 +1114,28 @@ const SettingsModal = {
                   </div>
 
                   <details class="setup-guide" open style="margin-top:16px">
-                    <summary><strong>🛠 How to set this up on the Hermes side</strong></summary>
-                    <p class="helper">Taskboard calls Hermes's OpenAI-compatible API server on port 8642. On the Hermes host, do one of the two below.</p>
-                    <h5>A. Do it yourself (manual)</h5>
+                    <summary><strong>🛠 {{ $t('setup_guide.title') }}</strong></summary>
+                    <p class="helper">{{ $t('setup_guide.intro') }}</p>
+                    <h5>{{ $t('setup_guide.section_a') }}</h5>
                     <ol>
-                      <li>Generate an API key: <code>openssl rand -hex 20</code></li>
-                      <li>Add to <code>~/.hermes/.env</code>:
+                      <li>{{ $t('setup_guide.step_a1') }} <code>openssl rand -hex 20</code></li>
+                      <li>{{ $t('setup_guide.step_a2') }} <code>~/.hermes/.env</code>{{ $t('setup_guide.step_a2_suffix') }}
 <pre>API_SERVER_ENABLED=true
-API_SERVER_KEY=&lt;the key above&gt;
+API_SERVER_KEY={{ $t('setup_guide.step_a2_keyhint') }}
 API_SERVER_HOST=0.0.0.0
 API_SERVER_PORT=8642</pre>
                       </li>
-                      <li>Restart Hermes: <code>hermes gateway restart</code> (or <code>hermes gateway start</code> if not running)</li>
-                      <li>Check: <code>curl -H "Authorization: Bearer &lt;key&gt;" http://127.0.0.1:8642/health</code> → <code>{"status":"ok"}</code></li>
-                      <li>Back here, fill <strong>Base URL</strong> = <code>http://&lt;hermes-host&gt;:8642</code> and <strong>API Key</strong> = the key you generated. Save.</li>
+                      <li>{{ $t('setup_guide.step_a3_prefix') }} <code>hermes gateway restart</code> ({{ $t('setup_guide.step_a3_or') }} <code>hermes gateway start</code> {{ $t('setup_guide.step_a3_suffix') }})</li>
+                      <li>{{ $t('setup_guide.step_a4_prefix') }} <code>curl -H "Authorization: Bearer &lt;key&gt;" http://127.0.0.1:8642/health</code> → <code>{"status":"ok"}</code></li>
+                      <li>{{ $t('setup_guide.step_a5_prefix') }} <strong>Base URL</strong> = <code>http://&lt;hermes-host&gt;:8642</code> {{ $t('setup_guide.step_a5_and') }} <strong>API Key</strong> = {{ $t('setup_guide.step_a5_suffix') }}</li>
                     </ol>
-                    <h5>B. Let Hermes do it (paste this into any running Hermes chat)</h5>
+                    <h5>{{ $t('setup_guide.section_b') }}</h5>
                     <div class="copy-block">
-                      <button class="copy-btn" @click="copyHermesPrompt">📋 Copy prompt</button>
+                      <button class="copy-btn" @click="copyHermesPrompt">📋 {{ $t('setup_guide.copy_prompt') }}</button>
                       <pre>{{ hermesSetupPrompt() }}</pre>
                     </div>
                     <p class="helper" style="margin-top:8px">
-                      <strong>Tip</strong>: if other machines on your LAN need to reach Hermes, keep <code>API_SERVER_HOST=0.0.0.0</code> and use a key ≥ 8 chars — Hermes refuses an empty key with a network-bound host.
+                      <strong>{{ $t('setup_guide.tip_label') }}</strong>{{ $t('setup_guide.tip_body') }}
                     </p>
                   </details>
 
