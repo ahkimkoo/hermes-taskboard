@@ -1,13 +1,15 @@
 # Hermes Task Board
 
-**Stop running Hermes Agent one chat at a time — turn it into a task queue you can walk away from.**  
-**别再守着 Hermes Agent 一个对话一个对话地跑 —— 把它变成可以走开的任务队列。**
+**Stop chatting one task at a time — a kanban that queues [Hermes Agent](https://github.com/NousResearch/hermes-agent) for batch execution.**  
+**别再一件一件聊了，一个看板让 [Hermes](https://github.com/NousResearch/hermes-agent) 排队批量干活。**
 
-> You're already chatting with [Hermes Agent](https://github.com/NousResearch/hermes-agent) one task at a time — that's fine until you have ten things you want it to handle. Task Board lets you write them all down, set who waits for whom, hit Start, and walk away. Hermes works through your list (in order or several at once), each task in its own session, every tool call streaming live so you can verify the result and follow up — same as you would in chat, just without sitting there waiting.
+> Drag cards to plan your tasks, dispatch them in one click — orchestrating Hermes's AI workflow feels as intuitive as arranging sticky notes on a wall.
 >
-> 你应该已经在用 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 了 —— 一次开一个对话，看着它干完，再开下一个。这个流程平时挺好，但当你有十件事想交给它处理的时候就开始拖后腿了。任务看板让你**一口气把要做的事全写下来**、标好谁先谁后，点开始之后就可以走开。Hermes 会按你的清单一件件做（或者几件一起做），每个任务一个独立会话，工具调用实时显示在你眼前 —— 验收、追问、重跑都跟在聊天窗口里一样自然，只是不用一直守着。
+> 用卡片拖拽编排任务，一键批量派发 —— 让 Hermes 的 AI 工作流调度像贴纸排版一样轻松直观。
+
+> A kanban-style task scheduling system purpose-built for Hermes Agent — upgrades single-threaded conversations into a batch-dispatchable, live-monitored, auto-executing AI workflow engine.
 >
-> 🚀 一个 Go 二进制 或 `docker compose up` · 多用户隔离 · 定时任务 · 实时事件流 · 中英文界面
+> 一款为 Hermes Agent 设计的看板式任务调度系统，将单线程对话升级为可批量派发、实时监控、自动执行的 AI 工作流引擎。
 
 [English](#english) · [简体中文](#简体中文) · [Operator Manual (EN)](docs/manual.en.md) · [操作手册 (中文)](docs/manual.zh-CN.md)
 
