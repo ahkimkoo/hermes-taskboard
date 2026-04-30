@@ -272,7 +272,7 @@ const NewTaskModal = {
   },
   template: `
     <div class="modal-overlay" :class="{ fullscreen: fullscreen }">
-      <div class="modal" :class="{ fullscreen: fullscreen }" style="max-width:640px">
+      <div class="modal" :class="{ fullscreen: fullscreen }" :style="fullscreen ? '' : 'max-width:640px'">
         <div class="modal-header">
           <h2>{{ $t('action.new_task') }}</h2>
           <div class="modal-header-actions">

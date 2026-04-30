@@ -3,6 +3,12 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-04-30 — v0.3.28
+
+### Fix: NewTaskModal fullscreen only stretched vertically
+
+v0.3.27 added the fullscreen toggle to the new-task modal but left the inline `style="max-width:640px"` on the modal div. Inline styles beat the `.modal.fullscreen { max-width: none }` rule, so toggling fullscreen filled the viewport top-to-bottom but kept the same 640 px column width. Switched to a Vue conditional binding (`:style="fullscreen ? '' : 'max-width:640px'"`) so the cap only applies in windowed mode.
+
 ## 2026-04-28 — v0.3.27
 
 ### NewTaskModal gains the fullscreen toggle
