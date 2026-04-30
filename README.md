@@ -1,10 +1,10 @@
 # Hermes Task Board
 
-> **Tired of running [Hermes Agent](https://github.com/NousResearch/hermes-agent) one chat at a time?** Task Board turns your existing Hermes into a parallel batch worker. Queue your backlog, set priorities and dependencies, hit **Start**, and watch tasks run sequentially or in parallel — each with its own session, live tool-call stream, retry / stop, and verifiable output. Built for Hermes users who feel the chat-only ceiling.
+> You're already chatting with [Hermes Agent](https://github.com/NousResearch/hermes-agent) one task at a time — that's fine until you have ten things you want it to handle. Task Board lets you write them all down, set who waits for whom, hit Start, and walk away. Hermes works through your list (in order or several at once), each task in its own session, every tool call streaming live so you can verify the result and follow up — same as you would in chat, just without sitting there waiting.
 >
-> **嫌 Hermes 一次只能聊一个对话？** 任务看板把你已经在用的 Hermes 变成并行批处理工作者。把待办全列出来、标好优先级和依赖、按下「开始」 —— 让任务串行或并行跑起来，每个任务都有独立会话、实时工具调用流、可重跑可中断、结果可验证。给已经卡在「一次一个聊天」瓶颈上的 Hermes 用户。
+> 你应该已经在用 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 了 —— 一次开一个对话，看着它干完，再开下一个。这个流程平时挺好，但当你有十件事想交给它处理的时候就开始拖后腿了。任务看板让你**一口气把要做的事全写下来**、标好谁先谁后，点开始之后就可以走开。Hermes 会按你的清单一件件做（或者几件一起做），每个任务一个独立会话，工具调用实时显示在你眼前 —— 验收、追问、重跑都跟在聊天窗口里一样自然，只是不用一直守着。
 >
-> 🚀 Single Go binary or `docker compose up` · per-user isolation with mandatory login · scheduled runs · live SSE streaming · multi-language UI
+> 🚀 一个 Go 二进制 或 `docker compose up` · 多用户隔离 · 定时任务 · 实时事件流 · 中英文界面
 
 [English](#english) · [简体中文](#简体中文) · [Operator Manual (EN)](docs/manual.en.md) · [操作手册 (中文)](docs/manual.zh-CN.md)
 
@@ -94,29 +94,29 @@ On first visit you'll land on the login page. The board ships with a default adm
 
 Once logged in, click **⚙ Settings → Hermes Servers → New server**, point `base_url` at `http://127.0.0.1:8642` and paste the same `API_SERVER_KEY`. Hit **Test Connection** — green means you're good. Back on the board, create a task and click **▶ Start**.
 
-#### Authentication & multi-user
+#### Login, password, and how each user's data is laid out
 
-**Login is mandatory.** There is no anonymous mode and no read-only landing page. Every visit hits `/login` first and resolves to a signed session cookie before the board renders. The default admin (**`admin` / `admin123`**) is created on first boot if no users exist; change the password the moment you log in via **⚙ Settings → Access control**, or run `./hermes-taskboard -data ./data --reset-admin` to put it back to default if you locked yourself out.
+You always log in — there's no guest view or read-only homepage. The first time the server boots with no users on disk, it creates a default admin for you: username `admin`, password `admin123`. Sign in and change that password right away under **⚙ Settings → Access control**. Lock yourself out? Stop the server and run `./hermes-taskboard -data ./data --reset-admin` to put the admin password back to the default.
 
-Passwords are stored as **bcrypt hashes** (cost 12) inside each user's `config.yaml`. Plaintext is never written to disk. Hermes API keys live in the same file but as **AEAD-encrypted ciphertext** — the symmetric key is auto-generated at first boot into `data/.secret` (chmod 0600); rotate it by deleting the file (you'll need to re-enter all API keys after).
+Passwords aren't stored as plaintext. They're hashed with bcrypt (cost 12) inside each user's own `config.yaml`. Hermes API keys live in the same file too, but encrypted — the encryption key is auto-generated on first boot into `data/.secret` (mode 0600). If you ever need to rotate that key, delete the file; you'll just have to re-enter your Hermes API keys afterwards.
 
-**Per-user folder layout.** Every user owns a directory. Wiping a user is `rm -rf data/{username}/` — no cross-user state to clean up:
+Every user owns a folder. Want to completely remove someone? `rm -rf data/{username}/` and they're gone, with zero impact on anyone else:
 
 ```
 data/
-  config.yaml                          # global: server listen, scheduler, archive, OSS, session
-  .secret                              # AEAD key for encrypting Hermes API keys at rest (chmod 0600)
+  config.yaml                          # global: listen address, scheduler, archive, OSS, session
+  .secret                              # AEAD key used to encrypt Hermes API keys at rest (chmod 0600)
   admin/
-    config.yaml                        # per-user: bcrypt hash, is_admin, preferences, hermes_servers[]
-    disabled                           # sentinel — presence disables the account (admins can flip via UI)
-    db/taskboard.db                    # this user's tasks, deps, attempts, schedules (SQLite, WAL)
-    task/{task-id}.json                # task description (markdown source) + metadata
-    attempt/{attempt-id}/              # one directory per attempt
-      events.ndjson                    # full Hermes event stream for replay
-      meta.json                        # session id, run id, server id, model, input/output counters
-    tags/{name}.private                # private tag (visible only to admin)
-    tags/{name}.public                 # shared tag (visible read-only to other users)
-  tony/                                # every field above scoped to Tony
+    config.yaml                        # this user: bcrypt hash, is_admin, preferences, hermes_servers[]
+    disabled                           # sentinel — if this file exists the account can't log in
+    db/taskboard.db                    # this user's tasks, deps, attempts, schedules (SQLite WAL)
+    task/{task-id}.json                # task descriptions (markdown source) + metadata
+    attempt/{attempt-id}/
+      events.ndjson                    # full Hermes event stream — replay this and you see exactly what happened
+      meta.json                        # session id, run id, server, model, token counters
+    tags/{name}.private                # private tag, only this user sees it
+    tags/{name}.public                 # shared tag, other users see it (read-only)
+  tony/                                # everything above, scoped entirely to Tony
     config.yaml
     db/…
     task/…
@@ -124,16 +124,13 @@ data/
     tags/…
 ```
 
-**Strict isolation.** Each user only sees their own board, their own attempts, their own tags. Admins do **not** get a cross-user view — to work as another user you log out and log back in as them. The board treats username == directory name as the canonical identity, so renaming a user means delete-and-recreate.
+Each user only sees their own stuff — board, attempts, tags, all of it. Even the admin can't peek into another user's account; if you need to act as someone else, log out and log in as them. The board uses "username == directory name" as the one true identity, so renaming a user isn't a thing — to "rename" you delete and recreate.
 
-**Sharing.** Tags and Hermes servers can be marked **Shared**. Shared entries show up in every other user's list as read-only — visible + usable to dispatch tasks against, but the owner is the only one who can edit / delete them. Tag sharing lives in the file extension (`.public` vs `.private`); server sharing is the `shared: true` flag in YAML.
+The two things you *can* share across users are **tags** and **Hermes servers**. Mark them shared and they show up in everyone else's lists, usable but not editable — only the owner can change or delete them. Tag sharing is encoded in the filename (`.public` vs `.private`); server sharing is just `shared: true` in the YAML.
 
-**Admin features** (visible only when `is_admin: true`):
+If `is_admin: true` you get two extra panels: **⚙ Settings → Users** (create users, reset their passwords, disable accounts, hand out the admin flag), and **⚙ Settings → Global** (tune global / per-server concurrency, OSS image upload, archive retention, the scheduler, plus a "Reload config from file" escape hatch).
 
-- **⚙ Settings → Users** — invite new users, reset their passwords, toggle the `disabled` sentinel, promote / demote admin rights.
-- **⚙ Settings → Global** — scheduler tick interval, max concurrent attempts (global / per server), OSS integration for image upload, archive retention, "Reload config from file".
-
-**Migration from pre-v0.3.0.** When an older single-DB install boots against a v0.3.0+ binary for the first time, a one-shot migration reassigns every task / tag / Hermes server to `admin` and moves them into `data/admin/`. The old central `data/db/taskboard.db` is removed once rows are copied (the AEAD key at `data/.secret` stays put — it's still used at runtime). **Back up `data/` externally before upgrading** if you want a safety net; the migration does not keep one for you.
+**Upgrading from before v0.3.0?** The first boot on the new binary runs a one-shot migration: every task, tag, and Hermes server gets reassigned to `admin` and moved under `data/admin/`. The old `data/db/taskboard.db` is removed once the data has been copied (`data/.secret` stays — the runtime still needs it). The migration does **not** keep a backup for you, so `tar czf data-backup.tar.gz data/` first if you want a safety net.
 
 ### Set up Hermes for this board
 
@@ -377,29 +374,29 @@ API_SERVER_ENABLED=true API_SERVER_KEY=你的强密钥 hermes gateway run
 
 登录后点 **⚙ 设置 → Hermes Servers → 新增 server**，把 `base_url` 填成 `http://127.0.0.1:8642`，`api_key` 填刚才那个强密钥，点 **测试连接**，绿了就 OK。回到看板，新建一张任务，点 **▶ 开始** 即可。
 
-#### 登录与多用户隔离
+#### 登录、密码、每个用户的数据怎么放
 
-**登录是必须的**。没有匿名模式、没有只读首页 —— 每次访问都先到 `/login`，签发出会话 cookie 之后才能看到看板。系统首次启动且没有任何用户时，会自动创建一个默认管理员（**`admin` / `admin123`**）；登录后请立刻在 **⚙ 设置 → 访问控制** 里改掉默认密码。万一忘了，停服后执行 `./hermes-taskboard -data ./data --reset-admin` 可把 admin 拉回默认。
+打开网址永远先要登录，没有"游客模式"也没有只读首页。第一次启动如果磁盘上还没有用户，系统会顺手帮你建一个默认管理员：用户名 `admin`，密码 `admin123`。登进去之后第一件事就是去 **⚙ 设置 → 访问控制** 把密码改了。万一哪天密码忘了把自己锁外面，停掉服务跑一下 `./hermes-taskboard -data ./data --reset-admin`，admin 的密码就回到默认值。
 
-密码以 **bcrypt 哈希**（cost 12）存在每个用户自己的 `config.yaml` 里，磁盘上从不留明文。Hermes 的 API key 也存在同一个文件，但是 **AEAD 加密** 后的密文 —— 加密用的对称密钥在首次启动时自动生成到 `data/.secret`（权限 0600）；想换密钥就把这个文件删掉，但所有 Hermes API key 都得重新输入。
+密码不是明文存的 —— 走 bcrypt 哈希（cost 12），写在每个用户自己的 `config.yaml` 里。Hermes 的 API key 也在同一个文件，但是经过加密之后再写入；加密用的钥匙在第一次启动时自动生成到 `data/.secret`（权限 0600）。哪天你想换钥匙，把这个文件删掉就行，代价是所有 Hermes API key 都得重新填一遍。
 
-**用户文件夹规范。** 每个用户独占一个目录，清理一个用户只要 `rm -rf data/{用户名}/` —— 完全不会牵连其他人：
+每个用户都各自有一个目录。想完全清掉一个用户？`rm -rf data/{用户名}/` 就够了，其他人毫发无损：
 
 ```
 data/
   config.yaml                          # 全局：监听地址、调度、归档、OSS、session
-  .secret                              # AEAD 主密钥，给 Hermes API key 加密用（chmod 0600）
+  .secret                              # 给 Hermes API key 做加密用的密钥（chmod 0600）
   admin/
-    config.yaml                        # 用户级：bcrypt 密码哈希、是否管理员、偏好、hermes_servers[]
-    disabled                           # 哨兵文件 —— 存在即代表该账号被禁用（管理员可在界面切换）
-    db/taskboard.db                    # 此用户的 tasks / deps / attempts / schedules（SQLite, WAL）
+    config.yaml                        # 这个用户的 bcrypt 密码哈希、是否管理员、偏好、hermes_servers[]
+    disabled                           # 哨兵文件 —— 这个文件存在，账号就登不进来
+    db/taskboard.db                    # 这个用户的 tasks / deps / attempts / schedules（SQLite WAL）
     task/{task-id}.json                # 任务描述（markdown 原文）+ 元数据
-    attempt/{attempt-id}/              # 每次尝试一个目录
-      events.ndjson                    # 完整的 Hermes 事件流，可以回放
+    attempt/{attempt-id}/
+      events.ndjson                    # 完整的 Hermes 事件流，回放它就能看到当时发生了什么
       meta.json                        # 会话 ID、运行 ID、所用 server、model、token 计数
-    tags/{name}.private                # 私有标签（只有自己可见）
-    tags/{name}.public                 # 共享标签（其他用户只读可见）
-  tony/                                # 上面的所有字段全部隔离到 Tony 自己的目录
+    tags/{name}.private                # 私有标签，只有自己看得到
+    tags/{name}.public                 # 共享标签，其他用户也能看到（只读）
+  tony/                                # 上面的所有内容，全都隔离在 Tony 自己的目录里
     config.yaml
     db/…
     task/…
@@ -407,16 +404,13 @@ data/
     tags/…
 ```
 
-**严格隔离。** 每个用户只能看到自己的看板、自己的尝试、自己的标签。**管理员也不能跨用户查看** —— 想以别人的视角操作，只能登出再用对方账号登入。系统把"用户名 == 目录名"视为唯一身份，所以重命名 = 删了重建。
+每个人只能看到自己的东西 —— 看板、attempt、标签都是。即使你是管理员也不能"穿越"到别人账号下浏览；要用别人的视角，就退出登录、再用他的账号登进来。系统认的是"用户名 == 文件夹名"这一组身份，所以并没有"改名"这回事，硬要改名只能删了重建。
 
-**共享机制。** 标签和 Hermes server 都可以打 **共享** 标记。共享之后会出现在其他用户的列表里，**只读、可用于派发任务，但只有所有者能编辑 / 删除**。标签的共享状态写在文件后缀里（`.public` vs `.private`）；server 的共享靠 YAML 里的 `shared: true` 字段。
+**唯一可以跨用户共享的两类东西**是标签和 Hermes server。打了共享标记之后，其他用户在自己的列表里能看到、能拿来派发任务，但是改不动也删不掉 —— 只有所有者有这个权限。标签的共享状态藏在文件后缀里（`.public` 是共享，`.private` 是私有），server 的共享则是 YAML 里那个 `shared: true` 字段。
 
-**管理员专享功能**（仅当 `is_admin: true` 可见）：
+如果你是管理员（`is_admin: true`），会多出两个面板：**⚙ 设置 → 用户管理** 用来新建用户、重置别人密码、禁用账号、给别人开/关管理员权限；**⚙ 设置 → 全局** 用来调全局并发、OSS 图床、归档保留天数、调度器节奏，也包括"从文件重新加载配置"这种应急按钮。
 
-- **⚙ 设置 → 用户管理** —— 新增用户、重置密码、切换 `disabled` 哨兵、把其他用户升降为管理员。
-- **⚙ 设置 → 全局** —— 调度器 tick 间隔、最大并发尝试数（全局 / 每 server）、OSS 图片上传集成、归档清理周期、"从文件重新加载配置"。
-
-**从 v0.3.0 之前的单库版本迁移。** 旧版看板（单一 DB 布局）第一次跑新二进制时，会触发一次性迁移：所有任务 / 标签 / Hermes server 全部归到 `admin` 名下、搬进 `data/admin/`。旧的 `data/db/taskboard.db` 在数据复制完之后会被删掉（AEAD 密钥 `data/.secret` 保留，运行时还要用）。**需要兜底就自己 `tar` 一份**，迁移过程不会自动保留副本。
+**从 v0.3.0 之前的版本升上来的话**，第一次启动新二进制会自动跑一次迁移：所有任务、标签、Hermes server 都被归到 `admin` 名下，搬进 `data/admin/`。旧的 `data/db/taskboard.db` 在数据复制完之后会被删除（`data/.secret` 留着，运行时还要用）。**迁移不会替你留备份**，所以升级前自己 `tar czf data-backup.tar.gz data/` 一下心里有底。
 
 ### Hermes 侧配置
 
