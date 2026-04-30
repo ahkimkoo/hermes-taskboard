@@ -1,5 +1,8 @@
 # Hermes Task Board
 
+**Stop running Hermes Agent one chat at a time — turn it into a task queue you can walk away from.**  
+**别再守着 Hermes Agent 一个对话一个对话地跑 —— 把它变成可以走开的任务队列。**
+
 > You're already chatting with [Hermes Agent](https://github.com/NousResearch/hermes-agent) one task at a time — that's fine until you have ten things you want it to handle. Task Board lets you write them all down, set who waits for whom, hit Start, and walk away. Hermes works through your list (in order or several at once), each task in its own session, every tool call streaming live so you can verify the result and follow up — same as you would in chat, just without sitting there waiting.
 >
 > 你应该已经在用 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 了 —— 一次开一个对话，看着它干完，再开下一个。这个流程平时挺好，但当你有十件事想交给它处理的时候就开始拖后腿了。任务看板让你**一口气把要做的事全写下来**、标好谁先谁后，点开始之后就可以走开。Hermes 会按你的清单一件件做（或者几件一起做），每个任务一个独立会话，工具调用实时显示在你眼前 —— 验收、追问、重跑都跟在聊天窗口里一样自然，只是不用一直守着。
