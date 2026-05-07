@@ -3,6 +3,27 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-05-07 — v0.3.29
+
+### Multi-image upload in the chat input
+
+The chat input bar inside an open task card gains a 📎 paperclip button between the textarea and the Send button. Clicking it opens a multi-select file picker (`accept="image/*" multiple`); each selected file is POSTed to the existing `/api/uploads` endpoint, and on success the returned URLs are prepended to the textarea content as a stacked markdown block:
+
+```
+![image-1](https://cdn/.../a.png)
+![image-2](https://cdn/.../b.png)
+
+your typed instructions here
+```
+
+The numbering continues past any image markdown that was already in the textarea, so a follow-up batch reads as `image-3` / `image-4` instead of clobbering the prior alt-text labels. The textarea's caret jumps to the end after upload so the user can keep typing without manually scrolling past the inserted lines.
+
+The button only renders when the App's `imageUploadEnabled` computed property is true — same gate `DescriptionEditor` already uses, which requires both `oss.enabled` AND a saved `oss_has_secret`. Without OSS configured the toolbar stays uncluttered: textarea + Send + Stop, exactly as before.
+
+A spinner glyph (⏳) replaces the paperclip while the upload round-trip is in flight; a second click during that window is suppressed by `disabled`.
+
+Tested end-to-end with Playwright — three screenshots confirm: (a) button hidden when OSS is off, (b) button visible when OSS is on, (c) markdown lines correctly prepended above the typed instruction.
+
 ## 2026-04-30 — v0.3.28
 
 ### Fix: NewTaskModal fullscreen only stretched vertically

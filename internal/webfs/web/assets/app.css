@@ -565,6 +565,19 @@ body.dragging-active * { cursor: grabbing !important; }
 .input-area { display: flex; flex-direction: column; margin-top: 8px; }
 .input-bar { display: flex; gap: 8px; align-items: flex-end; }
 .input-bar input { flex: 1; }
+/* Image-upload paperclip in the chat toolbar — only renders when the
+   server has Aliyun OSS configured (the Hermes-side LLM can't reach
+   localhost so a public URL is required). Sized to match the existing
+   send/stop buttons so the bar stays uniform. */
+.img-upload-btn {
+  flex: 0 0 auto;
+  min-width: 36px; min-height: 36px;
+  padding: 0 10px;
+  font-size: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.img-upload-btn:disabled { cursor: progress; opacity: 0.6; }
 /* Chat input is a textarea now so Enter inserts a newline (send is
    Ctrl/⌘ + Enter, see onInputKeydown). Starts at 1 row, auto-grows up to
    ~6 rows via JS (autoGrowInput); extra lines scroll inside. */

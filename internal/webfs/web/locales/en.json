@@ -115,6 +115,7 @@
   "attempt.help_title": "What is an Attempt?",
   "attempt.help": "An Attempt is one execution of this task. You can think of it as one run — a task can be re-run any number of times, but usually once is enough. A new Attempt dispatches the task to Hermes afresh; re-running is only useful when you genuinely want to start from scratch. To continue an existing execution with more context, just send a message in the existing Attempt.",
   "attempt.send_hint": "Ctrl/⌘ + Enter to send",
+  "attempt.upload_image_title": "Upload images (multi-select supported)",
   "action.confirm_stop": "Confirm stop?",
   "event.new_below": "new messages",
   "event.load_earlier": "↑ Load earlier",

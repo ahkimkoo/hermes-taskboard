@@ -115,6 +115,7 @@
   "attempt.help_title": "什么是「尝试」？",
   "attempt.help": "一次「尝试」 = 一次任务执行，可以简单理解为「跑一次」。同一个任务理论上可以反复跑多次，但一般来讲一次就够了——只有当你真的想重新从头再来，才需要再开一次新的 Attempt。如果只是想基于当前执行继续补充信息 / 追问，请直接在现有 Attempt 里发消息即可。",
   "attempt.send_hint": "Ctrl/⌘ + 回车 发送",
+  "attempt.upload_image_title": "上传图片（支持多选）",
   "action.confirm_stop": "确认停止？",
   "event.new_below": "新消息",
   "event.load_earlier": "↑ 加载更早",

@@ -407,6 +407,10 @@ const TaskModal = {
       // when closed; toggled by the small chevron, dismissed by
       // any outside click (see _onJumpDocClick handler below).
       jumpOpen: false,
+      // True while an image-upload round-trip is in flight; the
+      // 📎 button shows a spinner instead of the paperclip and
+      // ignores subsequent clicks.
+      uploadingImages: false,
     };
   },
   watch: {
@@ -699,6 +703,25 @@ const TaskModal = {
                               :placeholder="$t('placeholder.send_message')"
                               @keydown="onInputKeydown"
                               @input="autoGrowInput"></textarea>
+                    <!-- Image upload — only surfaced when OSS is wired up;
+                         without a public URL Hermes can't actually fetch
+                         what the user pastes (the LLM provider can't reach
+                         localhost). Reuses the same /api/uploads endpoint
+                         that DescriptionEditor uses. -->
+                    <button v-if="$root.imageUploadEnabled"
+                            type="button"
+                            class="ghost img-upload-btn"
+                            :disabled="uploadingImages"
+                            :title="$t('attempt.upload_image_title')"
+                            aria-label="Upload image"
+                            @click="pickChatImages">
+                      <span v-if="!uploadingImages">📎</span>
+                      <span v-else>⏳</span>
+                    </button>
+                    <input v-if="$root.imageUploadEnabled"
+                           type="file" accept="image/*" multiple
+                           ref="imgPicker" style="display:none"
+                           @change="onChatImagePick">
                     <button class="primary" @click="sendMsg">{{ $t('action.send') }}</button>
                     <button v-if="!confirmStop" class="danger" @click="confirmStop = true">
                       {{ $t('action.stop') }}
@@ -928,6 +951,55 @@ const TaskModal = {
       if (this.$refs.eventStream) this.$refs.eventStream.scrollBottom();
       try { await api('/api/attempts/' + this.activeAttemptId + '/messages', { method: 'POST', body: { text } }); }
       catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+    pickChatImages() {
+      const picker = this.$refs.imgPicker;
+      if (!picker) return;
+      // Reset value so the @change fires again if the user picks the
+      // exact same file twice in a row (browsers suppress identical
+      // selections otherwise).
+      picker.value = '';
+      picker.click();
+    },
+    async onChatImagePick(e) {
+      const files = Array.from(e.target.files || []).filter((f) => (f.type || '').startsWith('image/'));
+      if (files.length === 0) return;
+      this.uploadingImages = true;
+      try {
+        // Continue numbering past any image markdown that's already
+        // in the textarea so a follow-up batch reads as image-3 /
+        // image-4 instead of clobbering the prior alt-text labels.
+        const existing = this.input || '';
+        const matches = [...existing.matchAll(/!\[image-(\d+)\]/g)];
+        let nextIdx = matches.reduce((m, x) => Math.max(m, parseInt(x[1], 10)), 0) + 1;
+        const insertedLines = [];
+        for (const f of files) {
+          const fd = new FormData();
+          fd.append('file', f);
+          const res = await api('/api/uploads', { method: 'POST', body: fd });
+          if (!res || !res.url) throw new Error('upload returned no url');
+          insertedLines.push('![image-' + nextIdx + '](' + res.url + ')');
+          nextIdx++;
+        }
+        const block = insertedLines.join('\n');
+        // Prepend the new images to whatever the user has already
+        // typed, separated by a blank line so the markdown source
+        // stays readable. Cursor jumps to the end so the user can
+        // keep typing instructions below the images.
+        this.input = existing.trim() ? (block + '\n\n' + existing) : (block + '\n\n');
+        this.$nextTick(() => {
+          this.autoGrowInput();
+          const ta = this.$refs.messageInput;
+          if (ta) {
+            ta.focus();
+            ta.setSelectionRange(ta.value.length, ta.value.length);
+          }
+        });
+      } catch (err) {
+        toast(t('toast.error', { err: err.message || String(err) }), 'error');
+      } finally {
+        this.uploadingImages = false;
+      }
     },
     scrollModalBottom() {
       const body = this.$refs.modalBody;
