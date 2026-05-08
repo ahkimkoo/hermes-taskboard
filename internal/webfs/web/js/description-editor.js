@@ -3,10 +3,11 @@
 // POST /api/uploads which decides local vs Aliyun OSS storage.
 //
 // Supported file kinds (server enforces the same list):
-//   image  → ![](url)               (renders inline in preview)
-//   video  → [🎬 name.mp4](url)
-//   audio  → [🎵 name.mp3](url)
-//   doc    → [📄 name.pdf](url)
+//   image   → ![label](url)              (renders inline in preview)
+//   video   → [🎬 name.mp4](url)
+//   audio   → [🎵 name.mp3](url)
+//   doc     → [📄 name.pdf](url)
+//   archive → [📦 name.zip](url)
 //
 // Hermes consumes the description as text, so a public URL is required —
 // the editor disables uploads unless Aliyun OSS is configured.
@@ -18,7 +19,7 @@ import { renderMarkdown } from './markdown.js';
 // Extensions accepted by the file picker. The browser's `accept` attribute
 // also takes MIME wildcards so we mix both to be friendly with what the
 // system file dialog suggests.
-const ACCEPT_ATTR = 'image/*,video/*,audio/*,.pdf,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx';
+const ACCEPT_ATTR = 'image/*,video/*,audio/*,.pdf,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.rar,.gz,.tar,.tgz';
 const DOC_MIMES = new Set([
   'application/pdf',
   'text/plain',
@@ -29,40 +30,90 @@ const DOC_MIMES = new Set([
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/vnd.ms-powerpoint',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/zip',
+  'application/x-zip-compressed',
+  'application/x-rar-compressed',
+  'application/x-rar',
+  'application/gzip',
+  'application/x-gzip',
+  'application/x-tar',
 ]);
 const DOC_EXTS = new Set([
   '.pdf', '.txt', '.md',
   '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-  '.mp3', '.wav', '.m4a', '.mp4', '.mov', '.avi', '.webm',
+  '.mp3', '.wav', '.m4a', '.flac', '.mp4', '.mov', '.avi', '.webm',
+  '.zip', '.rar', '.gz', '.tar', '.tgz',
 ]);
+
+// MD5 (32 hex), SHA1 (40 hex), SHA256 (64 hex), UUID with/without dashes.
+const HASH_RE = /^([0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 function fileExt(name) {
   const i = (name || '').lastIndexOf('.');
   return i < 0 ? '' : name.slice(i).toLowerCase();
 }
 
+function isMeaningfulName(filename) {
+  if (!filename) return false;
+  const base = filename.replace(/\.[^.]+$/, '');
+  return !HASH_RE.test(base);
+}
+
+function fileCategory(file) {
+  const mt = (file.type || '').toLowerCase();
+  if (mt.startsWith('image/')) return 'image';
+  if (mt.startsWith('video/')) return 'video';
+  if (mt.startsWith('audio/')) return 'audio';
+  const ext = fileExt(file.name);
+  if (['.mp4', '.mov', '.avi', '.webm'].includes(ext)) return 'video';
+  if (['.mp3', '.wav', '.m4a', '.flac'].includes(ext)) return 'audio';
+  if (['.zip', '.rar', '.gz', '.tar', '.tgz'].includes(ext)) return 'archive';
+  return 'doc';
+}
+
+// Count existing instances of a file category in the markdown text
+// so the next inserted file gets a unique sequential number.
+function nextCounterInText(text, category) {
+  const pats = {
+    image: /!\[/g,
+    video: /\[🎬/g,
+    audio: /\[🎵/g,
+    doc: /\[📄/g,
+    archive: /\[📦/g,
+  };
+  const re = pats[category];
+  return re ? ((text || '').match(re) || []).length + 1 : 1;
+}
+
 function isUploadable(file) {
   if (!file) return false;
-  const t = (file.type || '').toLowerCase();
-  if (t.startsWith('image/')) return true;
-  if (t.startsWith('video/')) return true;
-  if (t.startsWith('audio/')) return true;
-  // Strip ;charset= etc.
-  const bare = t.split(';')[0].trim();
+  const mt = (file.type || '').toLowerCase();
+  if (mt.startsWith('image/')) return true;
+  if (mt.startsWith('video/')) return true;
+  if (mt.startsWith('audio/')) return true;
+  const bare = mt.split(';')[0].trim();
   if (DOC_MIMES.has(bare)) return true;
-  // Some browsers send '' or 'application/octet-stream' for documents —
-  // fall back to extension matching.
   if (DOC_EXTS.has(fileExt(file.name))) return true;
   return false;
 }
 
-function snippetFor(file, url) {
-  const t = (file.type || '').toLowerCase();
-  const name = (file.name || 'file').replace(/[\[\]]/g, '');
-  if (t.startsWith('image/')) return '![](' + url + ')';
-  if (t.startsWith('video/')) return '[🎬 ' + name + '](' + url + ')';
-  if (t.startsWith('audio/')) return '[🎵 ' + name + '](' + url + ')';
-  return '[📄 ' + name + '](' + url + ')';
+function snippetFor(file, url, existingText) {
+  const mt = (file.type || '').toLowerCase();
+  const cat = fileCategory(file);
+
+  let label;
+  if (isMeaningfulName(file.name)) {
+    label = (file.name || 'file').replace(/[\[\]]/g, '');
+  } else {
+    const n = nextCounterInText(existingText, cat);
+    label = t('upload.fallback.' + cat) + n;
+  }
+
+  if (mt.startsWith('image/') || cat === 'image') return '![' + label + '](' + url + ')';
+  if (cat === 'video') return '[🎬 ' + label + '](' + url + ')';
+  if (cat === 'audio') return '[🎵 ' + label + '](' + url + ')';
+  if (cat === 'archive') return '[📦 ' + label + '](' + url + ')';
+  return '[📄 ' + label + '](' + url + ')';
 }
 
 export const DescriptionEditor = {
@@ -147,8 +198,9 @@ export const DescriptionEditor = {
       try {
         const fd = new FormData();
         fd.append('file', file);
+        const existingText = this.modelValue || '';
         const res = await api('/api/uploads', { method: 'POST', body: fd });
-        this.insertAtCursor(snippetFor(file, res.url));
+        this.insertAtCursor(snippetFor(file, res.url, existingText));
       } catch (err) {
         alert(t('toast.error', { err: err.message }));
       } finally {

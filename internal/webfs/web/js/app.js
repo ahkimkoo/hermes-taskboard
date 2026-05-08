@@ -361,6 +361,65 @@ const NewTaskModal = {
   },
 };
 
+// ---- File upload helpers shared by the chat input ----
+
+const CHAT_HASH_RE = /^([0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const CHAT_UPLOAD_ACCEPT = 'image/*,video/*,audio/*,.pdf,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.rar,.gz,.tar,.tgz';
+const CHAT_UPLOAD_EXTS = new Set([
+  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp',
+  '.mp4', '.mov', '.avi', '.webm',
+  '.mp3', '.wav', '.m4a', '.flac',
+  '.pdf', '.txt', '.md', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.zip', '.rar', '.gz', '.tar', '.tgz',
+]);
+
+function chatIsMeaningful(filename) {
+  if (!filename) return false;
+  const base = filename.replace(/\.[^.]+$/, '');
+  return !CHAT_HASH_RE.test(base);
+}
+
+function chatFileCategory(file) {
+  const mt = (file.type || '').toLowerCase();
+  if (mt.startsWith('image/')) return 'image';
+  if (mt.startsWith('video/')) return 'video';
+  if (mt.startsWith('audio/')) return 'audio';
+  const ext = '.' + (file.name || '').split('.').pop().toLowerCase();
+  if (['.mp4', '.mov', '.avi', '.webm'].includes(ext)) return 'video';
+  if (['.mp3', '.wav', '.m4a', '.flac'].includes(ext)) return 'audio';
+  if (['.zip', '.rar', '.gz', '.tar', '.tgz'].includes(ext)) return 'archive';
+  return 'doc';
+}
+
+function chatFileOk(file) {
+  const mt = (file.type || '').toLowerCase();
+  if (mt.startsWith('image/') || mt.startsWith('video/') || mt.startsWith('audio/')) return true;
+  const ext = '.' + (file.name || '').split('.').pop().toLowerCase();
+  return CHAT_UPLOAD_EXTS.has(ext);
+}
+
+// counters is a mutable object { image, video, audio, doc, archive } tracking
+// how many of each category have been inserted so far (base + this batch).
+function chatFileSnippet(file, url, counters) {
+  const cat = chatFileCategory(file);
+  counters[cat] = (counters[cat] || 0) + 1;
+  const n = counters[cat];
+  const mt = (file.type || '').toLowerCase();
+
+  let label;
+  if (chatIsMeaningful(file.name)) {
+    label = (file.name || 'file').replace(/[\[\]]/g, '');
+  } else {
+    label = t('upload.fallback.' + cat) + n;
+  }
+
+  if (mt.startsWith('image/') || cat === 'image') return '![' + label + '](' + url + ')';
+  if (cat === 'video') return '[🎬 ' + label + '](' + url + ')';
+  if (cat === 'audio') return '[🎵 ' + label + '](' + url + ')';
+  if (cat === 'archive') return '[📦 ' + label + '](' + url + ')';
+  return '[📄 ' + label + '](' + url + ')';
+}
+
 const TaskModal = {
   components: { DescriptionEditor, EventStream, TagInput, DependencyPicker, SchedulePicker },
   props: ['taskId'],
@@ -379,6 +438,7 @@ const TaskModal = {
       input: '',
       listOpen: false,          // attempt list collapse state
       confirmNewAttempt: false, // confirmation modal guard
+      confirmCopy: false,
       confirmDelete: false,
       confirmDeleteAttemptId: null, // id of attempt showing its confirm state
       confirmStop: false,       // inline 2-click confirm for Stop
@@ -455,6 +515,7 @@ const TaskModal = {
       if (!s) return '';
       return s.profile || 'hermes-agent';
     },
+    chatUploadAccept() { return CHAT_UPLOAD_ACCEPT; },
     isArchive() { return this.task && this.task.status === 'archive'; },
     canStartFirst() {
       // Gate for the ▶ 立即执行 button on a task with zero attempts.
@@ -488,6 +549,15 @@ const TaskModal = {
             <button v-if="task && !editing" class="modal-edit-btn" @click="editing = true">
               <span class="modal-edit-icon">✎</span>
               <span class="modal-edit-label">{{ $t('action.edit') }}</span>
+            </button>
+            <button v-if="task && !editing" class="ghost copy-task-btn"
+                    :title="$t('action.copy_task')"
+                    aria-label="Copy task"
+                    @click="confirmCopy = true">
+              <svg viewBox="0 0 20 20" width="15" height="15" aria-hidden="true">
+                <rect x="7" y="7" width="10" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M5 13H4a1.5 1.5 0 01-1.5-1.5v-9A1.5 1.5 0 014 1h9A1.5 1.5 0 0114.5 2.5V4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
             </button>
             <!-- Jump-to-section menu. Long task cards bury the
                  sections users care about behind a scroll; this
@@ -674,7 +744,7 @@ const TaskModal = {
                      :class="{active: a.id === activeAttemptId}"
                      @click="activeAttemptId = a.id">
                   <div class="state" :class="a.state">{{ $t('attempt.state.' + a.state) }}</div>
-                  <div class="meta">{{ a.server_id }} / {{ a.model }}</div>
+                  <div class="meta">{{ serverDisplay(a.server_id) }}</div>
                   <div class="time">{{ formatTime(a.started_at) }}</div>
                   <div class="shortid">{{ a.id.slice(0,8) }}</div>
                   <button v-if="canDeleteAttempt(a) && confirmDeleteAttemptId !== a.id"
@@ -712,14 +782,14 @@ const TaskModal = {
                             type="button"
                             class="ghost img-upload-btn"
                             :disabled="uploadingImages"
-                            :title="$t('attempt.upload_image_title')"
-                            aria-label="Upload image"
+                            :title="$t('attempt.upload_file_title')"
+                            aria-label="Upload file"
                             @click="pickChatImages">
                       <span v-if="!uploadingImages">📎</span>
                       <span v-else>⏳</span>
                     </button>
                     <input v-if="$root.imageUploadEnabled"
-                           type="file" accept="image/*" multiple
+                           type="file" :accept="chatUploadAccept" multiple
                            ref="imgPicker" style="display:none"
                            @change="onChatImagePick">
                     <button class="primary" @click="sendMsg">{{ $t('action.send') }}</button>
@@ -746,6 +816,20 @@ const TaskModal = {
           <button v-if="isArchive && confirmDelete" class="danger" @click="del">
             {{ $t('action.confirm_delete') }}
           </button>
+        </div>
+
+        <!-- Copy task confirmation -->
+        <div v-if="confirmCopy" class="modal-overlay inner" @click.self="confirmCopy = false">
+          <div class="modal confirm">
+            <div class="modal-body">
+              <p><strong>{{ $t('confirm.copy_task.title') }}</strong></p>
+              <p class="muted">{{ $t('confirm.copy_task.body') }}</p>
+            </div>
+            <div class="modal-footer">
+              <button @click="confirmCopy = false">{{ $t('action.cancel') }}</button>
+              <button class="primary" @click="copyTask">{{ $t('action.confirm') }}</button>
+            </div>
+          </div>
         </div>
 
         <!-- New attempt confirmation (#3) -->
@@ -962,30 +1046,29 @@ const TaskModal = {
       picker.click();
     },
     async onChatImagePick(e) {
-      const files = Array.from(e.target.files || []).filter((f) => (f.type || '').startsWith('image/'));
+      const files = Array.from(e.target.files || []).filter(chatFileOk);
       if (files.length === 0) return;
       this.uploadingImages = true;
       try {
-        // Continue numbering past any image markdown that's already
-        // in the textarea so a follow-up batch reads as image-3 /
-        // image-4 instead of clobbering the prior alt-text labels.
         const existing = this.input || '';
-        const matches = [...existing.matchAll(/!\[image-(\d+)\]/g)];
-        let nextIdx = matches.reduce((m, x) => Math.max(m, parseInt(x[1], 10)), 0) + 1;
+        // Initialize per-category counters from already-present markdown
+        // so a follow-up batch continues numbering where the previous left off.
+        const counters = {
+          image:   ((existing.match(/!\[/g))   || []).length,
+          video:   ((existing.match(/\[🎬/g))  || []).length,
+          audio:   ((existing.match(/\[🎵/g))  || []).length,
+          doc:     ((existing.match(/\[📄/g))  || []).length,
+          archive: ((existing.match(/\[📦/g))  || []).length,
+        };
         const insertedLines = [];
         for (const f of files) {
           const fd = new FormData();
           fd.append('file', f);
           const res = await api('/api/uploads', { method: 'POST', body: fd });
           if (!res || !res.url) throw new Error('upload returned no url');
-          insertedLines.push('![image-' + nextIdx + '](' + res.url + ')');
-          nextIdx++;
+          insertedLines.push(chatFileSnippet(f, res.url, counters));
         }
         const block = insertedLines.join('\n');
-        // Prepend the new images to whatever the user has already
-        // typed, separated by a blank line so the markdown source
-        // stays readable. Cursor jumps to the end so the user can
-        // keep typing instructions below the images.
         this.input = existing.trim() ? (block + '\n\n' + existing) : (block + '\n\n');
         this.$nextTick(() => {
           this.autoGrowInput();
@@ -1000,6 +1083,29 @@ const TaskModal = {
       } finally {
         this.uploadingImages = false;
       }
+    },
+    async copyTask() {
+      this.confirmCopy = false;
+      try {
+        const now = new Date();
+        const ts = now.getFullYear() + '-' +
+          String(now.getMonth() + 1).padStart(2, '0') + '-' +
+          String(now.getDate()).padStart(2, '0') + ' ' +
+          String(now.getHours()).padStart(2, '0') + ':' +
+          String(now.getMinutes()).padStart(2, '0');
+        const payload = {
+          title: this.task.title + ' [' + ts + ']',
+          description: this.task.description || '',
+          priority: this.task.priority,
+          trigger_mode: this.task.trigger_mode,
+          preferred_server: this.task.preferred_server || '',
+          tags: [...(this.task.tags || [])],
+          status: 'draft',
+        };
+        await api('/api/tasks', { method: 'POST', body: payload });
+        this.$emit('refresh');
+        toast(t('toast.task_copied'));
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
     scrollModalBottom() {
       const body = this.$refs.modalBody;

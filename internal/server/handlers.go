@@ -1490,6 +1490,13 @@ func uploadTypeAllowed(contentType, filename string) bool {
 		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":       true,
 		"application/vnd.ms-powerpoint":                                            true,
 		"application/vnd.openxmlformats-officedocument.presentationml.presentation": true,
+		"application/zip":              true,
+		"application/x-zip-compressed": true,
+		"application/x-rar-compressed": true,
+		"application/x-rar":            true,
+		"application/gzip":             true,
+		"application/x-gzip":           true,
+		"application/x-tar":            true,
 	}
 	bare := ct
 	if i := strings.IndexByte(bare, ';'); i >= 0 {
@@ -1501,8 +1508,9 @@ func uploadTypeAllowed(contentType, filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
 	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
-		".mp3", ".wav", ".m4a", ".mp4", ".mov", ".avi", ".webm",
-		".pdf", ".txt", ".md", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx":
+		".mp3", ".wav", ".m4a", ".flac", ".mp4", ".mov", ".avi", ".webm",
+		".pdf", ".txt", ".md", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+		".zip", ".rar", ".gz", ".tar", ".tgz":
 		return true
 	}
 	return false

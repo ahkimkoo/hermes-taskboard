@@ -3,6 +3,32 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-05-08 — v0.3.30
+
+### All-type file upload in chat input and description editor
+
+The 📎 upload button in the chat input now accepts every file type Hermes can use — not just images. Supported categories:
+
+| Category | Extensions |
+|---|---|
+| Image | jpg / png / gif / webp / svg / bmp … |
+| Video | mp4 / mov / avi / webm |
+| Audio | mp3 / wav / m4a / **flac** |
+| Document | pdf / doc / docx / xls / xlsx / ppt / pptx / txt / md |
+| Archive | **zip / rar / gz / tar / tgz** |
+
+Each category inserts appropriate markdown: images use `![label](url)`, videos get `[🎬 name](url)`, audio `[🎵 name](url)`, archives `[📦 name](url)`, and other documents `[📄 name](url)`.
+
+**Smart filename fallback**: if the local filename looks like a hash string (MD5 / SHA1 / SHA256 / UUID — 32, 40, or 64 hex chars, or the 8-4-4-4-12 UUID format) the label is replaced with a sequential counter: `图片1`, `视频2`, `文档1`, `文件1`, etc. (i18n-aware — `image1`, `video2`, `doc1`, `file1` in English). Meaningful filenames are always used as-is.
+
+The same naming rules apply to the description editor's "Insert file" button, paste, and drag-and-drop — the counter is seeded from what's already in the textarea so a second batch of files continues numbering where the first left off.
+
+Server-side `uploadTypeAllowed` now accepts archive MIME types (`application/zip`, `application/x-rar-compressed`, `application/gzip`, `application/x-tar`) and `.flac` / `.tgz` by extension.
+
+### Task copy button
+
+A copy icon (two overlapping rectangles) appears in the task card header, just to the right of the Edit button. Clicking it shows a confirmation modal; confirming creates a new **Draft** task with the same title, description, priority, trigger mode, server, and tags. The title gets a timestamp suffix (`[2026-05-08 15:30]`) so the original and the copy are immediately distinguishable on the board. The new task appears in the Draft column without closing the current card.
+
 ## 2026-05-07 — v0.3.29
 
 ### Multi-image upload in the chat input
