@@ -19,7 +19,7 @@ var validTransitions = map[store.TaskStatus]map[store.TaskStatus]bool{
 	store.StatusPlan:    {store.StatusExecute: true, store.StatusDraft: true, store.StatusArchive: true},
 	store.StatusExecute: {store.StatusVerify: true, store.StatusArchive: true},
 	store.StatusVerify:  {store.StatusDone: true, store.StatusExecute: true, store.StatusArchive: true},
-	store.StatusDone:    {store.StatusArchive: true, store.StatusVerify: true},
+	store.StatusDone:    {store.StatusArchive: true, store.StatusVerify: true, store.StatusExecute: true},
 	store.StatusArchive: {store.StatusDraft: true, store.StatusPlan: true, store.StatusExecute: true, store.StatusVerify: true, store.StatusDone: true},
 }
 

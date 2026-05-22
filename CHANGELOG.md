@@ -3,6 +3,12 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-05-08 — v0.3.31
+
+### Fix: Done tasks no longer stuck when sending a follow-up message
+
+The board's state machine was missing the `Done → Execute` transition. When a user sent a follow-up message inside a task sitting in the Done column, the backend silently failed to move it back to Execute — the card stayed put while the attempt ran invisibly. Added the missing transition so Done tasks jump to Execute just like Verify and Archive tasks already did.
+
 ## 2026-05-08 — v0.3.30
 
 ### All-type file upload in chat input and description editor
