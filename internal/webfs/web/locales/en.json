@@ -12,6 +12,7 @@
   "col.desc.verify": "Needs your review or a follow-up question.",
   "col.desc.done": "Accepted and complete.",
   "col.desc.archive": "Retired. Drag here to move out of sight.",
+  "col.show_more": "Show {n} more",
   "action.new_task": "New Task",
   "action.settings": "Settings",
   "action.logout": "Log out",

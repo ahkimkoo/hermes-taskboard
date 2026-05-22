@@ -219,13 +219,25 @@ const Column = {
   components: { Card },
   props: ['status', 'tasks', 'headerAction'],
   emits: ['open-task'],
+  data() { return { expanded: false }; },
   computed: {
     emptyIcon() {
-      // Pick a lightweight glyph that hints at the column's semantics.
       return ({
         draft: '✎', plan: '☷', execute: '▶', verify: '✓', archive: '☐',
       })[this.status] || '•';
     },
+    visibleTasks() {
+      if (this.expanded || this.tasks.length <= 10) return this.tasks;
+      return this.tasks.slice(0, 10);
+    },
+    hiddenCount() {
+      return this.tasks.length - 10;
+    },
+  },
+  watch: {
+    // Reset expanded when column contents change so a fresh collapse
+    // applies after drag-and-drop or task creation.
+    tasks() { this.expanded = false; },
   },
   template: `
     <div class="column" :data-status="status">
@@ -240,7 +252,12 @@ const Column = {
         </div>
       </div>
       <div class="column-drop-zone">
-        <card v-for="task in tasks" :key="task.id" :task="task" @open="id => $emit('open-task', id)"/>
+        <card v-for="task in visibleTasks" :key="task.id" :task="task" @open="id => $emit('open-task', id)"/>
+        <button v-if="!expanded && hiddenCount > 0"
+                class="show-more-btn"
+                @click="expanded = true">
+          ▼ {{ $t('col.show_more', { n: hiddenCount }) }}
+        </button>
         <div v-if="!tasks.length" class="empty">
           <div class="empty-icon" aria-hidden="true">{{ emptyIcon }}</div>
           <div class="empty-title">{{ $t('empty.no_tasks') }}</div>
@@ -471,6 +488,7 @@ const TaskModal = {
       // 📎 button shows a spinner instead of the paperclip and
       // ignores subsequent clicks.
       uploadingImages: false,
+      chatDragOver: false,
     };
   },
   watch: {
@@ -763,7 +781,11 @@ const TaskModal = {
               </div>
               <div class="attempt-content">
                 <event-stream ref="eventStream" :attempt-id="activeAttemptId" :attempt-state="currentAttempt && currentAttempt.state"></event-stream>
-                <div v-if="activeAttemptId" class="input-area">
+                <div v-if="activeAttemptId" class="input-area"
+                     :class="{'chat-drag-over': chatDragOver}"
+                     @dragover.prevent="chatDragOver = true"
+                     @dragleave.prevent="chatDragOver = false"
+                     @drop.prevent="onChatDrop">
                   <div class="input-bar">
                     <textarea ref="messageInput"
                               class="message-input"
@@ -1053,6 +1075,45 @@ const TaskModal = {
         const existing = this.input || '';
         // Initialize per-category counters from already-present markdown
         // so a follow-up batch continues numbering where the previous left off.
+        const counters = {
+          image:   ((existing.match(/!\[/g))   || []).length,
+          video:   ((existing.match(/\[🎬/g))  || []).length,
+          audio:   ((existing.match(/\[🎵/g))  || []).length,
+          doc:     ((existing.match(/\[📄/g))  || []).length,
+          archive: ((existing.match(/\[📦/g))  || []).length,
+        };
+        const insertedLines = [];
+        for (const f of files) {
+          const fd = new FormData();
+          fd.append('file', f);
+          const res = await api('/api/uploads', { method: 'POST', body: fd });
+          if (!res || !res.url) throw new Error('upload returned no url');
+          insertedLines.push(chatFileSnippet(f, res.url, counters));
+        }
+        const block = insertedLines.join('\n');
+        this.input = existing.trim() ? (block + '\n\n' + existing) : (block + '\n\n');
+        this.$nextTick(() => {
+          this.autoGrowInput();
+          const ta = this.$refs.messageInput;
+          if (ta) {
+            ta.focus();
+            ta.setSelectionRange(ta.value.length, ta.value.length);
+          }
+        });
+      } catch (err) {
+        toast(t('toast.error', { err: err.message || String(err) }), 'error');
+      } finally {
+        this.uploadingImages = false;
+      }
+    },
+    async onChatDrop(e) {
+      this.chatDragOver = false;
+      if (!this.$root.imageUploadEnabled) return;
+      const files = Array.from(e.dataTransfer.files || []).filter(chatFileOk);
+      if (files.length === 0) return;
+      this.uploadingImages = true;
+      try {
+        const existing = this.input || '';
         const counters = {
           image:   ((existing.match(/!\[/g))   || []).length,
           video:   ((existing.match(/\[🎬/g))  || []).length,

@@ -46,13 +46,15 @@ Hermes Agent executes tools, edits files, and runs shell commands. This project 
 Frontend:
 
 - **6-column board** with drag-to-reorder and drag-to-transition (mobile: drag a card onto a column tab to move it cross-column).
-- **Markdown task descriptions** with image paste / drop (gated behind Aliyun OSS).
+- **Markdown task descriptions** with file paste / drop / pick — images, video, audio, documents, archives (gated behind Aliyun OSS).
 - **Bilingual UI** — `zh-CN` / `en`, hot-swap without reload.
 - **Dark / light theme** toggle.
 - **Tag system prompts** — every tag can carry a system prompt that gets injected into the Hermes call.
 - **Scheduled runs** — friendly cron picker (every-N-minutes, daily, weekly, monthly, advanced) with a live cron preview.
 - **Live Attempt panel** — chat-style streaming of Hermes's output, collapsible tool cards, per-message timestamps, copy-as-markdown buttons, jump-to-bottom pill, load-earlier pagination, manual refresh / reconnect.
-- **Multi-line auto-growing chat input** with Ctrl/⌘+Enter to send.
+- **Multi-line auto-growing chat input** with Ctrl/⌘+Enter to send, drag-and-drop file upload.
+- **Task copy** — one-click clone a task with a timestamp suffix.
+- **Column pagination** — 10 cards per column by default, expand to see all.
 - **PWA** — proper standalone install on iOS/Android with bundled icons.
 - **In-app help (?)** — bottom-right opens a bilingual operator manual.
 - **Frontend version chip** in the bottom-left for unambiguous bug-report builds.

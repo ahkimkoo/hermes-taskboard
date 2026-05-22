@@ -29,6 +29,22 @@ Server-side `uploadTypeAllowed` now accepts archive MIME types (`application/zip
 
 A copy icon (two overlapping rectangles) appears in the task card header, just to the right of the Edit button. Clicking it shows a confirmation modal; confirming creates a new **Draft** task with the same title, description, priority, trigger mode, server, and tags. The title gets a timestamp suffix (`[2026-05-08 15:30]`) so the original and the copy are immediately distinguishable on the board. The new task appears in the Draft column without closing the current card.
 
+### Chat input drag-and-drop file upload
+
+The chat input area now accepts files dragged from the desktop — no need to click the 📎 button. A visual highlight (accent-colored dashed outline + overlay hint) appears while dragging; dropping triggers the same upload-and-insert pipeline as the file picker. Drag-and-drop only activates when file upload is enabled (OSS configured).
+
+### Upload size limit raised to 4 GB
+
+Server-side `MaxBytesReader` and multipart parser cap were raised from 50 MB to 4 GB to accommodate large video and archive uploads.
+
+### Column task truncation with "Show more"
+
+Each board column now displays at most 10 task cards by default. If a column holds more than 10 tasks, a `▼ 展开更多（N）` / `▼ Show N more` button appears at the bottom in the accent color. Clicking it reveals all tasks in that column. The column auto-collapses when its contents change (drag, create, delete).
+
+### Attempts list: server name instead of ID
+
+The attempt list rows now show the server's display name (e.g. `My Hermes`) instead of its raw UUID, and the profile/model field has been removed.
+
 ## 2026-05-07 — v0.3.29
 
 ### Multi-image upload in the chat input

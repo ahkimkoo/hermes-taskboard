@@ -12,6 +12,7 @@
   "col.desc.verify": "需要确认或补充信息",
   "col.desc.done": "已验收完成",
   "col.desc.archive": "已归档 —— 拖到这里表示收起不再处理",
+  "col.show_more": "展开更多（{n}）",
   "action.new_task": "新建任务",
   "action.settings": "设置",
   "action.logout": "退出登录",

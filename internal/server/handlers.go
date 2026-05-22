@@ -1432,7 +1432,7 @@ func (s *Server) hUploadFile(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	const maxUpload = 50 << 20
+	const maxUpload = 4 << 30
 	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
 	if err := r.ParseMultipartForm(maxUpload); err != nil {
 		writeErr(w, 400, err)

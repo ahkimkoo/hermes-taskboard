@@ -92,6 +92,13 @@ button.icon { padding: 6px 8px; }
 
 /* column-drop-zone lets us drop even on an empty column */
 .column-drop-zone { flex: 1; min-height: 40px; border-radius: 6px; }
+.show-more-btn {
+  display: block; width: 100%; margin-top: 8px; padding: 10px 0;
+  background: var(--bg-elev-2); border: 1px dashed var(--accent); border-radius: 6px;
+  color: var(--accent); font-size: 13px; cursor: pointer; text-align: center;
+  transition: background 0.15s, color 0.15s;
+}
+.show-more-btn:hover { background: var(--accent); color: var(--bg); }
 
 /* Empty-column placeholder. Dashed outline so it reads as "drop zone",
    slightly faded glyph + two-line copy so each column explains itself
@@ -562,7 +569,14 @@ body.dragging-active * { cursor: grabbing !important; }
 .es-tool-body pre { background: var(--code-bg); padding: 8px 10px; border-radius: 6px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 
 /* ---------- Input bar ---------- */
-.input-area { display: flex; flex-direction: column; margin-top: 8px; }
+.input-area { display: flex; flex-direction: column; margin-top: 8px; position: relative; }
+.input-area.chat-drag-over { outline: 2px dashed var(--accent); outline-offset: -2px; border-radius: 6px; }
+.input-area.chat-drag-over::after {
+  content: '📎 ' attr(data-drop-hint); position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  border-radius: 6px; font-size: 14px; color: var(--accent); pointer-events: none;
+}
 .input-bar { display: flex; gap: 8px; align-items: flex-end; }
 .input-bar input { flex: 1; }
 /* Image-upload paperclip in the chat toolbar — only renders when the
