@@ -2198,6 +2198,7 @@ const ChatView = {
     return {
       chatDrag: createDragController({
         containerSelector: '.sidebar-panel[data-status]',
+        itemSelector: '.sidebar-task-item',
         async onDrop({ taskId, toStatus, beforeId, afterId }) {
           if (!toStatus) return;
           try {

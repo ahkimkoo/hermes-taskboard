@@ -252,6 +252,11 @@ body.dragging-active * { cursor: grabbing !important; }
 .priority-badge.tiny { font-size: 10px; padding: 0 4px; }
 .attempt-badge.tiny { font-size: 10px; padding: 0 4px; }
 
+/* During drag, expand all sidebar panel lists so tasks can be dropped
+   into collapsed panels. */
+body.dragging-active .chat-sidebar .sidebar-panel-list { display: block !important; }
+body.dragging-active .chat-sidebar .sidebar-chevron { display: none; }
+
 /* ---------- Chat workspace ---------- */
 .chat-workspace { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); min-width: 0; }
 .chat-task-header {

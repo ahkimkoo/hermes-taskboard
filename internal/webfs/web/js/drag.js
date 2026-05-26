@@ -14,6 +14,7 @@
 export function createDragController(opts) {
   const onDrop = opts.onDrop || (() => {});
   const containerSel = opts.containerSelector || '.column[data-status]';
+  const itemSel = opts.itemSelector || '.card';
   let state = null;
 
   function start(event, taskId, sourceEl) {
@@ -123,12 +124,12 @@ export function createDragController(opts) {
     if (!col) return;
     const zone = col.querySelector('.column-drop-zone') || col;
 
-    // Find the card (other than our source) whose vertical midpoint is below
+    // Find the item (other than our source) whose vertical midpoint is below
     // the cursor — that's our "insert before" target. If none, insert at end.
-    const cards = [...zone.querySelectorAll('.card:not(.card-drag-clone)')]
-      .filter((c) => c !== state.sourceEl);
+    const items = [...zone.querySelectorAll(itemSel)]
+      .filter((c) => c !== state.sourceEl && !c.classList.contains('card-drag-clone'));
     let insertBefore = null;
-    for (const c of cards) {
+    for (const c of items) {
       const r = c.getBoundingClientRect();
       if (event.clientY < r.top + r.height / 2) { insertBefore = c; break; }
     }
@@ -164,8 +165,8 @@ export function createDragController(opts) {
     // Compute beforeId / afterId from placeholder neighbors.
     const placeholder = st.placeholder;
     let beforeId = '', afterId = '';
-    const next = nextSiblingCard(placeholder);
-    const prev = prevSiblingCard(placeholder);
+    const next = nextSibling(placeholder);
+    const prev = prevSibling(placeholder);
     if (next) beforeId = next.getAttribute('data-task-id') || '';
     if (prev) afterId = prev.getAttribute('data-task-id') || '';
 
@@ -220,13 +221,13 @@ function columnAt(x, y, sel) {
   return el.closest(sel);
 }
 
-function nextSiblingCard(el) {
+function nextSibling(el) {
   let n = el.nextElementSibling;
-  while (n && !n.classList.contains('card')) n = n.nextElementSibling;
+  while (n && !n.matches(itemSel) && !n.classList.contains('card')) n = n.nextElementSibling;
   return n;
 }
-function prevSiblingCard(el) {
+function prevSibling(el) {
   let n = el.previousElementSibling;
-  while (n && !n.classList.contains('card')) n = n.previousElementSibling;
+  while (n && !n.matches(itemSel) && !n.classList.contains('card')) n = n.previousElementSibling;
   return n;
 }
