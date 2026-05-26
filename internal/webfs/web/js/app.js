@@ -1799,8 +1799,8 @@ const ChatSidebarPanel = {
              class="sidebar-task-item"
              :data-task-id="task.id"
              :class="{ active: task.id === selectedTaskId, running: task.active_attempts > 0, 'needs-input': !task.active_attempts && task.needs_input_attempts > 0 }"
-             @pointerdown="onPointerDown"
-             @click="onClick">
+             @pointerdown="e => onItemPointerDown(e, task)"
+             @click="e => onItemClick(e, task)">
           <span class="sidebar-task-name">{{ task.title }}</span>
           <span class="priority-badge tiny" :class="'p' + task.priority">P{{ task.priority }}</span>
           <span v-if="task.active_attempts" class="attempt-badge running tiny">▶</span>
@@ -1810,11 +1810,12 @@ const ChatSidebarPanel = {
     </div>
   `,
   methods: {
-    onPointerDown(e) {
+    onItemPointerDown(e, task) {
       if (e.button !== 0) return;
       if (e.target.closest('button, input, textarea, select, a')) return;
       this._dragStarted = false;
       this._downX = e.clientX; this._downY = e.clientY;
+      const el = e.currentTarget;
       const threshold = 5;
       const cleanup = () => {
         window.removeEventListener('pointermove', onMove);
@@ -1825,7 +1826,7 @@ const ChatSidebarPanel = {
         if (Math.abs(ev.clientX - this._downX) <= threshold && Math.abs(ev.clientY - this._downY) <= threshold) return;
         cleanup();
         this._dragStarted = true;
-        this.chatDrag.start(e, this.task.id, this.$el);
+        this.chatDrag.start(e, task.id, el);
       };
       const onUp = () => cleanup();
       const onCancel = () => cleanup();
@@ -1833,11 +1834,10 @@ const ChatSidebarPanel = {
       window.addEventListener('pointerup', onUp);
       window.addEventListener('pointercancel', onCancel);
     },
-    onClick(e) {
+    onItemClick(e, task) {
       if (this._dragStarted) { this._dragStarted = false; return; }
       if (e.target.closest('button, input, textarea')) return;
-      const task = this.tasks.find((t) => t.id === this.$el.dataset.taskId);
-      if (task) this.$emit('select-task', task.id);
+      this.$emit('select-task', task.id);
     },
   },
 };
