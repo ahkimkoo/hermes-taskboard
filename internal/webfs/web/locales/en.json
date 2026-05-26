@@ -281,5 +281,11 @@
   "th.shared": "Shared",
   "login.title": "Sign in",
   "login.submit": "Sign in",
-  "login.first_time_hint": "First time? The default admin is admin / admin123 — change the password immediately after logging in. If you forget it, run \"taskboard --reset-admin\" on the server."
+  "login.first_time_hint": "First time? The default admin is admin / admin123 — change the password immediately after logging in. If you forget it, run \"taskboard --reset-admin\" on the server.",
+  "mode.board": "Board",
+  "mode.chat": "Chat",
+  "sidebar.tasks": "Tasks",
+  "chat.select_task": "Select a task from the sidebar to start chatting.",
+  "chat.no_tasks": "No tasks",
+  "action.close": "Close"
 }

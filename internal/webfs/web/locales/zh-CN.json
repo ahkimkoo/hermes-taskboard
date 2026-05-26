@@ -281,5 +281,11 @@
   "th.shared": "共享",
   "login.title": "登录",
   "login.submit": "登录",
-  "login.first_time_hint": "首次使用?默认管理员为 admin / admin123,登录后请立即修改密码。若遗忘密码,可在服务器上执行 \"taskboard --reset-admin\" 重置。"
+  "login.first_time_hint": "首次使用?默认管理员为 admin / admin123,登录后请立即修改密码。若遗忘密码,可在服务器上执行 \"taskboard --reset-admin\" 重置。",
+  "mode.board": "看板",
+  "mode.chat": "聊天",
+  "sidebar.tasks": "任务列表",
+  "chat.select_task": "从侧边栏选择一个任务开始对话",
+  "chat.no_tasks": "暂无任务",
+  "action.close": "关闭"
 }

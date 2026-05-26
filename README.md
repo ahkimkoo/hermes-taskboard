@@ -14,6 +14,7 @@
 [English](#english) · [简体中文](#简体中文) · [Operator Manual (EN)](docs/manual.en.md) · [操作手册 (中文)](docs/manual.zh-CN.md)
 
 ![Board view](docs/screenshots/board-en.png)
+![Chat mode](docs/screenshots/chat-task-en.png)
 
 ---
 
@@ -46,6 +47,7 @@ Hermes Agent executes tools, edits files, and runs shell commands. This project 
 Frontend:
 
 - **6-column board** with drag-to-reorder and drag-to-transition (mobile: drag a card onto a column tab to move it cross-column).
+- **Chat mode** — conversation-centric alternative to the board. Drawer-style sidebar with accordion panels, full-height chat workspace with collapsible task header, real-time event stream, and pinned input bar. Switch between Board / Chat in the top-right.
 - **Markdown task descriptions** with file paste / drop / pick — images, video, audio, documents, archives (gated behind Aliyun OSS).
 - **Bilingual UI** — `zh-CN` / `en`, hot-swap without reload.
 - **Dark / light theme** toggle.
@@ -328,6 +330,7 @@ Hermes Agent 本身负责调用工具、编辑文件、执行 shell 命令。本
 前端：
 
 - **6 列看板**，列内拖动排序、跨列拖动迁移（手机端把卡片拖到顶部 tab 即可跨列）。
+- **聊天模式** —— 以对话为中心的全新界面。抽屉式侧边栏按状态分组任务，主区域展示全屏聊天界面，任务信息悬浮置顶可收起，实时事件流 + 固定输入框。右上角 Board / Chat 一键切换。
 - **任务描述支持 Markdown**，可粘贴/拖拽图片（需先在设置里配 Aliyun OSS）。
 - **中英双语**实时切换。
 - **暗 / 亮主题**切换。
@@ -355,6 +358,8 @@ Hermes Agent 本身负责调用工具、编辑文件、执行 shell 命令。本
 |---|---|
 | ![看板英文](docs/screenshots/board-en.png) | ![看板中文](docs/screenshots/board-zh.png) |
 | 桌面端 6 列看板 · 英文界面 | 同一界面切换到中文后的样子 |
+| ![聊天模式](docs/screenshots/chat-task-en.png) | ![聊天模式中文](docs/screenshots/chat-task-zh.png) |
+| 聊天模式 · 侧边栏选中任务后全屏对话 | 聊天模式 · 中文界面 |
 | ![执行面板](docs/screenshots/attempt-live.png) | ![设置页](docs/screenshots/settings-servers.png) |
 | 真实 Hermes 调用中的 SSE 事件流 | Hermes Servers 管理页 |
 | ![手机端](docs/screenshots/board-mobile.png) | ![登录页](docs/screenshots/login.png) |

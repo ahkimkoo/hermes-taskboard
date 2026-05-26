@@ -51,6 +51,7 @@ const state = reactive({
   showHelp: false,
   mobileColumn: 'plan',
   route: location.pathname,
+  viewMode: localStorage.getItem('viewMode') || 'board',
 });
 
 function toast(msg, kind = 'info') {
@@ -127,6 +128,11 @@ async function saveTheme(theme) {
   applyTheme(theme);
   try { await api('/api/preferences', { method: 'PUT', body: state.preferences }); }
   catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+}
+
+function setViewMode(mode) {
+  state.viewMode = mode;
+  localStorage.setItem('viewMode', mode);
 }
 
 // ---------------- Components ----------------
@@ -437,7 +443,138 @@ function chatFileSnippet(file, url, counters) {
   return '[📄 ' + label + '](' + url + ')';
 }
 
+// ---- Shared chat input mixin ----
+// Used by both TaskModal and ChatWorkspace so the message
+// input, file upload, and send/stop logic stays in one place.
+// Expects the consuming component to define:
+//   data: activeAttemptId, ref: eventStream, ref: messageInput, ref: imgPicker
+const chatInputMixin = {
+  data() {
+    return {
+      input: '',
+      uploadingImages: false,
+      chatDragOver: false,
+    };
+  },
+  computed: {
+    chatUploadAccept() { return CHAT_UPLOAD_ACCEPT; },
+  },
+  methods: {
+    onInputKeydown(e) {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        this.sendMsg();
+      }
+    },
+    async sendMsg() {
+      if (!this.input.trim() || !this.activeAttemptId) return;
+      const text = this.input;
+      this.input = '';
+      this.$nextTick(() => this.autoGrowInput());
+      if (this.$refs.eventStream) this.$refs.eventStream.scrollBottom();
+      try { await api('/api/attempts/' + this.activeAttemptId + '/messages', { method: 'POST', body: { text } }); }
+      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+    pickChatImages() {
+      const picker = this.$refs.imgPicker;
+      if (!picker) return;
+      picker.value = '';
+      picker.click();
+    },
+    async onChatImagePick(e) {
+      const files = Array.from(e.target.files || []).filter(chatFileOk);
+      if (files.length === 0) return;
+      this.uploadingImages = true;
+      try {
+        const existing = this.input || '';
+        const counters = {
+          image:   ((existing.match(/!\[/g))   || []).length,
+          video:   ((existing.match(/\[🎬/g))  || []).length,
+          audio:   ((existing.match(/\[🎵/g))  || []).length,
+          doc:     ((existing.match(/\[📄/g))  || []).length,
+          archive: ((existing.match(/\[📦/g))  || []).length,
+        };
+        const insertedLines = [];
+        for (const f of files) {
+          const fd = new FormData();
+          fd.append('file', f);
+          const res = await api('/api/uploads', { method: 'POST', body: fd });
+          if (!res || !res.url) throw new Error('upload returned no url');
+          insertedLines.push(chatFileSnippet(f, res.url, counters));
+        }
+        const block = insertedLines.join('\n');
+        this.input = existing.trim() ? (block + '\n\n' + existing) : (block + '\n\n');
+        this.$nextTick(() => {
+          this.autoGrowInput();
+          const ta = this.$refs.messageInput;
+          if (ta) {
+            ta.focus();
+            ta.setSelectionRange(ta.value.length, ta.value.length);
+          }
+        });
+      } catch (err) {
+        toast(t('toast.error', { err: err.message || String(err) }), 'error');
+      } finally {
+        this.uploadingImages = false;
+      }
+    },
+    async onChatDrop(e) {
+      this.chatDragOver = false;
+      if (!this.$root.imageUploadEnabled) return;
+      const files = Array.from(e.dataTransfer.files || []).filter(chatFileOk);
+      if (files.length === 0) return;
+      this.uploadingImages = true;
+      try {
+        const existing = this.input || '';
+        const counters = {
+          image:   ((existing.match(/!\[/g))   || []).length,
+          video:   ((existing.match(/\[🎬/g))  || []).length,
+          audio:   ((existing.match(/\[🎵/g))  || []).length,
+          doc:     ((existing.match(/\[📄/g))  || []).length,
+          archive: ((existing.match(/\[📦/g))  || []).length,
+        };
+        const insertedLines = [];
+        for (const f of files) {
+          const fd = new FormData();
+          fd.append('file', f);
+          const res = await api('/api/uploads', { method: 'POST', body: fd });
+          if (!res || !res.url) throw new Error('upload returned no url');
+          insertedLines.push(chatFileSnippet(f, res.url, counters));
+        }
+        const block = insertedLines.join('\n');
+        this.input = existing.trim() ? (block + '\n\n' + existing) : (block + '\n\n');
+        this.$nextTick(() => {
+          this.autoGrowInput();
+          const ta = this.$refs.messageInput;
+          if (ta) {
+            ta.focus();
+            ta.setSelectionRange(ta.value.length, ta.value.length);
+          }
+        });
+      } catch (err) {
+        toast(t('toast.error', { err: err.message || String(err) }), 'error');
+      } finally {
+        this.uploadingImages = false;
+      }
+    },
+    autoGrowInput() {
+      const el = this.$refs.messageInput;
+      if (!el) return;
+      el.style.height = 'auto';
+      const max = 150;
+      el.style.height = Math.min(el.scrollHeight, max) + 'px';
+    },
+    async cancelAttempt() {
+      if (!this.activeAttemptId) return;
+      this.confirmStop = false;
+      try { await api('/api/attempts/' + this.activeAttemptId + '/cancel', { method: 'POST' }); }
+      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+  },
+};
+
 const TaskModal = {
+  mixins: [chatInputMixin],
   components: { DescriptionEditor, EventStream, TagInput, DependencyPicker, SchedulePicker },
   props: ['taskId'],
   emits: ['close', 'refresh'],
@@ -452,7 +589,6 @@ const TaskModal = {
       },
       attempts: [],
       activeAttemptId: null,
-      input: '',
       listOpen: false,          // attempt list collapse state
       confirmNewAttempt: false, // confirmation modal guard
       confirmCopy: false,
@@ -484,11 +620,6 @@ const TaskModal = {
       // when closed; toggled by the small chevron, dismissed by
       // any outside click (see _onJumpDocClick handler below).
       jumpOpen: false,
-      // True while an image-upload round-trip is in flight; the
-      // 📎 button shows a spinner instead of the paperclip and
-      // ignores subsequent clicks.
-      uploadingImages: false,
-      chatDragOver: false,
     };
   },
   watch: {
@@ -533,7 +664,6 @@ const TaskModal = {
       if (!s) return '';
       return s.profile || 'hermes-agent';
     },
-    chatUploadAccept() { return CHAT_UPLOAD_ACCEPT; },
     isArchive() { return this.task && this.task.status === 'archive'; },
     canStartFirst() {
       // Gate for the ▶ 立即执行 button on a task with zero attempts.
@@ -1036,115 +1166,6 @@ const TaskModal = {
         }
       }
     },
-    onInputKeydown(e) {
-      // Ctrl+Enter or ⌘+Enter sends; plain Enter inserts a newline so long
-      // multi-line messages are easy to compose without accidental submission.
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        this.sendMsg();
-      }
-    },
-    async sendMsg() {
-      if (!this.input.trim() || !this.activeAttemptId) return;
-      const text = this.input;
-      this.input = '';
-      this.$nextTick(() => this.autoGrowInput());  // collapse the textarea back to 1 row
-      // Hitting Send is an explicit "I'm engaging now" signal — yank the
-      // viewport back to the bottom so the user's own message + the
-      // assistant's incoming reply land in view, even if they had
-      // scrolled up earlier. scrollBottom() also re-arms stickToBottom
-      // so the rest of the SSE stream follows.
-      if (this.$refs.eventStream) this.$refs.eventStream.scrollBottom();
-      try { await api('/api/attempts/' + this.activeAttemptId + '/messages', { method: 'POST', body: { text } }); }
-      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
-    },
-    pickChatImages() {
-      const picker = this.$refs.imgPicker;
-      if (!picker) return;
-      // Reset value so the @change fires again if the user picks the
-      // exact same file twice in a row (browsers suppress identical
-      // selections otherwise).
-      picker.value = '';
-      picker.click();
-    },
-    async onChatImagePick(e) {
-      const files = Array.from(e.target.files || []).filter(chatFileOk);
-      if (files.length === 0) return;
-      this.uploadingImages = true;
-      try {
-        const existing = this.input || '';
-        // Initialize per-category counters from already-present markdown
-        // so a follow-up batch continues numbering where the previous left off.
-        const counters = {
-          image:   ((existing.match(/!\[/g))   || []).length,
-          video:   ((existing.match(/\[🎬/g))  || []).length,
-          audio:   ((existing.match(/\[🎵/g))  || []).length,
-          doc:     ((existing.match(/\[📄/g))  || []).length,
-          archive: ((existing.match(/\[📦/g))  || []).length,
-        };
-        const insertedLines = [];
-        for (const f of files) {
-          const fd = new FormData();
-          fd.append('file', f);
-          const res = await api('/api/uploads', { method: 'POST', body: fd });
-          if (!res || !res.url) throw new Error('upload returned no url');
-          insertedLines.push(chatFileSnippet(f, res.url, counters));
-        }
-        const block = insertedLines.join('\n');
-        this.input = existing.trim() ? (block + '\n\n' + existing) : (block + '\n\n');
-        this.$nextTick(() => {
-          this.autoGrowInput();
-          const ta = this.$refs.messageInput;
-          if (ta) {
-            ta.focus();
-            ta.setSelectionRange(ta.value.length, ta.value.length);
-          }
-        });
-      } catch (err) {
-        toast(t('toast.error', { err: err.message || String(err) }), 'error');
-      } finally {
-        this.uploadingImages = false;
-      }
-    },
-    async onChatDrop(e) {
-      this.chatDragOver = false;
-      if (!this.$root.imageUploadEnabled) return;
-      const files = Array.from(e.dataTransfer.files || []).filter(chatFileOk);
-      if (files.length === 0) return;
-      this.uploadingImages = true;
-      try {
-        const existing = this.input || '';
-        const counters = {
-          image:   ((existing.match(/!\[/g))   || []).length,
-          video:   ((existing.match(/\[🎬/g))  || []).length,
-          audio:   ((existing.match(/\[🎵/g))  || []).length,
-          doc:     ((existing.match(/\[📄/g))  || []).length,
-          archive: ((existing.match(/\[📦/g))  || []).length,
-        };
-        const insertedLines = [];
-        for (const f of files) {
-          const fd = new FormData();
-          fd.append('file', f);
-          const res = await api('/api/uploads', { method: 'POST', body: fd });
-          if (!res || !res.url) throw new Error('upload returned no url');
-          insertedLines.push(chatFileSnippet(f, res.url, counters));
-        }
-        const block = insertedLines.join('\n');
-        this.input = existing.trim() ? (block + '\n\n' + existing) : (block + '\n\n');
-        this.$nextTick(() => {
-          this.autoGrowInput();
-          const ta = this.$refs.messageInput;
-          if (ta) {
-            ta.focus();
-            ta.setSelectionRange(ta.value.length, ta.value.length);
-          }
-        });
-      } catch (err) {
-        toast(t('toast.error', { err: err.message || String(err) }), 'error');
-      } finally {
-        this.uploadingImages = false;
-      }
-    },
     async copyTask() {
       this.confirmCopy = false;
       try {
@@ -1229,22 +1250,6 @@ const TaskModal = {
       try {
         await api('/api/attempts/' + attemptID + '/reconnect', { method: 'POST' });
       } catch { /* best-effort; any error is visible in event log */ }
-    },
-    autoGrowInput() {
-      // Resize the message textarea to fit its content, capped at ~6 rows so
-      // a very long paste doesn't shove the event stream off-screen. Users
-      // get a scrollbar inside the textarea past the cap.
-      const el = this.$refs.messageInput;
-      if (!el) return;
-      el.style.height = 'auto';
-      const max = 150;                      // roughly 6 lines at 1.4 line-height
-      el.style.height = Math.min(el.scrollHeight, max) + 'px';
-    },
-    async cancelAttempt() {
-      if (!this.activeAttemptId) return;
-      this.confirmStop = false;
-      try { await api('/api/attempts/' + this.activeAttemptId + '/cancel', { method: 'POST' }); }
-      catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
     },
   },
 };
@@ -1763,6 +1768,480 @@ const Login = {
   },
 };
 
+// ---- Chat mode components ----
+
+const ChatSidebarPanel = {
+  props: ['status', 'tasks', 'selectedTaskId'],
+  emits: ['select-task'],
+  inject: ['chatDrag'],
+  data() { return { expanded: this.status === 'execute' }; },
+  computed: {
+    statusIcon() {
+      return ({ draft: '✎', plan: '☷', execute: '▶', verify: '✓', done: '★', archive: '☐' })[this.status] || '•';
+    },
+  },
+  watch: {
+    // Auto-expand when the selected task is in this panel.
+    selectedTaskId(id) {
+      if (id && this.tasks.some((t) => t.id === id)) this.expanded = true;
+    },
+  },
+  template: `
+    <div class="sidebar-panel" :data-status="status">
+      <div class="sidebar-panel-header" @click="expanded = !expanded">
+        <span class="sidebar-panel-icon">{{ statusIcon }}</span>
+        <span class="sidebar-panel-title">{{ $t('col.' + status) }}</span>
+        <span class="sidebar-panel-count">{{ tasks.length }}</span>
+        <span class="sidebar-chevron">{{ expanded ? '▼' : '▶' }}</span>
+      </div>
+      <div v-show="expanded" class="sidebar-panel-list">
+        <div v-for="task in tasks" :key="task.id"
+             class="sidebar-task-item"
+             :data-task-id="task.id"
+             :class="{ active: task.id === selectedTaskId, running: task.active_attempts > 0, 'needs-input': !task.active_attempts && task.needs_input_attempts > 0 }"
+             @pointerdown="onPointerDown"
+             @click="onClick">
+          <span class="sidebar-task-name">{{ task.title }}</span>
+          <span class="priority-badge tiny" :class="'p' + task.priority">P{{ task.priority }}</span>
+          <span v-if="task.active_attempts" class="attempt-badge running tiny">▶</span>
+        </div>
+        <div v-if="!tasks.length" class="sidebar-empty">{{ $t('chat.no_tasks') }}</div>
+      </div>
+    </div>
+  `,
+  methods: {
+    onPointerDown(e) {
+      if (e.button !== 0) return;
+      if (e.target.closest('button, input, textarea, select, a')) return;
+      this._dragStarted = false;
+      this._downX = e.clientX; this._downY = e.clientY;
+      const threshold = 5;
+      const cleanup = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onCancel);
+      };
+      const onMove = (ev) => {
+        if (Math.abs(ev.clientX - this._downX) <= threshold && Math.abs(ev.clientY - this._downY) <= threshold) return;
+        cleanup();
+        this._dragStarted = true;
+        this.chatDrag.start(e, this.task.id, this.$el);
+      };
+      const onUp = () => cleanup();
+      const onCancel = () => cleanup();
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onCancel);
+    },
+    onClick(e) {
+      if (this._dragStarted) { this._dragStarted = false; return; }
+      if (e.target.closest('button, input, textarea')) return;
+      const task = this.tasks.find((t) => t.id === this.$el.dataset.taskId);
+      if (task) this.$emit('select-task', task.id);
+    },
+  },
+};
+
+const ChatSidebar = {
+  components: { ChatSidebarPanel },
+  props: ['selectedTaskId', 'drawerOpen'],
+  emits: ['toggle-drawer', 'select-task'],
+  computed: {
+    grouped() {
+      const out = {};
+      for (const c of COLUMNS) out[c] = [];
+      for (const task of this.$root.state.tasks) {
+        (out[task.status] || (out[task.status] = [])).push(task);
+      }
+      return out;
+    },
+  },
+  template: `
+    <aside class="chat-sidebar" :class="{ open: drawerOpen }">
+      <div class="sidebar-header">
+        <span class="sidebar-header-title">{{ $t('sidebar.tasks') }}</span>
+        <button class="ghost sidebar-close-btn" @click="$emit('toggle-drawer')" :title="$t('action.close')">✕</button>
+      </div>
+      <div class="sidebar-panels">
+        <chat-sidebar-panel v-for="c in ['draft','plan','execute','verify','done','archive']"
+                            :key="c" :status="c" :tasks="grouped[c] || []"
+                            :selected-task-id="selectedTaskId"
+                            @select-task="id => $emit('select-task', id)" />
+      </div>
+      <div class="sidebar-footer">
+        <button class="primary small" style="width:100%" @click="$root.state.showNewTask = true">+ {{ $t('action.new_task') }}</button>
+      </div>
+    </aside>
+  `,
+};
+
+const ChatWorkspace = {
+  components: { EventStream, TagInput, DependencyPicker, DescriptionEditor },
+  mixins: [chatInputMixin],
+  props: ['taskId'],
+  emits: ['close-task'],
+  data() {
+    return {
+      task: null,
+      editing: false,
+      form: {
+        title: '', description: '', priority: 3, trigger_mode: 'auto',
+        preferred_server: '', tags: [], dependencies: [],
+      },
+      attempts: [],
+      activeAttemptId: null,
+      headerExpanded: false,
+      listOpen: false,
+      confirmNewAttempt: false,
+      confirmDelete: false,
+      confirmDeleteAttemptId: null,
+      confirmStop: false,
+      showAttemptHelp: false,
+      loadingTask: false,
+      loadingAttempts: false,
+      loadingMoreAttempts: false,
+      attemptsHasMore: false,
+      _loadSeq: 0,
+      reconnectAskedFor: null,
+    };
+  },
+  watch: {
+    confirmStop(v) { if (v) setTimeout(() => { this.confirmStop = false; }, 4000); },
+    taskId: { immediate: true, handler: 'load' },
+  },
+  mounted() {
+    this._unsubBoard = sseSubscribe('/api/stream/board', (evt) => {
+      if (!evt || evt.event !== 'attempt.state_changed') return;
+      const aid = evt.attempt_id;
+      const newState = evt.state;
+      if (!aid || !newState) return;
+      const idx = this.attempts.findIndex((a) => a.id === aid);
+      if (idx >= 0 && this.attempts[idx].state !== newState) {
+        this.attempts[idx].state = newState;
+      }
+    });
+  },
+  beforeUnmount() {
+    if (this._unsubBoard) { this._unsubBoard(); this._unsubBoard = null; }
+  },
+  computed: {
+    currentAttempt() {
+      return this.attempts.find((a) => a.id === this.activeAttemptId) || null;
+    },
+    renderedDescription() {
+      return markdown(this.task && this.task.description || '');
+    },
+    depCandidates() {
+      const tasks = this.$root.state.tasks || [];
+      return this.taskId ? tasks.filter((t) => t.id !== this.taskId) : tasks;
+    },
+    canStartFirst() { return !!this.task; },
+    isArchive() { return this.task && this.task.status === 'archive'; },
+  },
+  template: `
+    <div class="chat-workspace">
+      <template v-if="task">
+        <!-- Collapsible task header -->
+        <div class="chat-task-header">
+          <div class="chat-task-summary" @click="headerExpanded = !headerExpanded">
+            <span class="status-badge" :class="task.status">{{ $t('col.' + task.status) }}</span>
+            <span class="chat-task-title">{{ task.title }}</span>
+            <span class="priority-badge" :class="'p' + task.priority">P{{ task.priority }}</span>
+            <span v-if="task.active_attempts" class="attempt-badge running">▶ {{ task.active_attempts }}</span>
+            <span class="chat-chevron">{{ headerExpanded ? '▲' : '▼' }}</span>
+            <button class="ghost small" @click.stop="$emit('close-task')" :title="$t('action.close')">✕</button>
+          </div>
+          <div v-if="headerExpanded" class="chat-task-details">
+            <!-- Edit form -->
+            <div v-if="editing" class="chat-detail-section">
+              <div class="form-row"><label>{{ $t('field.title') }} <span class="required">*</span></label><input type="text" v-model="form.title"></div>
+              <div class="form-row"><label>{{ $t('field.description') }}</label><description-editor v-model="form.description" :rows="4" :image-upload-enabled="$root.imageUploadEnabled"></description-editor></div>
+              <div class="form-inline">
+                <div class="form-row" style="flex:1"><label>{{ $t('field.priority') }}</label><select v-model.number="form.priority"><option v-for="p in [1,2,3,4,5]" :key="p" :value="p">P{{ p }}</option></select></div>
+                <div class="form-row" style="flex:1"><label>{{ $t('field.trigger') }}</label><select v-model="form.trigger_mode"><option value="auto">{{ $t('field.trigger.auto') }}</option><option value="manual">{{ $t('field.trigger.manual') }}</option></select></div>
+              </div>
+              <div class="form-row"><label>{{ $t('field.server') }}</label><select v-model="form.preferred_server"><option value="">{{ $t('field.default') }}</option><option v-for="s in $root.state.servers" :key="s.id" :value="s.id">{{ s.name || s.id }}</option></select></div>
+              <div class="form-row"><label>{{ $t('field.tags') }}</label><tag-input v-model="form.tags" :placeholder="$t('placeholder.tags')"></tag-input></div>
+              <div class="form-row"><label>{{ $t('field.dependencies') }}</label><dependency-picker v-model="form.dependencies" :candidates="depCandidates"></dependency-picker></div>
+              <div class="edit-actions">
+                <button @click="editing = false">{{ $t('action.cancel') }}</button>
+                <button class="primary" @click="save">{{ $t('action.save') }}</button>
+              </div>
+            </div>
+            <!-- Read view -->
+            <div v-else class="chat-detail-section">
+              <div class="chat-detail-actions">
+                <button class="small" @click="editing = true">✎ {{ $t('action.edit') }}</button>
+                <button v-if="isArchive && !confirmDelete" class="danger small" @click="confirmDelete = true">{{ $t('action.delete') }}</button>
+                <button v-if="isArchive && confirmDelete" class="danger small" @click="del">{{ $t('action.confirm_delete') }}</button>
+              </div>
+              <dl class="task-meta-grid compact">
+                <div><dt>{{ $t('field.trigger') }}</dt><dd>{{ $t('field.trigger.' + task.trigger_mode) }}</dd></div>
+                <div><dt>{{ $t('field.server') }}</dt><dd>{{ serverDisplay(task.preferred_server) }}</dd></div>
+                <div v-if="task.tags && task.tags.length" class="task-meta-wide"><dt>{{ $t('field.tags_short') }}</dt><dd class="task-meta-tags"><span v-for="tag in task.tags" :key="tag" class="tag-chip">{{ tag }}</span></dd></div>
+                <div><dt>{{ $t('field.created') }}</dt><dd>{{ formatTime(task.created_at) }}</dd></div>
+              </dl>
+              <div v-if="task.description" class="chat-task-desc" v-html="renderedDescription"></div>
+
+              <!-- Attempts -->
+              <div class="chat-attempts">
+                <div class="chat-attempts-head">
+                  <span class="chat-attempts-title">{{ $t('attempt.heading') }} ({{ attempts.length }})</span>
+                  <button v-if="attempts.length > 0" class="ghost small" @click="listOpen = !listOpen">{{ listOpen ? $t('attempt.collapse') : $t('attempt.expand') }}</button>
+                  <button v-if="canStartFirst && attempts.length === 0" class="primary small" @click="confirmNewAttempt = true">▶ {{ $t('action.start_now') }}</button>
+                  <button v-if="attempts.length > 0" class="secondary small" @click="confirmNewAttempt = true">+ {{ $t('action.new_attempt') }}</button>
+                </div>
+                <div v-if="listOpen" class="chat-attempts-list">
+                  <button v-if="attemptsHasMore" class="ghost small attempt-load-earlier" :disabled="loadingMoreAttempts" @click="loadMoreAttempts">{{ loadingMoreAttempts ? $t('attempt.loading') : $t('attempt.load_earlier') }}</button>
+                  <div v-for="a in attempts" :key="a.id" class="attempt-item" :class="{active: a.id === activeAttemptId}" @click="activeAttemptId = a.id">
+                    <div class="state" :class="a.state">{{ $t('attempt.state.' + a.state) }}</div>
+                    <div class="meta">{{ serverDisplay(a.server_id) }}</div>
+                    <div class="time">{{ formatTime(a.started_at) }}</div>
+                    <button v-if="canDeleteAttempt(a) && confirmDeleteAttemptId !== a.id" class="danger small attempt-del-btn" @click.stop="confirmDeleteAttemptId = a.id">✕</button>
+                    <button v-else-if="canDeleteAttempt(a)" class="danger small attempt-del-btn" @click.stop="deleteAttempt(a.id)">{{ $t('action.confirm_delete') }}</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Event stream fills the middle -->
+        <div class="chat-stream-area">
+          <event-stream ref="eventStream" :attempt-id="activeAttemptId" :attempt-state="currentAttempt && currentAttempt.state" />
+        </div>
+
+        <!-- Pinned input bar at bottom -->
+        <div v-if="activeAttemptId" class="chat-input-area"
+             :class="{'chat-drag-over': chatDragOver}"
+             @dragover.prevent="chatDragOver = true"
+             @dragleave.prevent="chatDragOver = false"
+             @drop.prevent="onChatDrop">
+          <div class="input-bar">
+            <textarea ref="messageInput" class="message-input" v-model="input"
+                      rows="1" :placeholder="$t('placeholder.send_message')"
+                      enterkeyhint="enter"
+                      @keydown="onInputKeydown" @input="autoGrowInput"></textarea>
+            <button v-if="$root.imageUploadEnabled" type="button" class="ghost img-upload-btn"
+                    :disabled="uploadingImages" :title="$t('attempt.upload_file_title')"
+                    aria-label="Upload file" @click="pickChatImages">
+              <span v-if="!uploadingImages">📎</span><span v-else>⏳</span>
+            </button>
+            <input v-if="$root.imageUploadEnabled" type="file" :accept="chatUploadAccept" multiple
+                   ref="imgPicker" style="display:none" @change="onChatImagePick">
+            <button class="primary" @click="sendMsg">{{ $t('action.send') }}</button>
+            <button v-if="!confirmStop" class="danger" @click="confirmStop = true">{{ $t('action.stop') }}</button>
+            <button v-else class="danger" @click="cancelAttempt">{{ $t('action.confirm_stop') }}</button>
+          </div>
+        </div>
+      </template>
+
+      <!-- Empty state when no task selected -->
+      <div v-else class="chat-empty-state">
+        <div class="chat-empty-inner">
+          <div class="chat-empty-icon">💬</div>
+          <p>{{ $t('chat.select_task') }}</p>
+        </div>
+      </div>
+
+      <!-- New attempt confirmation -->
+      <div v-if="confirmNewAttempt" class="modal-overlay inner" @click.self="confirmNewAttempt = false">
+        <div class="modal confirm">
+          <div class="modal-body">
+            <p><strong>{{ $t('confirm.new_attempt.title') }}</strong></p>
+            <p class="muted">{{ $t('confirm.new_attempt.body') }}</p>
+          </div>
+          <div class="modal-footer">
+            <button @click="confirmNewAttempt = false">{{ $t('action.cancel') }}</button>
+            <button class="primary" @click="actuallyStartAttempt">{{ $t('action.confirm') }}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `,
+  methods: {
+    formatTime(ts) {
+      if (!ts) return '';
+      try { return new Intl.DateTimeFormat(currentLang.value, { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(ts)); }
+      catch { return ts; }
+    },
+    serverDisplay(id) {
+      if (!id) return t('field.default');
+      const sv = (this.$root.state.servers || []).find((s) => s.id === id);
+      return sv ? (sv.name || sv.id) : id;
+    },
+    load() {
+      if (!this.taskId) { this.task = null; return; }
+      const seq = ++this._loadSeq;
+      this.loadingTask = true;
+      this.loadingAttempts = true;
+      this.attempts = [];
+      this.attemptsHasMore = false;
+      this.headerExpanded = false;
+
+      api('/api/tasks/' + this.taskId)
+        .then((r) => {
+          if (seq !== this._loadSeq) return;
+          this.task = r.task;
+          const deps = (r.task.dependencies || []).map((d) => (typeof d === 'string'
+            ? { task_id: d, required_state: 'done' }
+            : { task_id: d.task_id, required_state: d.required_state || 'done' }));
+          this.form = {
+            title: r.task.title, description: r.task.description || '',
+            priority: r.task.priority, trigger_mode: r.task.trigger_mode,
+            preferred_server: r.task.preferred_server || '',
+            tags: [...(r.task.tags || [])], dependencies: deps,
+          };
+        })
+        .catch((e) => { if (seq === this._loadSeq) toast(t('toast.error', { err: e.message }), 'error'); })
+        .finally(() => { if (seq === this._loadSeq) this.loadingTask = false; });
+
+      api('/api/tasks/' + this.taskId + '/attempts?limit=50')
+        .then((ar) => {
+          if (seq !== this._loadSeq) return;
+          this.attempts = (ar.attempts || []).sort((a, b) => String(a.started_at || '').localeCompare(String(b.started_at || '')));
+          this.attemptsHasMore = !!ar.has_more;
+          if (!this.activeAttemptId || !this.attempts.some((a) => a.id === this.activeAttemptId)) {
+            this.activeAttemptId = this.attempts.length ? this.attempts[this.attempts.length - 1].id : null;
+          }
+          this.listOpen = this.attempts.length > 1;
+        })
+        .catch((e) => { if (seq === this._loadSeq) toast(t('toast.error', { err: e.message }), 'error'); })
+        .finally(() => { if (seq === this._loadSeq) this.loadingAttempts = false; });
+    },
+    async loadMoreAttempts() {
+      if (this.loadingMoreAttempts || !this.attemptsHasMore || this.attempts.length === 0) return;
+      this.loadingMoreAttempts = true;
+      try {
+        const oldest = this.attempts[0];
+        const before = new Date(oldest.started_at).getTime();
+        const ar = await api('/api/tasks/' + this.taskId + '/attempts?limit=50&before=' + before);
+        const older = (ar.attempts || []).sort((a, b) => String(a.started_at || '').localeCompare(String(b.started_at || '')));
+        this.attempts = older.concat(this.attempts);
+        this.attemptsHasMore = !!ar.has_more;
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+      finally { this.loadingMoreAttempts = false; }
+    },
+    async save() {
+      try {
+        const payload = {
+          title: this.form.title, description: this.form.description,
+          priority: this.form.priority, trigger_mode: this.form.trigger_mode,
+          preferred_server: this.form.preferred_server, tags: this.form.tags,
+          dependencies: this.form.dependencies.filter((d) => d.task_id),
+        };
+        await api('/api/tasks/' + this.taskId, { method: 'PATCH', body: payload });
+        this.editing = false;
+        await this.load();
+        this.$root.doRefresh();
+        toast(t('toast.saved'));
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+    async del() {
+      try {
+        await api('/api/tasks/' + this.taskId, { method: 'DELETE' });
+        toast(t('toast.deleted'));
+        this.$emit('close-task');
+        this.$root.doRefresh();
+      } catch (e) { toast(t('toast.error', { err: e.message }), 'error'); }
+    },
+    canDeleteAttempt(a) {
+      return a && a.state !== 'queued' && a.state !== 'running' && a.state !== 'needs_input';
+    },
+    async deleteAttempt(id) {
+      this.confirmDeleteAttemptId = null;
+      const prev = this.attempts;
+      this.attempts = this.attempts.filter((a) => a.id !== id);
+      if (this.activeAttemptId === id) {
+        this.activeAttemptId = this.attempts.length ? this.attempts[this.attempts.length - 1].id : null;
+      }
+      try {
+        await api('/api/attempts/' + id, { method: 'DELETE' });
+        this.$root.doRefresh();
+        toast(t('toast.deleted'));
+      } catch (e) {
+        this.attempts = prev;
+        await this.load();
+        toast(t('toast.error', { err: e.message }), 'error');
+      }
+    },
+    async actuallyStartAttempt() {
+      this.confirmNewAttempt = false;
+      try {
+        const r = await api('/api/tasks/' + this.taskId + '/attempts', {
+          method: 'POST', body: { server_id: this.form.preferred_server || '' },
+        });
+        if (r.attempt) this.activeAttemptId = r.attempt.id;
+        await this.load();
+        this.$root.doRefresh();
+      } catch (e) {
+        if (e.body && e.body.code === 'concurrency_limit') {
+          toast(t('toast.concurrency_limit', { level: e.body.level }), 'warning');
+        } else {
+          toast(t('toast.error', { err: e.message }), 'error');
+        }
+      }
+    },
+  },
+};
+
+const ChatView = {
+  components: { ChatSidebar, ChatWorkspace },
+  data() {
+    return {
+      selectedTaskId: null,
+      drawerOpen: false,
+      _isMobile: typeof window !== 'undefined' && window.innerWidth < 768,
+    };
+  },
+  provide() {
+    return {
+      chatDrag: createDragController({
+        containerSelector: '.sidebar-panel[data-status]',
+        async onDrop({ taskId, toStatus, beforeId, afterId }) {
+          if (!toStatus) return;
+          try {
+            const body = { to: toStatus, reason: 'drag', before_id: beforeId || '', after_id: afterId || '' };
+            await api('/api/tasks/' + taskId + '/transition', { method: 'POST', body });
+            await refreshTasks();
+          } catch (e) {
+            if (e.body && e.body.code === 'concurrency_limit') {
+              toast(t('toast.concurrency_limit', { level: e.body.level }), 'warning');
+            } else {
+              toast(t('toast.error', { err: e.message }), 'error');
+            }
+            await refreshTasks();
+          }
+        },
+      }),
+    };
+  },
+  mounted() {
+    this._onResize = () => { this._isMobile = window.innerWidth < 768; };
+    window.addEventListener('resize', this._onResize);
+  },
+  beforeUnmount() {
+    if (this._onResize) window.removeEventListener('resize', this._onResize);
+  },
+  template: `
+    <div class="chat-layout">
+      <chat-sidebar :selected-task-id="selectedTaskId" :drawer-open="drawerOpen"
+                    @toggle-drawer="drawerOpen = !drawerOpen"
+                    @select-task="onSelectTask" />
+      <chat-workspace :task-id="selectedTaskId"
+                      @close-task="selectedTaskId = null" />
+      <button v-if="!drawerOpen" class="chat-drawer-toggle" @click="drawerOpen = true" :title="$t('sidebar.tasks')">☰</button>
+      <div v-if="drawerOpen" class="chat-drawer-backdrop" @click="drawerOpen = false"></div>
+    </div>
+  `,
+  methods: {
+    onSelectTask(id) {
+      this.selectedTaskId = id;
+      this.drawerOpen = false;
+    },
+  },
+};
+
 // ---------------- Root App ----------------
 
 const drag = createDragController({
@@ -1837,7 +2316,7 @@ const HelpModal = {
 };
 
 const App = {
-  components: { Column, TaskModal, NewTaskModal, SettingsModal, Login, HelpModal },
+  components: { Column, TaskModal, NewTaskModal, SettingsModal, Login, HelpModal, ChatView },
   provide: { drag },
   data() { return { state, search: '', columns: COLUMNS }; },
   computed: {
@@ -1872,6 +2351,10 @@ const App = {
         <h1><span class="logo">⧉</span><span class="topbar-title">{{ $t('app.title') }}</span></h1>
         <div class="spacer"></div>
         <input type="search" v-model="search" :placeholder="$t('placeholder.search')" class="topbar-search">
+        <div class="mode-switch">
+          <button :class="{ active: state.viewMode === 'board' }" @click="switchMode('board')">{{ $t('mode.board') }}</button>
+          <button :class="{ active: state.viewMode === 'chat' }" @click="switchMode('chat')">{{ $t('mode.chat') }}</button>
+        </div>
         <button class="icon" :title="$t('action.toggle_theme')" @click="toggleTheme">
           {{ themeIsLight ? '☀' : '☾' }}
         </button>
@@ -1885,23 +2368,39 @@ const App = {
         <button v-if="state.auth.logged_in" class="topbar-btn-label-only" @click="logout">{{ $t('action.logout') }}</button>
       </div>
 
-      <div class="board-tabs" v-if="isMobile">
-        <button v-for="c in columns" :key="c" :class="{active: c === state.mobileColumn}" @click="state.mobileColumn = c">
-          {{ $t('col.' + c) }}
-        </button>
-      </div>
+      <template v-if="state.viewMode === 'board'">
+        <div class="board-tabs" v-if="isMobile">
+          <button v-for="c in columns" :key="c" :class="{active: c === state.mobileColumn}" @click="state.mobileColumn = c">
+            {{ $t('col.' + c) }}
+          </button>
+        </div>
 
-      <div class="board">
-        <column v-for="c in columns" :key="c"
-                :class="{'hidden-mobile': isMobile && c !== state.mobileColumn}"
-                :status="c" :tasks="grouped[c] || []"
-                :header-action="c === 'draft'"
-                @open-task="id => state.openTaskId = id">
-          <template #action v-if="c === 'draft'">
-            <button class="primary small" @click="state.showNewTask = true">+ {{ $t('action.new_task') }}</button>
-          </template>
-        </column>
-      </div>
+        <div class="board">
+          <column v-for="c in columns" :key="c"
+                  :class="{'hidden-mobile': isMobile && c !== state.mobileColumn}"
+                  :status="c" :tasks="grouped[c] || []"
+                  :header-action="c === 'draft'"
+                  @open-task="id => state.openTaskId = id">
+            <template #action v-if="c === 'draft'">
+              <button class="primary small" @click="state.showNewTask = true">+ {{ $t('action.new_task') }}</button>
+            </template>
+          </column>
+        </div>
+
+        <!-- Help button (?) -->
+        <button class="help-fab" :title="$t('action.help')"
+                :aria-label="$t('action.help')"
+                @click="state.showHelp = true">?</button>
+
+        <!-- Mobile floating action button -->
+        <button v-if="isMobile" class="new-task-fab primary"
+                :title="$t('action.new_task')"
+                @click="state.showNewTask = true">＋</button>
+      </template>
+
+      <chat-view v-else></chat-view>
+
+      <help-modal v-if="state.showHelp" @close="state.showHelp = false"></help-modal>
 
       <!-- Help button (?). Opens the Manual modal which fetches the
            markdown manual matching the current language. -->
@@ -1956,6 +2455,7 @@ const App = {
     window.addEventListener('resize', () => this.$forceUpdate());
   },
   methods: {
+    switchMode(mode) { setViewMode(mode); },
     openSettings() {
       // Ensure stale state from a prior open doesn't prevent reopening (#12).
       // We assign false → true so Vue always sees the transition.

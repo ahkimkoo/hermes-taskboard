@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -348,7 +349,9 @@ func (r *Runner) Start(ctx context.Context, username, taskID, serverID string) (
 	initialInput := fmt.Sprintf("[tb-%s] # Task\n%s\n\n%s", idPrefix, task.Title, desc)
 
 		if task.Status != store.StatusExecute {
-		_ = r.Board.Transition(ctx, st, taskID, store.StatusExecute, board.KindAuto, "attempt_started")
+		if err := r.Board.Transition(ctx, st, taskID, store.StatusExecute, board.KindAuto, "attempt_started"); err != nil {
+			slog.Error("attempt_started transition failed", "task_id", taskID, "from", task.Status, "to", "execute", "err", err)
+		}
 	}
 	r.Hub.Publish("board", sse.Event{Event: "attempt.created", Data: map[string]any{
 		"task_id":    taskID,

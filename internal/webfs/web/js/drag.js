@@ -13,6 +13,7 @@
 
 export function createDragController(opts) {
   const onDrop = opts.onDrop || (() => {});
+  const containerSel = opts.containerSelector || '.column[data-status]';
   let state = null;
 
   function start(event, taskId, sourceEl) {
@@ -118,7 +119,7 @@ export function createDragController(opts) {
     if (lit) lit.classList.remove('drop-target');
 
     // Find the column under the cursor.
-    const col = columnAt(event.clientX, event.clientY);
+    const col = columnAt(event.clientX, event.clientY, containerSel);
     if (!col) return;
     const zone = col.querySelector('.column-drop-zone') || col;
 
@@ -213,10 +214,10 @@ export function createDragController(opts) {
   return { start };
 }
 
-function columnAt(x, y) {
+function columnAt(x, y, sel) {
   const el = document.elementFromPoint(x, y);
   if (!el) return null;
-  return el.closest('.column[data-status]');
+  return el.closest(sel);
 }
 
 function nextSiblingCard(el) {

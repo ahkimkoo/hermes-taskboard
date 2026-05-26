@@ -161,6 +161,16 @@
   .help-fab {
     bottom: calc(84px + env(safe-area-inset-bottom, 0px));
   }
+
+  /* ---- Chat mode mobile ---- */
+  .chat-sidebar { width: 85vw; max-width: 320px; }
+  .chat-layout { height: calc(100vh - 46px); }
+  .chat-task-summary { padding: 6px 10px; }
+  .chat-detail-section { padding: 8px 10px; }
+  .chat-input-area { padding: 6px 10px; }
+  .chat-input-area .input-bar { flex-wrap: wrap; gap: 6px; }
+  .chat-input-area .message-input { flex: 1 1 100%; min-width: 0; font-size: 16px; min-height: 44px; }
+  .chat-input-area button { flex: 0 0 auto; min-height: 40px; padding: 8px 16px; }
 }
 
 /* Hide mobile-only floating controls above the mobile breakpoint. */

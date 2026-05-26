@@ -3,6 +3,31 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-05-26 — v0.4.0
+
+### Chat mode (聊天模式)
+
+A brand-new **Chat** mode joins the existing Board view. Switch between Board and Chat in the top-right corner of the toolbar. Chat mode is designed for users who prefer a conversation-centric workflow — pick a task from the sidebar, and the full chat interface takes over the screen.
+
+**Left sidebar (drawer)**:
+- Collapsible accordion panels for each status column (Draft, Plan, Execute, Verify, Done, Archive).
+- Click any task to open it in the workspace; drag tasks between panels to change status.
+- Drawer-style: collapsed by default, opens via the ☰ toggle button in the top-left. Works identically on desktop and mobile.
+- Mobile: drawer overlays the workspace as a slide-in panel.
+
+**Right workspace (chat area)**:
+- Collapsible task header pinned at the top — shows title, status, priority at a glance. Click to expand for full metadata, description, edit form, and attempt list.
+- EventStream fills the middle — same real-time SSE-powered chat view as the task modal, with auto-scroll that pauses when the user scrolls up to read older messages.
+- Chat input bar pinned at the bottom — supports text, file upload (📎), and drag-and-drop. Ctrl+Enter / ⌘+Enter to send.
+- Empty state shows a friendly prompt to select a task.
+
+**Under the hood**:
+- Reuses the same API endpoints and data structures — zero backend changes.
+- Shared `chatInputMixin` extracted from TaskModal so chat input logic (send, file upload, auto-grow, cancel) lives in one place.
+- Separate drag controller instance for sidebar panels (uses `containerSelector` option added to `drag.js`).
+- Board mode completely untouched — Chat uses its own local `selectedTaskId`, independent of `state.openTaskId`.
+- Responsive design: full-width workspace on mobile, fixed drawer width on desktop.
+
 ## 2026-05-08 — v0.3.31
 
 ### Fix: Done tasks no longer stuck when sending a follow-up message
