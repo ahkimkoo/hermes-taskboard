@@ -2195,10 +2195,12 @@ const ChatView = {
     };
   },
   provide() {
+    const self = this;
     return {
       chatDrag: createDragController({
         containerSelector: '.sidebar-panel[data-status]',
         itemSelector: '.sidebar-task-item',
+        onDragEnd() { self.drawerOpen = false; },
         async onDrop({ taskId, toStatus, beforeId, afterId }) {
           if (!toStatus) return;
           try {
@@ -2220,9 +2222,19 @@ const ChatView = {
   mounted() {
     this._onResize = () => { this._isMobile = window.innerWidth < 768; };
     window.addEventListener('resize', this._onResize);
+    // Backup: watch for drag-end to auto-close drawer, in case the
+    // onDragEnd closure in provide() misses the Vue reactivity window.
+    this._onBodyClassChange = () => {
+      if (!document.body.classList.contains('dragging-active') && this.drawerOpen) {
+        this.drawerOpen = false;
+      }
+    };
+    this._dragObserver = new MutationObserver(this._onBodyClassChange);
+    this._dragObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
   },
   beforeUnmount() {
     if (this._onResize) window.removeEventListener('resize', this._onResize);
+    if (this._dragObserver) { this._dragObserver.disconnect(); this._dragObserver = null; }
   },
   template: `
     <div class="chat-layout">

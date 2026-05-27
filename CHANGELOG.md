@@ -3,6 +3,14 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-05-27 — v0.4.1
+
+### Bug fixes
+
+- **drag.js scoping bug**: `nextItem`/`prevItem` helper functions were defined at module scope but referenced `itemSel` from inside `createDragController`. Moved them inside the factory so they correctly use the per-instance item selector. This fixes drag-and-drop in the chat sidebar (board mode was unaffected because the default `.card` selector happened to match).
+- **Chat drawer not closing after drag**: Added a `MutationObserver` backup that watches `body.dragging-active` removal and auto-closes the sidebar drawer when a drag operation ends.
+- **Mobile input bar layout**: Textarea and send/stop buttons now stay on one row on mobile (previously `flex-wrap: wrap` pushed buttons onto a second row).
+
 ## 2026-05-26 — v0.4.0
 
 ### Chat mode (聊天模式)

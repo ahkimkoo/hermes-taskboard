@@ -133,13 +133,11 @@
   .attempt-content { min-height: 240px; }
   .event-stream.v2 { min-height: 200px; }
 
-  /* Input bar: textarea takes the full first row (so a 2-3 line draft fits
-     comfortably); send + stop buttons wrap onto a second row with big tap
-     targets. 16px font prevents iOS from auto-zooming the viewport when
-     the user focuses the field. */
-  .input-bar { flex-wrap: wrap; gap: 6px; }
-  .input-bar .message-input { flex: 1 1 100%; min-width: 0; font-size: 16px; min-height: 44px; }
-  .input-bar button { flex: 0 0 auto; min-height: 40px; padding: 8px 16px; }
+  /* Input bar: textarea and buttons stay in one row. 16px font prevents iOS
+     auto-zooming when the user focuses the field. */
+  .input-bar { flex-wrap: nowrap; gap: 6px; align-items: flex-end; }
+  .input-bar .message-input { flex: 1; min-width: 0; font-size: 16px; min-height: 40px; }
+  .input-bar button { flex-shrink: 0; min-height: 40px; padding: 8px 12px; font-size: 14px; }
 
   /* ---- Settings / schedule ---- */
   .settings-grid { grid-template-columns: 1fr; }
@@ -168,9 +166,9 @@
   .chat-task-summary { padding: 6px 10px; }
   .chat-detail-section { padding: 8px 10px; }
   .chat-input-area { padding: 6px 10px; }
-  .chat-input-area .input-bar { flex-wrap: wrap; gap: 6px; }
-  .chat-input-area .message-input { flex: 1 1 100%; min-width: 0; font-size: 16px; min-height: 44px; }
-  .chat-input-area button { flex: 0 0 auto; min-height: 40px; padding: 8px 16px; }
+  .chat-input-area .input-bar { flex-wrap: nowrap; gap: 6px; align-items: flex-end; }
+  .chat-input-area .message-input { flex: 1; min-width: 0; font-size: 16px; min-height: 40px; }
+  .chat-input-area button { flex-shrink: 0; min-height: 40px; padding: 8px 12px; font-size: 14px; }
 }
 
 /* Hide mobile-only floating controls above the mobile breakpoint. */

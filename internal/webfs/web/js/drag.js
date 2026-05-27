@@ -13,6 +13,7 @@
 
 export function createDragController(opts) {
   const onDrop = opts.onDrop || (() => {});
+  const onDragEnd = opts.onDragEnd || (() => {});
   const containerSel = opts.containerSelector || '.column[data-status]';
   const itemSel = opts.itemSelector || '.card';
   let state = null;
@@ -165,8 +166,8 @@ export function createDragController(opts) {
     // Compute beforeId / afterId from placeholder neighbors.
     const placeholder = st.placeholder;
     let beforeId = '', afterId = '';
-    const next = nextSibling(placeholder);
-    const prev = prevSibling(placeholder);
+    const next = nextItem(placeholder);
+    const prev = prevItem(placeholder);
     if (next) beforeId = next.getAttribute('data-task-id') || '';
     if (prev) afterId = prev.getAttribute('data-task-id') || '';
 
@@ -210,6 +211,18 @@ export function createDragController(opts) {
     window.removeEventListener('touchmove', preventTouchScroll, { passive: false });
     document.body.classList.remove('dragging-active');
     state = null;
+    onDragEnd();
+  }
+
+  function nextItem(el) {
+    let n = el.nextElementSibling;
+    while (n && !n.matches(itemSel)) n = n.nextElementSibling;
+    return n;
+  }
+  function prevItem(el) {
+    let n = el.previousElementSibling;
+    while (n && !n.matches(itemSel)) n = n.previousElementSibling;
+    return n;
   }
 
   return { start };
@@ -219,15 +232,4 @@ function columnAt(x, y, sel) {
   const el = document.elementFromPoint(x, y);
   if (!el) return null;
   return el.closest(sel);
-}
-
-function nextSibling(el) {
-  let n = el.nextElementSibling;
-  while (n && !n.matches(itemSel) && !n.classList.contains('card')) n = n.nextElementSibling;
-  return n;
-}
-function prevSibling(el) {
-  let n = el.previousElementSibling;
-  while (n && !n.matches(itemSel) && !n.classList.contains('card')) n = n.previousElementSibling;
-  return n;
 }
