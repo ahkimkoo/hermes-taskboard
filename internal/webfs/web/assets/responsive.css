@@ -15,10 +15,7 @@
     max-width: 32vw;
   }
   .topbar-search { width: 100%; flex: 1 1 0; min-width: 0; padding: 5px 8px; font-size: 13px; }
-  .topbar button { padding: 6px 8px; font-size: 13px; }
   .topbar button.icon { padding: 6px 8px; min-width: 36px; min-height: 36px; }
-  .topbar-btn-label { display: none; }      /* icon-only on mobile */
-  .topbar-btn-label-only { font-size: 12px; padding: 6px 8px; }
   .topbar .spacer { flex: 0 0 4px; }
 
   /* ---- Board / tabs ---- */
@@ -155,10 +152,9 @@
     box-shadow: 0 4px 14px rgba(0,0,0,0.35);
     z-index: 50;
   }
-  /* Push the help (?) button above the new-task FAB on mobile. */
-  .help-fab {
-    bottom: calc(84px + env(safe-area-inset-bottom, 0px));
-  }
+
+  /* ---- Topbar dropdown on mobile ---- */
+  .topbar-dropdown { right: -6px; min-width: 220px; max-width: calc(100vw - 20px); }
 
   /* ---- Chat mode mobile ---- */
   .chat-sidebar { width: 85vw; max-width: 320px; }

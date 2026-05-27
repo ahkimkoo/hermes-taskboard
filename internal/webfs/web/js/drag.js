@@ -137,6 +137,7 @@ export function createDragController(opts) {
 
     // Move the placeholder.
     if (insertBefore) zone.insertBefore(state.placeholder, insertBefore);
+    else if (items.length === 0 && zone.firstChild) zone.insertBefore(state.placeholder, zone.firstChild);
     else zone.appendChild(state.placeholder);
 
     state.lastDropZone = col;

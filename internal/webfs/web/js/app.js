@@ -2200,7 +2200,6 @@ const ChatView = {
       chatDrag: createDragController({
         containerSelector: '.sidebar-panel[data-status]',
         itemSelector: '.sidebar-task-item',
-        onDragEnd() { self.drawerOpen = false; },
         async onDrop({ taskId, toStatus, beforeId, afterId }) {
           if (!toStatus) return;
           try {
@@ -2222,19 +2221,9 @@ const ChatView = {
   mounted() {
     this._onResize = () => { this._isMobile = window.innerWidth < 768; };
     window.addEventListener('resize', this._onResize);
-    // Backup: watch for drag-end to auto-close drawer, in case the
-    // onDragEnd closure in provide() misses the Vue reactivity window.
-    this._onBodyClassChange = () => {
-      if (!document.body.classList.contains('dragging-active') && this.drawerOpen) {
-        this.drawerOpen = false;
-      }
-    };
-    this._dragObserver = new MutationObserver(this._onBodyClassChange);
-    this._dragObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
   },
   beforeUnmount() {
     if (this._onResize) window.removeEventListener('resize', this._onResize);
-    if (this._dragObserver) { this._dragObserver.disconnect(); this._dragObserver = null; }
   },
   template: `
     <div class="chat-layout">
@@ -2331,7 +2320,7 @@ const HelpModal = {
 const App = {
   components: { Column, TaskModal, NewTaskModal, SettingsModal, Login, HelpModal, ChatView },
   provide: { drag },
-  data() { return { state, search: '', columns: COLUMNS }; },
+  data() { return { state, search: '', columns: COLUMNS, menuOpen: false }; },
   computed: {
     isLogin() { return state.route === '/login'; },
     imageUploadEnabled() {
@@ -2364,21 +2353,28 @@ const App = {
         <h1><span class="logo">⧉</span><span class="topbar-title">{{ $t('app.title') }}</span></h1>
         <div class="spacer"></div>
         <input type="search" v-model="search" :placeholder="$t('placeholder.search')" class="topbar-search">
-        <div class="mode-switch">
-          <button :class="{ active: state.viewMode === 'board' }" @click="switchMode('board')">{{ $t('mode.board') }}</button>
-          <button :class="{ active: state.viewMode === 'chat' }" @click="switchMode('chat')">{{ $t('mode.chat') }}</button>
-        </div>
-        <button class="icon" :title="$t('action.toggle_theme')" @click="toggleTheme">
-          {{ themeIsLight ? '☀' : '☾' }}
-        </button>
-        <button class="icon" :title="$t('action.toggle_lang')" @click="toggleLang">
-          🌐 <span class="topbar-btn-label">{{ langLabel }}</span>
-        </button>
-        <button class="icon" :title="$t('action.settings')" @click="openSettings">⚙ <span class="topbar-btn-label">{{ $t('action.settings') }}</span></button>
         <span v-if="currentUser" class="topbar-user" :title="currentUser.is_admin ? $t('field.role_admin') : $t('field.role_user')">
           {{ currentUser.username }}<span v-if="currentUser.is_admin" class="topbar-admin-badge">★</span>
         </span>
-        <button v-if="state.auth.logged_in" class="topbar-btn-label-only" @click="logout">{{ $t('action.logout') }}</button>
+        <div class="topbar-menu-wrapper">
+          <button class="icon topbar-menu-toggle" @click.stop="toggleMenu">⚙</button>
+          <div v-if="menuOpen" class="topbar-dropdown">
+            <button @click="openSettings(); closeMenu()">⚙ {{ $t('menu.settings') }}</button>
+            <button @click="toggleTheme(); closeMenu()">{{ themeIsLight ? '☾' : '☀' }} {{ $t('menu.theme') }} · {{ themeIsLight ? $t('menu.theme_dark') : $t('menu.theme_light') }}</button>
+            <button @click="toggleLang(); closeMenu()">🌐 {{ $t('menu.language') }} · {{ langLabel }}</button>
+            <button @click="switchMode(state.viewMode === 'board' ? 'chat' : 'board'); closeMenu()">⇄ {{ $t('menu.mode') }} · {{ state.viewMode === 'board' ? $t('mode.chat') : $t('mode.board') }}</button>
+            <div class="topbar-dropdown-sep"></div>
+            <button v-if="state.auth.logged_in" @click="logout">🚪 {{ $t('menu.logout') }}</button>
+            <button v-else @click="location.href='/login'">🔑 {{ $t('menu.login') }}</button>
+            <button @click="state.showHelp = true; closeMenu()">? {{ $t('menu.help') }}</button>
+            <div class="topbar-dropdown-sep"></div>
+            <a class="topbar-dropdown-link" href="https://github.com/ahkimkoo/hermes-taskboard" target="_blank" rel="noopener">
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" style="vertical-align:middle"><path fill="currentColor" d="M12 .5C5.73.5.5 5.73.5 12c0 5.07 3.29 9.37 7.86 10.89.57.11.78-.25.78-.55 0-.27-.01-.99-.02-1.95-3.2.69-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.77 2.71 1.26 3.37.96.1-.74.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.05 11.05 0 0 1 5.79 0c2.21-1.49 3.18-1.18 3.18-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.26 5.69.41.35.77 1.04.77 2.1 0 1.52-.01 2.75-.01 3.12 0 .3.21.66.79.55A11.51 11.51 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z"/></svg>
+              {{ $t('menu.code') }}
+              <span class="topbar-dropdown-version">{{ appVersion }}</span>
+            </a>
+          </div>
+        </div>
       </div>
 
       <template v-if="state.viewMode === 'board'">
@@ -2400,11 +2396,6 @@ const App = {
           </column>
         </div>
 
-        <!-- Help button (?) -->
-        <button class="help-fab" :title="$t('action.help')"
-                :aria-label="$t('action.help')"
-                @click="state.showHelp = true">?</button>
-
         <!-- Mobile floating action button -->
         <button v-if="isMobile" class="new-task-fab primary"
                 :title="$t('action.new_task')"
@@ -2415,18 +2406,7 @@ const App = {
 
       <help-modal v-if="state.showHelp" @close="state.showHelp = false"></help-modal>
 
-      <!-- Help button (?). Opens the Manual modal which fetches the
-           markdown manual matching the current language. -->
-      <button class="help-fab" :title="$t('action.help')"
-              :aria-label="$t('action.help')"
-              @click="state.showHelp = true">?</button>
-
-      <help-modal v-if="state.showHelp" @close="state.showHelp = false"></help-modal>
-
-      <!-- Mobile floating action button: the per-column "+ 新建任务" sits
-           inside the Draft column header, which is invisible unless the
-           user happens to be on that tab. FAB is always-visible and has
-           a large touch target. Hidden on tablet+. -->
+      <!-- Mobile floating action button -->
       <button v-if="isMobile" class="new-task-fab primary"
               :title="$t('action.new_task')"
               @click="state.showNewTask = true">＋</button>
@@ -2445,29 +2425,22 @@ const App = {
         <div v-for="tt in state.toasts" :key="tt.id" class="toast" :class="tt.kind">{{ tt.msg }}</div>
       </div>
 
-      <!-- Small GitHub badge at the bottom-left so the repo is discoverable
-           without a navbar link. Subtle by default, accent on hover. Kept
-           left so it never clashes with the mobile new-task FAB on the
-           right. The version chip next to it lets bug reporters quickly
-           tell which build of the frontend they're running. -->
-      <div class="repo-corner">
-        <a class="repo-link" href="https://github.com/ahkimkoo/hermes-taskboard"
-           target="_blank" rel="noopener"
-           title="GitHub — ahkimkoo/hermes-taskboard"
-           aria-label="GitHub repository">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-            <path fill="currentColor" d="M12 .5C5.73.5.5 5.73.5 12c0 5.07 3.29 9.37 7.86 10.89.57.11.78-.25.78-.55 0-.27-.01-.99-.02-1.95-3.2.69-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.77 2.71 1.26 3.37.96.1-.74.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.05 11.05 0 0 1 5.79 0c2.21-1.49 3.18-1.18 3.18-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.26 5.69.41.35.77 1.04.77 2.1 0 1.52-.01 2.75-.01 3.12 0 .3.21.66.79.55A11.51 11.51 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z"/>
-          </svg>
-        </a>
-        <span class="repo-version" :title="$t('app.version_title')">{{ appVersion }}</span>
-      </div>
     </div>
   `,
   mounted() {
     this.subscribeBoard();
     window.addEventListener('resize', () => this.$forceUpdate());
+    this._menuOutsideClick = (e) => {
+      if (this.menuOpen && !e.target.closest('.topbar-menu-wrapper')) this.menuOpen = false;
+    };
+    document.addEventListener('click', this._menuOutsideClick);
+  },
+  beforeUnmount() {
+    if (this._menuOutsideClick) document.removeEventListener('click', this._menuOutsideClick);
   },
   methods: {
+    toggleMenu() { this.menuOpen = !this.menuOpen; },
+    closeMenu() { this.menuOpen = false; },
     switchMode(mode) { setViewMode(mode); },
     openSettings() {
       // Ensure stale state from a prior open doesn't prevent reopening (#12).

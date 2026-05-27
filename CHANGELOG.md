@@ -3,6 +3,22 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-05-27 — v0.5.0
+
+### Topbar menu restructure
+
+All secondary actions (theme, language, mode switch, help, GitHub link, logout) are now consolidated into a single ⚙ dropdown menu in the top-right corner. This frees up topbar space and declutters the interface, especially on mobile.
+
+- Click ⚙ to open the dropdown; click outside to close.
+- Menu items: Settings, Theme toggle, Language toggle, Mode switch (Board/Chat), Login/Logout, Help, Code (GitHub + version).
+- Removed: inline mode-switch buttons, theme/language/settings/logout buttons, floating Help (?) FAB, bottom-left GitHub repo corner.
+- Username badge still visible in the topbar for quick context.
+
+### Bug fixes
+
+- **Drag into empty sidebar panel**: can now drop a task at the top of an empty panel (previously always appended to the end).
+- **Drawer stays open after drag**: the sidebar drawer no longer auto-closes after dragging a task between panels.
+
 ## 2026-05-27 — v0.4.1
 
 ### Bug fixes

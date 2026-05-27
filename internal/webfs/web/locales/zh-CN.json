@@ -287,5 +287,15 @@
   "sidebar.tasks": "任务列表",
   "chat.select_task": "从侧边栏选择一个任务开始对话",
   "chat.no_tasks": "暂无任务",
-  "action.close": "关闭"
+  "action.close": "关闭",
+  "menu.settings": "设置",
+  "menu.theme": "主题",
+  "menu.language": "语言",
+  "menu.mode": "模式",
+  "menu.login": "登录",
+  "menu.logout": "退出登录",
+  "menu.help": "帮助",
+  "menu.code": "代码",
+  "menu.theme_light": "浅色",
+  "menu.theme_dark": "深色"
 }

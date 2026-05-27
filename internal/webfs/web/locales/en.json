@@ -287,5 +287,15 @@
   "sidebar.tasks": "Tasks",
   "chat.select_task": "Select a task from the sidebar to start chatting.",
   "chat.no_tasks": "No tasks",
-  "action.close": "Close"
+  "action.close": "Close",
+  "menu.settings": "Settings",
+  "menu.theme": "Theme",
+  "menu.language": "Language",
+  "menu.mode": "Mode",
+  "menu.login": "Log in",
+  "menu.logout": "Log out",
+  "menu.help": "Help",
+  "menu.code": "Code",
+  "menu.theme_light": "Light",
+  "menu.theme_dark": "Dark"
 }
