@@ -1876,7 +1876,7 @@ const ChatSidebar = {
 };
 
 const ChatWorkspace = {
-  components: { EventStream, TagInput, DependencyPicker, DescriptionEditor },
+  components: { EventStream, TagInput, DependencyPicker, DescriptionEditor, SchedulePicker },
   mixins: [chatInputMixin],
   props: ['taskId'],
   emits: ['close-task'],
@@ -2002,6 +2002,12 @@ const ChatWorkspace = {
                   </div>
                 </div>
               </div>
+
+              <!-- Schedule -->
+              <details class="schedule-details">
+                <summary>⏱ {{ $t('schedule.heading') }}</summary>
+                <schedule-picker :task-id="taskId"></schedule-picker>
+              </details>
             </div>
           </div>
         </div>

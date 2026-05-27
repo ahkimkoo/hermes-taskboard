@@ -3,6 +3,12 @@
 All notable changes are tracked here, grouped by date.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-05-27 — v0.5.1
+
+### Bug fix
+
+- **Chat mode: add Schedule (定时执行) picker** to the collapsible task header. Previously, the schedule feature was only accessible in Board mode's task modal. Now Chat mode's expanded task details include the same `<schedule-picker>` component so users can manage timed triggers without switching back to Board mode.
+
 ## 2026-05-27 — v0.5.0
 
 ### Topbar menu restructure
